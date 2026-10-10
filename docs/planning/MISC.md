@@ -1,11 +1,8 @@
-# 🛠️ Miscellaneous
+# Backlog
 
-## 🧪 Quality Assurance & Security
-- [ ] **Agent-Based Red Teaming**: Use AI agents to fuzz the API and Protobuf definitions for crashes or vulnerabilities.
-- [ ] **Fuzz Testing**: Implement `cargo-fuzz` targets for crypto primitives and protocol decoding.
-- [ ] **Load Testing**: Simulate peak WebSocket concurrency using `k6` or `locust`.
+None of these has started.
 
-## 🧹 Refactoring & Maintenance
-- [x] **Error Audit**: Standardize `AppError` mappings across all modules to ensure consistent status codes and zero leakage of sensitive internal details.
-- [ ] **Configuration Improvements**: Evaluate the need for dynamic config reloading (SIGHUP) vs. standard container restarts.
-- [ ] **CI/CD Enhancements**: Expand the current GitHub Actions to include performance regression checks.
+- **Fuzzing**: `cargo-fuzz` targets for protobuf decoding and key/signature parsing.
+- **Load testing**: peak WebSocket concurrency with k6 or similar; then performance regression checks in CI.
+- **FCM end-to-end test**: worker tests use a fake provider; add a mock FCM HTTP server to cover payloads and error mapping through the real `FcmPushProvider`.
+- **Config reload**: decide whether SIGHUP reload is worth it over restarting.

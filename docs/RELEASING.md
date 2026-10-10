@@ -1,55 +1,24 @@
-# Releasing Obscura Server
+# Releasing
 
-The `main` ruleset requires **Test & Check** before a version change can land.
-Prepare the version bump on a branch and merge it through a pull request. Do not
-push a version commit directly to `main`.
+`main` only accepts changes through pull requests that pass **Test & Check**, so the version bump goes through a PR.
 
-## Prepare the version pull request
+1. Branch from `main` (e.g. `release/v0.9.7`) and run `cargo set-version --bump patch` (or `minor`/`major`; from `cargo-edit`).
+2. Run `cargo check`, commit `Cargo.toml` and `Cargo.lock`, open a PR, and merge it once green.
+3. Tag the merged commit and push the tag with your own credentials (tags pushed with `GITHUB_TOKEN` trigger no workflows):
 
-1. Start from the latest `main` and create a release branch, for example
-   `release/v0.9.6`.
-2. Bump the crate version with `cargo set-version --bump patch` (or `minor` /
-   `major`). This command is provided by `cargo-edit`; install it with
-   `cargo install cargo-edit --locked` if it is not already available.
-3. Run `cargo check` to update `Cargo.lock`, then `cargo check --locked` to
-   verify the committed lockfile is usable. Commit **both** `Cargo.toml` and
-   `Cargo.lock`, push the branch, and open a pull request against `main`.
-4. Wait for **Test & Check** to pass, review the version change, and merge the
-   pull request. Confirm the new version is present on `main`.
+   ```bash
+   git switch main && git pull --ff-only
+   grep '^version' Cargo.toml   # must match the tag
+   git tag -a v0.9.7 -m "Release v0.9.7"
+   git push origin v0.9.7
+   ```
 
-## Tag and publish
+   If `main` has moved on, tag the PR's merge commit instead of `HEAD`.
 
-Create an annotated `v<version>` tag on the **merged version-bump commit**, not
-on the release branch. For example, after merging the `0.9.6` pull request:
+The tag runs **Publish Release** (`.github/workflows/publish.yml`), whose three independent jobs publish:
 
-```bash
-git fetch origin main --tags
-git switch main
-git merge --ff-only origin/main
-git tag -a v0.9.6 -m "Release v0.9.6"
-git push origin refs/tags/v0.9.6
-```
+- the crate to crates.io;
+- `ghcr.io/obscura-messaging/obscura-server` tagged `X.Y.Z`, `X.Y` and `latest`;
+- a GitHub release with generated notes.
 
-Before tagging, check that `HEAD` is the merged release commit and that
-`Cargo.toml` contains `version = "0.9.6"`. If `main` has advanced beyond that
-commit, tag the pull request's merge commit explicitly instead. Push the tag
-with your Git credentials: pushes made using `GITHUB_TOKEN` do not trigger
-downstream workflows.
-
-The tag starts **Publish Release**, whose independent jobs publish the crate
-to crates.io, the image to `ghcr.io/obscura-messaging/obscura-server` (version,
-minor, and `latest` tags), and a GitHub release. Verify all three jobs. If a
-job fails, diagnose it before rerunning the failed job; do not bump or retag
-the version. If the tag push did not start the workflow, dispatch **Publish
-Release** manually with the tag as its ref.
-
-The first image published under the organization creates a new GHCR package.
-New packages default to **private**, even for public repositories. An
-organization owner must set the package visibility to **Public** in GitHub's
-package settings. If GitHub says public visibility is disabled by organization
-administrators, the owner must first enable **Public** under organization
-**Settings > Packages > Package creation**. That policy permits members to
-create other public packages too. Verify the versioned and `latest` images are
-anonymously pullable before updating unauthenticated consumers such as the Helm
-chart and native integration CI. The old personal-account image does not move
-or redirect.
+If a job fails, fix the cause and rerun that job; never bump or retag. If the tag push started nothing, run **Publish Release** manually with the tag as the ref (the jobs skip on any non-tag ref).

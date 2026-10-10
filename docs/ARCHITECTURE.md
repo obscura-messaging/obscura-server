@@ -1,41 +1,47 @@
 # Architecture
 
-Obscura Server acts as a passive relay between Signal Protocol clients. It manages the discovery of cryptographic material and the queuing of encrypted blobs.
+Endpoint details are in [openapi.yaml](../openapi.yaml); WebSocket frame semantics are in the [transport contract](https://github.com/obscura-messaging/obscura-proto/blob/main/TRANSPORT.md).
 
-## Message Relay Flow
-
-The following diagram illustrates how Alice sends an end-to-end encrypted message to Bob using the Obscura relay.
+## Message flow
 
 ```mermaid
 sequenceDiagram
-    participant A as Alice (Client)
-    participant S as Obscura Server
-    participant B as Bob (Client)
+    participant A as Alice's device
+    participant S as Server
+    participant B as Bob's device
 
-    Note over A,B: Registration
-    A->>S: Upload Identity & PreKeys
-    B->>S: Upload Identity & PreKeys
-
-    Note over A,B: Message Exchange
-    A->>S: Request Bob's PreKey Bundle
-    S-->>A: Bob's Public Keys (Identity, Signed, One-Time)
-    A->>A: Perform X3DH (Generate Shared Secret)
-    A->>S: Send Encrypted Message (Bob)
-    S->>S: Store Opaque Blob
-    S-->>B: Real-time Poke (WebSocket/Push)
-    B->>S: Fetch Pending Messages
-    S-->>B: Bob's Encrypted Blobs
-    B->>B: Decrypt with Shared Secret
+    A->>S: POST /v1/users, then POST /v1/devices with keys (device-scoped JWT)
+    B->>S: same
+    A->>S: GET /v1/users/{bob}: one bundle per device, consumes a one-time prekey each
+    A->>A: X3DH, encrypt once per device
+    A->>S: POST /v1/messages (protobuf, Idempotency-Key)
+    S->>S: queue per recipient device, publish on Valkey
+    S-->>B: EnvelopeBatch over /v1/gateway, if connected
+    S-->>B: FCM wake-up after the push delay, unless B connected or acked first
+    B->>S: AckMessage: server deletes the acked messages
 ```
 
-## System Components
+## Components
 
-- **API Layer**: Handles REST requests for account management, key uploads, and attachment handling.
-- **Gateway Service**: Manages long-lived WebSocket connections for real-time delivery.
-- **Background Workers**: 
-    - **Cleanup**: Periodically prunes expired messages and attachments.
-    - **Push Notifications**: Sends fallback notifications when clients are offline.
-- **Storage Adapters**:
-    - **PostgreSQL**: Stores persistent user metadata, keys, and message envelopes.
-    - **Redis (Valkey)**: Powers the real-time notification bus and task queue.
-    - **S3**: Stores encrypted attachments.
+| Component | Code | Role |
+|---|---|---|
+| REST API | `src/api` | Accounts, devices, keys, sending, attachments, backups, push tokens. `/openapi.yaml` serves the spec. |
+| Gateway | `src/services/gateway` | One WebSocket per device, opened with a single-use ticket. Pumps queued messages in batches and batches acks into deletes. |
+| Management | port 9090 | `/livez`; `/readyz` checks Postgres, the storage bucket and Valkey. |
+| PostgreSQL | `migrations/` | Users, devices, keys, message queue, attachment and backup metadata, push tokens, refresh tokens. |
+| Valkey/Redis | `src/adapters/redis` | Cross-node pub/sub (channel per device), push job queue, idempotency cache, WebSocket tickets. Nodes are otherwise stateless. |
+| S3 | `src/adapters/storage` | Encrypted attachments (`attachments/`, expire after `--ttl-days`) and backups (`backups/{device}/v{n}`, versioned, no expiry). |
+| FCM | `src/adapters/push` | Content-free wake-up (Android and APNs via FCM, collapse key `obscura_check`). Without FCM config, pushes are only logged. |
+
+## Background workers
+
+| Worker | Does |
+|---|---|
+| Message cleanup | Deletes expired messages, then the oldest beyond `--messaging-inbox-max-size` per device. |
+| Attachment cleanup | Deletes expired attachments from S3 and Postgres. |
+| Backup cleanup | Resets uploads stuck in `UPLOADING` past `--backup-stale-threshold-mins` and deletes their objects. |
+| Refresh-token cleanup | Deletes expired refresh tokens. |
+| Notification | Receives pub/sub events for local sockets; reclaims idle per-device channels. |
+| Push notification | Leases due jobs from Valkey, sends them to FCM, deletes tokens FCM reports as invalid. |
+
+A worker that exits outside shutdown stops the server.

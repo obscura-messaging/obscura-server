@@ -1,134 +1,55 @@
 # Obscura Server
 
-**Obscura Server** is a minimalist, secure relay server for the Signal Protocol. It facilitates end-to-end encrypted asynchronous messaging while maintaining a zero-knowledge architecture.
+Relay server for Obscura, an end-to-end encrypted messenger built on the Signal Protocol. It stores public keys and queues opaque encrypted messages, attachments and backups; it never holds private keys or plaintext.
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![CI](https://github.com/obscura-messaging/obscura-server/actions/workflows/ci.yml/badge.svg)](https://github.com/obscura-messaging/obscura-server/actions/workflows/ci.yml)
 
-## Features
+## Threat model
 
-- **Zero-Knowledge Architecture**: The server stores opaque encrypted blobs. It cannot read message content or access private keys.
-- **Signal Protocol Support**: Native support for PreKeys (Identity, Signed, One-Time) to enable X3DH key exchanges.
-- **Asynchronous Delivery**: Stores encrypted messages until the recipient comes online to fetch them via WebSockets.
-- **Encrypted Attachments**: Secure file uploads via S3-compatible storage with automated TTL-based expiry.
-- **Strict Privacy Limits**: Automatic garbage collection of old messages and global inbox limits to prevent metadata buildup.
-- **Observability Native**: Built-in support for Traces, Metrics, and Structured Logging via OTLP.
+Content stays confidential even if the server is fully compromised.
 
----
+- **Server sees:** usernames, user and device IDs, public keys, push tokens, IP addresses, and per-message metadata (sender user and device, recipient device, time, size). The account password reaches the server at login and is stored Argon2-hashed.
+- **Server cannot see:** message, attachment or backup plaintext; private keys.
+- **Not addressed:** traffic analysis. There is no padding, mixing or sealed sender.
 
-## Security & Privacy
-
-### Threat Model
-Obscura is designed to protect the **content** of communications even if the server is fully compromised.
-
-- **What the Server Sees**:
-    - User IDs and Usernames.
-    - Public Keys (Identity, Signed PreKeys, One-Time PreKeys).
-    - Metadata: Message timestamps, sizes, and recipient/sender IDs.
-    - IP Addresses (unless connected via Tor/VPN).
-- **What the Server CANNOT See**:
-    - Message plaintext (content).
-    - Attachment plaintext.
-    - Private keys (they never leave the client).
-- **Non-Goals**: Obscura does not currently implement padding or mix-net techniques to protect against advanced traffic analysis or metadata correlation.
-
----
-
-## Quick Start
-
-### 1. Run with Docker Compose
-A `docker-compose.yml` is provided for a complete local stack (Postgres + Valkey + MinIO + Grafana OTEL LGTM + Server):
+## Quick start
 
 ```bash
-docker compose up -d
-```
-
-### 2. Interaction Example
-Once the server is running on port `3000`, you can verify it's working:
-
-```bash
-# Check Health (Management Port 9090)
-curl http://localhost:9090/readyz
-
-# View OpenAPI Spec
+git clone --recurse-submodules https://github.com/obscura-messaging/obscura-server.git
+cd obscura-server
+docker compose up -d                                   # Postgres, Valkey, MinIO, Grafana LGTM, server
+docker compose exec minio mkdir -p /data/test-bucket   # nothing else creates the bucket
+curl http://localhost:9090/readyz                      # 503 until DB, bucket and Valkey are reachable
 curl http://localhost:3000/openapi.yaml
 ```
 
----
-
-## Configuration
-
-Obscura can be configured via command-line flags or environment variables. The following must be set for a working deployment:
-
-| Option | Environment Variable | Default | Notes |
-|--------|----------------------|---------|-------|
-| `--db-url` | `OBSCURA_DATABASE_URL` | `postgres://user:password@localhost/signal_server` | |
-| `--pubsub-url` | `OBSCURA_PUBSUB_URL` | `redis://localhost:6379` | |
-| `--auth-jwt-secret` | `OBSCURA_AUTH_JWT_SECRET` | `change_me_in_production` | **Must** change in production |
-| `--storage-bucket` | `OBSCURA_STORAGE_BUCKET` | `obscura-storage` | |
-| `--storage-endpoint` | `OBSCURA_STORAGE_ENDPOINT` | *(none)* | Required for MinIO / self-hosted S3 |
-| `--storage-access-key` | `OBSCURA_STORAGE_ACCESS_KEY` | *(none)* | Required for MinIO / self-hosted S3 |
-| `--storage-secret-key` | `OBSCURA_STORAGE_SECRET_KEY` | *(none)* | Required for MinIO / self-hosted S3 |
-
-See [**docs/CONFIGURATION.md**](./docs/CONFIGURATION.md) for the full list of over 50 configuration options.
-
----
+Grafana is on `localhost:3001`.
 
 ## Development
 
-### Prerequisites
+Needs stable Rust, `protoc` and [`just`](https://github.com/casey/just). Runtime needs PostgreSQL 18+ (migrations use `uuidv7()`), Valkey or Redis, and S3-compatible storage. Migrations run on startup.
 
-**Build:**
-- Rust (stable toolchain, see [rust-toolchain.toml](./rust-toolchain.toml))
-- `protoc` (Protocol Buffers compiler)
-- [`just`](https://github.com/casey/just) (task runner)
-
-**Runtime:**
-- PostgreSQL 17+
-- Valkey (or Redis)
-- S3-compatible storage
-
-### Running Locally
-1. Start infrastructure: `just services`
-2. Start the server (migrations run automatically):
-   ```bash
-   export OBSCURA_DATABASE_URL=postgres://user:password@localhost/signal_server
-   export OBSCURA_PUBSUB_URL=redis://localhost:6379
-   export OBSCURA_AUTH_JWT_SECRET=test
-   export OBSCURA_STORAGE_BUCKET=test-bucket
-   export OBSCURA_STORAGE_ENDPOINT=http://localhost:9000
-   export OBSCURA_STORAGE_ACCESS_KEY=minioadmin
-   export OBSCURA_STORAGE_SECRET_KEY=minioadmin
-   export OBSCURA_STORAGE_FORCE_PATH_STYLE=true
-   cargo run
-   ```
-
-### Testing
 ```bash
-just test
+just services   # start db, minio, valkey and create test-bucket
+OBSCURA_STORAGE_BUCKET=test-bucket OBSCURA_STORAGE_ENDPOINT=http://localhost:9000 \
+OBSCURA_STORAGE_ACCESS_KEY=minioadmin OBSCURA_STORAGE_SECRET_KEY=minioadmin \
+OBSCURA_STORAGE_FORCE_PATH_STYLE=true cargo run
+just test       # integration tests need `just services` running
+just ci         # fmt-check, clippy, coverage (fails under 80% lines)
+just            # list all recipes
 ```
 
-### Code Coverage
-```bash
-just coverage       # LCOV report with summary
-just coverage-html  # Browsable HTML report in coverage/
-```
+The database and Valkey defaults already match `just services`.
 
-### Available Commands
-Run `just` to see all available recipes:
-```bash
-just
-```
+## Docs
 
----
-
-## Documentation
-
-- **API Reference**: [openapi.yaml](./openapi.yaml)
-- **Configuration Guide**: [docs/CONFIGURATION.md](./docs/CONFIGURATION.md)
-- **Release Process**: [docs/RELEASING.md](./docs/RELEASING.md)
-- **System Architecture**: [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)
-- **Planning Docs**: [docs/planning/](./docs/planning/)
+- [openapi.yaml](./openapi.yaml): REST and gateway API
+- [docs/CONFIGURATION.md](./docs/CONFIGURATION.md): every flag and environment variable
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): components and message flow
+- [docs/RELEASING.md](./docs/RELEASING.md): release process
+- [docs/planning/](./docs/planning/): unbuilt features
+- [obscura-proto](https://github.com/obscura-messaging/obscura-proto): wire schema and transport contract
 
 # License
 
