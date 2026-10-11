@@ -8,7 +8,7 @@ use crate::domain::auth_session::AuthSession;
 use crate::error::{AppError, Result};
 use argon2::{
     Argon2,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier},
+    password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash},
 };
 use base64::Engine;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
