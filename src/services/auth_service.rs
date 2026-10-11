@@ -8,7 +8,7 @@ use crate::domain::auth_session::AuthSession;
 use crate::error::{AppError, Result};
 use argon2::{
     Argon2,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng as PasswordOsRng},
+    password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash},
 };
 use base64::Engine;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
@@ -152,9 +152,8 @@ impl AuthService {
     pub(crate) async fn hash_password(&self, password: &str) -> Result<String> {
         let password = password.to_string();
         tokio::task::spawn_blocking(move || {
-            let salt = SaltString::generate(&mut PasswordOsRng);
             let argon2 = Argon2::default();
-            argon2.hash_password(password.as_bytes(), &salt).map_err(|_| AppError::Internal).map(|h| h.to_string())
+            argon2.hash_password(password.as_bytes()).map_err(|_| AppError::Internal).map(|h| h.to_string())
         })
         .await
         .map_err(|_| AppError::Internal)?

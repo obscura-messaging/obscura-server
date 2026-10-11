@@ -13,7 +13,7 @@ strip = "symbols"
 
 [dependencies]
 anyhow = "1.0"
-argon2 = "0.5"
+argon2 = "0.6"
 aws-config = { version = "1.8", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-credential-types = "1.2"
 aws-sdk-s3 = { version = "1.135", default-features = false, features = ["default-https-client", "http-1x", "rt-tokio"] }
@@ -46,11 +46,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1.23", features = ["v4", "serde"] }
 tower-http = { version = "0.7", features = ["trace", "request-id", "util", "timeout"] }
-opentelemetry = { version = "0.32", features = ["metrics", "logs"] }
-opentelemetry_sdk = { version = "0.32", features = ["metrics", "logs"] }
-opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "metrics", "logs"] }
-tracing-opentelemetry = "0.33"
-opentelemetry-semantic-conventions = "0.32"
+opentelemetry = { version = "0.33", features = ["metrics", "logs"] }
+opentelemetry_sdk = { version = "0.33", features = ["metrics", "logs"] }
+opentelemetry-otlp = { version = "0.33", features = ["grpc-tonic", "metrics", "logs"] }
+tracing-opentelemetry = "0.34"
+opentelemetry-semantic-conventions = "0.33"
 redis = { version = "1.2.2", features = ["tokio-comp", "connection-manager"] }
 async-trait = "0.1.89"
 tokio-stream = { version = "0.1.18", features = ["sync"] }
