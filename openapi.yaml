@@ -417,9 +417,11 @@ paths:
         Pushes an array of encrypted envelopes to target devices' queues.
         Accepts a batch of messages to support multi-device fan-out or single messages.
 
-        **Idempotency:** Requires an `Idempotency-Key` header to safely retry dropped network requests.
+        **Complete delivery:** For each user owning a target device, the targeted devices must equal that user's current devices, excluding the sending device when the user is the sender. Otherwise none of that user's submissions are queued: each fails with `ERROR_CODE_DEVICE_MISMATCH` and `device_mismatches` lists the user's untargeted devices. Unknown devices fail individually with `ERROR_CODE_INVALID_DEVICE`.
+
+        **Idempotency:** Requires an `Idempotency-Key` header to safely retry dropped network requests. The response is cached per key, a mismatch included, so a retry with a corrected device set needs a new key.
         **Payload:** `SendMessageRequest` (Protobuf).
-        **Response:** `SendMessageResponse` (Protobuf) detailing any partial failures. An empty response array indicates total success.
+        **Response:** `SendMessageResponse` (Protobuf) detailing any partial failures. Empty `failed_submissions` indicates total success.
       tags: [Messaging]
       security:
         - bearerAuth: []
@@ -441,7 +443,7 @@ paths:
               description: Serialized `SendMessageRequest` protobuf.
       responses:
         '200':
-          description: Batch processed. Parse the response payload to check for partial failures via the `failed_messages` array.
+          description: Batch processed. Parse the response payload to check for partial failures via `failed_submissions` and `device_mismatches`.
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'

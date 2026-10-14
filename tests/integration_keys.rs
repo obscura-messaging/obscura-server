@@ -261,8 +261,9 @@ async fn test_device_takeover_success() {
     let app = TestApp::spawn().await;
     let username = common::generate_username("takeover");
     let user = app.register_user_with_keys(&username, 111, 1).await;
+    let sender = app.register_user(&common::generate_username("takeover_sender")).await;
 
-    app.send_message(&user.token, user.device_id, b"hello").await;
+    app.send_message(&sender.token, user.device_id, b"hello").await;
 
     let new_identity_key = common::generate_signing_key();
     let (new_spk_pub, new_spk_sig) = common::generate_signed_pre_key(&new_identity_key);

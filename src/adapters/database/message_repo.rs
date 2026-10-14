@@ -14,23 +14,43 @@ impl MessageRepository {
         Self {}
     }
 
-    /// Checks which devices exist in the database.
+    /// Locks the device sets of the sender and of every user owning one of `target_device_ids`, and
+    /// returns `(device_id, user_id)` for each of their devices.
+    ///
+    /// The user rows are locked `FOR UPDATE` in id order. Inserting a device takes `FOR KEY SHARE` on
+    /// its user row through the foreign key, so no device can be added to these users until the
+    /// transaction ends; the devices are locked `FOR KEY SHARE`, so none can be deleted either. The
+    /// sender is locked too because inserting messages takes `FOR KEY SHARE` on the sender's row, and
+    /// locking it in the same ordered statement keeps two users sending to each other deadlock-free.
     ///
     /// # Errors
-    /// Returns `AppError::Database` if the query fails.
+    /// Returns `AppError::Database` if a query fails.
     #[tracing::instrument(level = "debug", skip(self, conn))]
-    pub(crate) async fn check_devices_exist(&self, conn: &mut PgConnection, device_ids: &[Uuid]) -> Result<Vec<Uuid>> {
-        if device_ids.is_empty() {
-            return Ok(Vec::new());
-        }
+    pub(crate) async fn lock_device_sets(
+        &self,
+        conn: &mut PgConnection,
+        sender_id: Uuid,
+        target_device_ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, Uuid)>> {
+        let user_ids: Vec<Uuid> = sqlx::query_scalar(
+            r#"
+            SELECT id FROM users
+            WHERE id = $1 OR id IN (SELECT user_id FROM devices WHERE id = ANY($2))
+            ORDER BY id
+            FOR UPDATE
+            "#,
+        )
+        .bind(sender_id)
+        .bind(target_device_ids)
+        .fetch_all(&mut *conn)
+        .await?;
 
-        let rows: Vec<(Uuid,)> = sqlx::query_as("SELECT id FROM devices WHERE id = ANY($1)")
-            .bind(device_ids)
+        let devices = sqlx::query_as("SELECT id, user_id FROM devices WHERE user_id = ANY($1) FOR KEY SHARE")
+            .bind(user_ids)
             .fetch_all(conn)
-            .await
-            .map_err(AppError::Database)?;
+            .await?;
 
-        Ok(rows.into_iter().map(|(id,)| id).collect())
+        Ok(devices)
     }
 
     /// Inserts a batch of messages.

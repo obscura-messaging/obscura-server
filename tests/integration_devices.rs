@@ -110,7 +110,11 @@ async fn test_device_crud_lifecycle() {
     let _dev1_token = device1_json["token"].as_str().unwrap();
 
     let sender = app.register_user(&common::generate_username("crud_sender")).await;
-    app.send_message(&sender.token, Uuid::parse_str(&device1_id).unwrap(), b"Ping").await;
+    app.send_messages(
+        &sender.token,
+        &[(Uuid::parse_str(&device1_id).unwrap(), b"Ping"), (Uuid::parse_str(&device2_id).unwrap(), b"Ping")],
+    )
+    .await;
 
     // Verify message exists
     app.assert_message_count(Uuid::parse_str(&device1_id).unwrap(), 1).await;
