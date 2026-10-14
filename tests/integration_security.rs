@@ -39,6 +39,9 @@ async fn test_unauthenticated_access_denied() {
         ("PUT", format!("{}/v1/push-tokens", app.server_url)),
         ("POST", format!("{}/v1/gateway/ticket", app.server_url)),
         ("POST", format!("{}/v1/devices/provisioning-code", app.server_url)),
+        ("POST", format!("{}/v1/provisioning", app.server_url)),
+        ("PUT", format!("{}/v1/provisioning/some-address", app.server_url)),
+        ("GET", format!("{}/v1/provisioning/some-address", app.server_url)),
         ("POST", format!("{}/v1/account/reset", app.server_url)),
     ];
 
@@ -133,6 +136,7 @@ async fn test_user_scoped_token_rejected_on_device_endpoints() {
         ("PUT", format!("{}/v1/push-tokens", app.server_url)),
         // Device linking
         ("POST", format!("{}/v1/devices/provisioning-code", app.server_url)),
+        ("PUT", format!("{}/v1/provisioning/some-address", app.server_url)),
         ("DELETE", format!("{}/v1/devices/{}", app.server_url, Uuid::new_v4())),
         // Backup (all three operations)
         ("POST", format!("{}/v1/backup", app.server_url)),

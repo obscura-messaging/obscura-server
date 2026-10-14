@@ -18,7 +18,7 @@ use crate::adapters::database::push_token_repo::PushTokenRepository;
 use crate::adapters::database::refresh_token_repo::RefreshTokenRepository;
 use crate::adapters::database::user_repo::UserRepository;
 use crate::adapters::push::PushProvider;
-use crate::adapters::redis::RedisCache;
+use crate::adapters::redis::{ProvisioningRelay, RedisCache};
 use crate::adapters::storage::S3Storage;
 use crate::config::{Config, StorageConfig};
 use crate::services::attachment_service::AttachmentService;
@@ -299,8 +299,12 @@ impl AppBuilder {
             notifier.clone(),
             config.auth.max_devices_per_user,
         );
-        let provisioning_service =
-            ProvisioningService::new(pool.clone(), adapters.device.clone(), adapters.provisioning_code.clone());
+        let provisioning_service = ProvisioningService::new(
+            pool.clone(),
+            adapters.device.clone(),
+            adapters.provisioning_code.clone(),
+            ProvisioningRelay::new(Arc::clone(&pubsub)),
+        );
         let gateway_service = GatewayService::new(
             message_service.clone(),
             key_service.clone(),

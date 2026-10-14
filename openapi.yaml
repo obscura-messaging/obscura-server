@@ -530,6 +530,164 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  /v1/provisioning:
+    post:
+      operationId: createProvisioningRelay
+      summary: Create a provisioning relay address.
+      description: |
+        Creates a relay address through which the primary device hands its encrypted provisioning
+        message to a new device. The address is bound to the authenticated user and expires after
+        10 minutes, together with any message stored for it. Accepts a User-Scoped or Device-Scoped JWT;
+        a new device uses the User-Scoped JWT from its login.
+      tags: [Provisioning]
+      security:
+        - bearerAuth: []
+      responses:
+        '201':
+          description: Address created.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProvisioningRelayResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '408':
+          $ref: '#/components/responses/RequestTimeoutError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/provisioning/{address}:
+    parameters:
+      - name: address
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Address returned by `POST /v1/provisioning`.
+    put:
+      operationId: putProvisioningMessage
+      summary: Store the provisioning message.
+      description: |
+        Stores one opaque body (the encrypted provisioning message) for the address. The server never
+        parses it. Requires a Device-Scoped JWT of the primary device of the user the address is bound to.
+        An address accepts one body only.
+      tags: [Provisioning]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              maxLength: 65536
+      responses:
+        '200':
+          description: Message stored.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          description: |
+            The caller is not the primary device. The `error` is one of:
+            - `Device-scoped token required`
+            - `Primary device required`
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The address is unknown, expired, or bound to another user.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '408':
+          $ref: '#/components/responses/RequestTimeoutError'
+        '409':
+          description: A message was already stored for this address.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/PayloadTooLargeError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    get:
+      operationId: takeProvisioningMessage
+      summary: Fetch the provisioning message.
+      description: |
+        Returns the stored message and deletes it, so it can be read once. Returns 204 if no message
+        is stored, after waiting up to `wait` seconds for one to arrive. Accepts any User-Scoped or
+        Device-Scoped JWT of the user the address is bound to.
+      tags: [Provisioning]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: wait
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Seconds to wait for a message before answering 204. Values above 25 are treated as 25.
+      responses:
+        '200':
+          description: The provisioning message, now deleted from the server.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '204':
+          description: No message arrived within the wait.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          description: The address is unknown, expired, or bound to another user.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '408':
+          $ref: '#/components/responses/RequestTimeoutError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
   # --- Messaging (REST Upstream) ---
   /v1/messages:
     post:
@@ -1308,6 +1466,18 @@ components:
           type: integer
           format: int64
           description: UNIX timestamp after which the code is no longer accepted.
+
+    ProvisioningRelayResponse:
+      type: object
+      required: [address, expiresAt]
+      properties:
+        address:
+          type: string
+          description: Relay address, used in `/v1/provisioning/{address}`.
+        expiresAt:
+          type: integer
+          format: int64
+          description: UNIX timestamp after which the address and its message are deleted.
 
     TicketResponse:
       type: object

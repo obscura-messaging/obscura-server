@@ -165,3 +165,47 @@ async fn test_distributed_fan_out_disconnect() {
     let pong = ws_bob.receive_pong().await;
     assert!(pong.is_some(), "Bob should have stayed connected");
 }
+
+#[tokio::test]
+async fn test_multi_node_provisioning_relay() {
+    let config = common::get_test_config();
+    let app_a = common::TestApp::spawn_with_config(config.clone()).await;
+    let app_b = common::TestApp::spawn_with_config(config).await;
+
+    let primary = app_a.register_user(&common::generate_username("relay_nodes")).await;
+    let new_device_token = app_a.login_user_scoped(&primary.username).await;
+
+    let resp = app_a
+        .client
+        .post(format!("{}/v1/provisioning", app_a.server_url))
+        .header("Authorization", format!("Bearer {new_device_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let address = resp.json::<serde_json::Value>().await.unwrap()["address"].as_str().unwrap().to_string();
+
+    let waiter = {
+        let (client, url) = (app_a.client.clone(), format!("{}/v1/provisioning/{address}?wait=10", app_a.server_url));
+        tokio::spawn(async move {
+            let resp =
+                client.get(url).header("Authorization", format!("Bearer {new_device_token}")).send().await.unwrap();
+            (resp.status(), resp.bytes().await.unwrap().to_vec())
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let resp = app_b
+        .client
+        .put(format!("{}/v1/provisioning/{address}", app_b.server_url))
+        .header("Authorization", format!("Bearer {}", primary.token))
+        .body(b"cross-node".to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let (status, body) = tokio::time::timeout(Duration::from_secs(5), waiter).await.unwrap().unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(body, b"cross-node");
+}

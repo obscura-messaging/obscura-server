@@ -38,6 +38,7 @@ pub mod health;
 pub mod keys;
 pub mod messages;
 pub mod middleware;
+pub mod provisioning;
 pub mod push_tokens;
 pub mod rate_limit;
 pub mod schemas;
@@ -139,6 +140,8 @@ fn api_router(
         )
         .route("/devices/keys", post(keys::upload_keys))
         .route("/devices/provisioning-code", post(devices::create_provisioning_code))
+        .route("/provisioning", post(provisioning::create_relay))
+        .route("/provisioning/{address}", put(provisioning::put_relay).get(provisioning::take_relay))
         .route("/users/{userId}", get(keys::get_pre_key_bundles))
         .route("/messages", post(messages::send_messages))
         .route("/gateway", get(gateway::websocket_handler))
