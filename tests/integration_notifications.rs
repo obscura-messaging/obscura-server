@@ -47,7 +47,7 @@ async fn test_scheduled_push_delivery() {
             .await
             .unwrap();
 
-        sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)")
+        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
             .bind(user_id)
             .execute(&mut *conn)
             .await
@@ -183,7 +183,7 @@ async fn test_delivery_exactly_once_under_competition() {
             .await
             .unwrap();
 
-        sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)")
+        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
             .bind(user_id)
             .execute(&mut *conn)
             .await
@@ -252,7 +252,7 @@ async fn test_push_coalescing() {
             .await
             .unwrap();
 
-        sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)")
+        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
             .bind(user_id)
             .execute(&mut *conn)
             .await
@@ -338,7 +338,7 @@ async fn test_notification_worker_concurrency_limit() {
                 .await
                 .unwrap();
 
-            sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)")
+            sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
                 .bind(user_id)
                 .execute(&mut *conn)
                 .await

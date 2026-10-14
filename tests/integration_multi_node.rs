@@ -14,13 +14,8 @@
     clippy::similar_names
 )]
 mod common;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use futures::SinkExt;
-use serde_json::json;
 use std::time::Duration;
-use xeddsa::CalculateKeyPair;
-use xeddsa::xed25519::PrivateKey;
 
 #[tokio::test]
 async fn test_multi_node_notification() {
@@ -113,57 +108,22 @@ async fn test_multi_node_disconnect_notification() {
     let app_a = common::TestApp::spawn_with_workers(config.clone()).await;
     let app_b = common::TestApp::spawn_with_workers(config).await;
 
-    let alice_name = common::generate_username("alice_takeover");
+    let alice = app_a.register_user(&common::generate_username("alice_unlink")).await;
+    let linked = app_a.link_device(&alice).await;
 
-    let user_alice = app_a.register_user(&alice_name).await;
-
-    let mut ws_a = app_a.connect_ws(&user_alice.token).await;
-
-    let new_identity_key_bytes = common::generate_signing_key();
-    let new_priv = PrivateKey(new_identity_key_bytes);
-    let (_, new_ik_pub_ed) = new_priv.calculate_key_pair(0);
-    let new_ik_pub_mont =
-        curve25519_dalek::edwards::CompressedEdwardsY(new_ik_pub_ed).decompress().unwrap().to_montgomery().to_bytes();
-    let mut new_ik_pub_wire = new_ik_pub_mont.to_vec();
-    new_ik_pub_wire.insert(0, 0x05);
-
-    let (new_spk_pub, new_spk_sig) = common::generate_signed_pre_key(&new_identity_key_bytes);
-
-    let takeover_payload = json!({
-        "identityKey": STANDARD.encode(new_ik_pub_wire),
-        "registrationId": 999,
-        "signedPreKey": {
-            "keyId": 100,
-            "publicKey": STANDARD.encode(&new_spk_pub),
-            "signature": STANDARD.encode(&new_spk_sig)
-        },
-        "oneTimePreKeys": []
-    });
+    let mut ws_a = app_a.connect_ws(&linked.token).await;
+    ws_a.ensure_subscribed().await;
 
     let resp = app_b
         .client
-        .post(format!("{}/v1/devices/keys", app_b.server_url))
-        .header("Authorization", format!("Bearer {}", user_alice.token))
-        .json(&takeover_payload)
+        .delete(format!("{}/v1/devices/{}", app_b.server_url, linked.device_id))
+        .header("Authorization", format!("Bearer {}", alice.token))
         .send()
         .await
         .unwrap();
+    assert_eq!(resp.status(), 200, "Unlink failed: {}", resp.text().await.unwrap());
 
-    assert_eq!(resp.status(), 200, "Takeover failed: {}", resp.text().await.unwrap());
-
-    let mut disconnected = false;
-    let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(5) {
-        match ws_a.receive_raw_timeout(Duration::from_millis(100)).await {
-            Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)) | Err(_)) | None => {
-                disconnected = true;
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    assert!(disconnected, "Alice was not disconnected from Node A after takeover on Node B");
+    ws_a.assert_closed().await;
 }
 
 #[tokio::test]
@@ -173,13 +133,14 @@ async fn test_distributed_fan_out_disconnect() {
     let app_b = common::TestApp::spawn_with_workers(config.clone()).await;
     let app_c = common::TestApp::spawn_with_workers(config).await;
 
-    let user_alice = app_a.register_user(&common::generate_username("alice_fanout")).await;
-    let user_bob = app_a.register_user(&common::generate_username("bob_fanout")).await;
+    let alice = app_a.register_user(&common::generate_username("alice_fanout")).await;
+    let linked = app_a.link_device(&alice).await;
+    let bob = app_a.register_user(&common::generate_username("bob_fanout")).await;
 
-    let mut ws_a1 = app_a.connect_ws(&user_alice.token).await;
-    let mut ws_b1 = app_b.connect_ws(&user_alice.token).await;
-    let mut ws_b2 = app_b.connect_ws(&user_alice.token).await;
-    let mut ws_bob = app_a.connect_ws(&user_bob.token).await;
+    let mut ws_a1 = app_a.connect_ws(&linked.token).await;
+    let mut ws_b1 = app_b.connect_ws(&linked.token).await;
+    let mut ws_b2 = app_b.connect_ws(&linked.token).await;
+    let mut ws_bob = app_a.connect_ws(&bob.token).await;
 
     // Synchronize: Ensure all sessions are fully established and subscribed to Redis
     ws_a1.ensure_subscribed().await;
@@ -187,49 +148,18 @@ async fn test_distributed_fan_out_disconnect() {
     ws_b2.ensure_subscribed().await;
     ws_bob.ensure_subscribed().await;
 
-    let new_ik = common::generate_signing_key();
-    let (new_spk_pub, new_spk_sig) = common::generate_signed_pre_key(&new_ik);
-    let (_, ik_pub_ed) = PrivateKey(new_ik).calculate_key_pair(0);
-    let mut new_ik_pub_wire = curve25519_dalek::edwards::CompressedEdwardsY(ik_pub_ed)
-        .decompress()
-        .unwrap()
-        .to_montgomery()
-        .to_bytes()
-        .to_vec();
-    new_ik_pub_wire.insert(0, 0x05);
-
-    let takeover_payload = json!({
-        "identityKey": STANDARD.encode(new_ik_pub_wire),
-        "registrationId": 888,
-        "signedPreKey": { "keyId": 200, "publicKey": STANDARD.encode(&new_spk_pub), "signature": STANDARD.encode(&new_spk_sig) },
-        "oneTimePreKeys": []
-    });
-
     let resp = app_c
         .client
-        .post(format!("{}/v1/devices/keys", app_c.server_url))
-        .header("Authorization", format!("Bearer {}", user_alice.token))
-        .json(&takeover_payload)
+        .delete(format!("{}/v1/devices/{}", app_c.server_url, linked.device_id))
+        .header("Authorization", format!("Bearer {}", linked.token))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    let mut sessions = [("A1", &mut ws_a1), ("B1", &mut ws_b1), ("B2", &mut ws_b2)];
-    for (name, ws) in &mut sessions {
-        let mut disconnected = false;
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_secs(5) {
-            match ws.receive_raw_timeout(Duration::from_millis(100)).await {
-                Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)) | Err(_)) | None => {
-                    disconnected = true;
-                    break;
-                }
-                _ => {}
-            }
-        }
-        assert!(disconnected, "Alice session {name} was not disconnected");
-    }
+    ws_a1.assert_closed().await;
+    ws_b1.assert_closed().await;
+    ws_b2.assert_closed().await;
 
     ws_bob.sink.send(tokio_tungstenite::tungstenite::Message::Ping(vec![1].into())).await.unwrap();
     let pong = ws_bob.receive_pong().await;

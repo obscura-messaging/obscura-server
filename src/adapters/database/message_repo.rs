@@ -195,14 +195,4 @@ impl MessageRepository {
         .await?;
         Ok(result.rows_affected())
     }
-
-    /// Deletes all messages for a specific device (Inbox wipe).
-    ///
-    /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
-    #[tracing::instrument(level = "debug", skip(self, conn))]
-    pub(crate) async fn delete_all_for_device(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<u64> {
-        let result = sqlx::query("DELETE FROM messages WHERE device_id = $1").bind(device_id).execute(conn).await?;
-        Ok(result.rows_affected())
-    }
 }

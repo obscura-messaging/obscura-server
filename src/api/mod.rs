@@ -10,6 +10,7 @@ use crate::services::gateway::GatewayService;
 use crate::services::health_service::HealthService;
 use crate::services::key_service::KeyService;
 use crate::services::message_service::MessageService;
+use crate::services::provisioning_service::ProvisioningService;
 use crate::services::push_token_service::PushTokenService;
 use crate::services::rate_limit_service::RateLimitService;
 use axum::body::Body;
@@ -51,6 +52,7 @@ pub(crate) struct AppState {
     pub(crate) auth_service: AuthService,
     pub(crate) message_service: MessageService,
     pub(crate) gateway_service: GatewayService,
+    pub(crate) provisioning_service: ProvisioningService,
     pub(crate) push_token_service: PushTokenService,
     pub(crate) rate_limit_service: RateLimitService,
     pub(crate) submission_cache: RedisCache,
@@ -69,6 +71,7 @@ impl AppState {
             auth_service: services.auth_service,
             message_service: services.message_service,
             gateway_service: services.gateway_service,
+            provisioning_service: services.provisioning_service,
             push_token_service: services.push_token_service,
             rate_limit_service: services.rate_limit_service,
             submission_cache: services.submission_cache,
@@ -108,6 +111,7 @@ fn auth_router(
         .route("/sessions", post(auth::login))
         .route("/sessions", delete(auth::logout))
         .route("/sessions/refresh", post(auth::refresh))
+        .route("/account/reset", post(devices::reset_account))
         .layer(GovernorLayer::new(auth_conf))
         .layer(standard_timeout)
 }
@@ -134,6 +138,7 @@ fn api_router(
             delete(devices::delete_device).get(devices::get_device).put(devices::update_device),
         )
         .route("/devices/keys", post(keys::upload_keys))
+        .route("/devices/provisioning-code", post(devices::create_provisioning_code))
         .route("/users/{userId}", get(keys::get_pre_key_bundles))
         .route("/messages", post(messages::send_messages))
         .route("/gateway", get(gateway::websocket_handler))

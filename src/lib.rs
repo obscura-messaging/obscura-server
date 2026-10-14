@@ -13,6 +13,7 @@ use crate::adapters::database::backup_repo::BackupRepository;
 use crate::adapters::database::device_repo::DeviceRepository;
 use crate::adapters::database::key_repo::KeyRepository;
 use crate::adapters::database::message_repo::MessageRepository;
+use crate::adapters::database::provisioning_code_repo::ProvisioningCodeRepository;
 use crate::adapters::database::push_token_repo::PushTokenRepository;
 use crate::adapters::database::refresh_token_repo::RefreshTokenRepository;
 use crate::adapters::database::user_repo::UserRepository;
@@ -30,6 +31,7 @@ use crate::services::health_service::HealthService;
 use crate::services::key_service::KeyService;
 use crate::services::message_service::MessageService;
 use crate::services::notification_service::NotificationService;
+use crate::services::provisioning_service::ProvisioningService;
 use crate::services::push_token_service::PushTokenService;
 use crate::services::rate_limit_service::RateLimitService;
 use crate::workers::{
@@ -51,6 +53,7 @@ pub struct Adapters {
     pub device: DeviceRepository,
     pub key: KeyRepository,
     pub message: MessageRepository,
+    pub provisioning_code: ProvisioningCodeRepository,
     pub user: UserRepository,
     pub refresh: RefreshTokenRepository,
     pub attachment: AttachmentRepository,
@@ -67,6 +70,7 @@ impl std::fmt::Debug for Adapters {
             .field("device", &self.device)
             .field("key", &self.key)
             .field("message", &self.message)
+            .field("provisioning_code", &self.provisioning_code)
             .field("user", &self.user)
             .field("refresh", &self.refresh)
             .field("attachment", &self.attachment)
@@ -87,6 +91,7 @@ pub struct Services {
     pub(crate) message_service: MessageService,
     pub(crate) gateway_service: GatewayService,
     pub notification_service: NotificationService,
+    pub provisioning_service: ProvisioningService,
     pub push_token_service: PushTokenService,
     pub rate_limit_service: RateLimitService,
     pub submission_cache: RedisCache,
@@ -239,6 +244,7 @@ impl AppBuilder {
             device: DeviceRepository::new(),
             key: KeyRepository::new(),
             message: MessageRepository::new(),
+            provisioning_code: ProvisioningCodeRepository::new(),
             user: UserRepository::new(),
             refresh: RefreshTokenRepository::new(),
             attachment: AttachmentRepository::new(),
@@ -286,12 +292,15 @@ impl AppBuilder {
         let device_service = DeviceService::new(
             pool.clone(),
             adapters.device.clone(),
-            adapters.message.clone(),
+            adapters.user.clone(),
+            adapters.provisioning_code.clone(),
             key_service.clone(),
             auth_service.clone(),
             notifier.clone(),
             config.auth.max_devices_per_user,
         );
+        let provisioning_service =
+            ProvisioningService::new(pool.clone(), adapters.device.clone(), adapters.provisioning_code.clone());
         let gateway_service = GatewayService::new(
             message_service.clone(),
             key_service.clone(),
@@ -330,6 +339,7 @@ impl AppBuilder {
             message_service,
             gateway_service,
             notification_service: notifier.clone(),
+            provisioning_service,
             push_token_service,
             rate_limit_service,
             submission_cache,

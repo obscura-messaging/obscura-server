@@ -56,7 +56,7 @@ async fn test_push_visibility_timeout_retry() {
             .await
             .unwrap();
 
-        sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)")
+        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
             .bind(user_id)
             .execute(&mut *conn)
             .await

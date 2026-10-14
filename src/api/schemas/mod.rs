@@ -7,4 +7,5 @@ pub mod gateway;
 pub mod health;
 pub mod keys;
 pub mod messaging;
+pub mod provisioning;
 pub mod push_tokens;

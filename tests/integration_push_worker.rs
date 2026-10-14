@@ -56,7 +56,11 @@ async fn test_push_worker_invalidates_unregistered_tokens() {
             .await
             .unwrap();
 
-        sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)").bind(user_id).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let repo = PushTokenRepository::new();
         let mut conn = pool.acquire().await.unwrap();
@@ -137,7 +141,11 @@ async fn test_push_worker_removes_job_when_user_has_no_token() {
             .await
             .unwrap();
 
-        sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)").bind(user_id).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 
     // 2. Schedule a push job

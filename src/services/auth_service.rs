@@ -258,11 +258,27 @@ impl AuthService {
         Ok(())
     }
 
+    /// Verifies a JWT access token and that its device, if any, still exists. Returns (`user_id`, `device_id`).
+    ///
+    /// # Errors
+    /// Returns `AppError::AuthError` if the token is invalid, expired, or names a deleted device.
+    /// Returns `AppError::Database` if the device lookup fails.
+    pub(crate) async fn authenticate(&self, jwt: &Jwt) -> Result<(Uuid, Option<Uuid>)> {
+        let (user_id, device_id) = self.verify_token(jwt)?;
+        if let Some(device_id) = device_id {
+            let mut conn = self.pool.acquire().await?;
+            if !self.device_repo.belongs_to_user(&mut conn, device_id, user_id).await? {
+                return Err(AppError::AuthError);
+            }
+        }
+        Ok((user_id, device_id))
+    }
+
     /// Verifies a JWT access token and returns (`user_id`, `device_id`).
     ///
     /// # Errors
     /// Returns `AppError::AuthError` if the token is invalid or expired.
-    pub(crate) fn verify_token(&self, jwt: &Jwt) -> Result<(Uuid, Option<Uuid>)> {
+    fn verify_token(&self, jwt: &Jwt) -> Result<(Uuid, Option<Uuid>)> {
         let token_data = decode::<Claims>(
             jwt.as_str(),
             &DecodingKey::from_secret(self.config.jwt_secret.as_bytes()),
@@ -280,12 +296,12 @@ impl AuthService {
         Ok(Jwt(token))
     }
 
-    fn generate_opaque_token() -> String {
+    pub(crate) fn generate_opaque_token() -> String {
         let bytes = rand::random::<[u8; 32]>();
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
     }
 
-    fn hash_opaque_token(token: &str) -> String {
+    pub(crate) fn hash_opaque_token(token: &str) -> String {
         let mut hasher = Sha256::new();
         hasher.update(token.as_bytes());
         hex::encode(hasher.finalize())

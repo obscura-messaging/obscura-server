@@ -237,15 +237,23 @@ pub fn generate_registration_payload(
 /// Generates a device creation payload (keys without username/password) for POST /v1/devices.
 pub fn generate_device_payload(reg_id: u32, otpk_count: usize) -> (serde_json::Value, [u8; 32]) {
     let identity_key = generate_signing_key();
-    let ik_priv = PrivateKey(identity_key);
-    let (_, ik_pub_ed) = ik_priv.calculate_key_pair(0);
+    (generate_device_payload_for(&identity_key, reg_id, otpk_count), identity_key)
+}
+
+/// Encodes the public half of an identity key in the 33-byte wire format, base64.
+pub fn identity_public_key(identity_key: &[u8; 32]) -> String {
+    let (_, ik_pub_ed) = PrivateKey(*identity_key).calculate_key_pair(0);
     let ik_pub_mont =
         curve25519_dalek::edwards::CompressedEdwardsY(ik_pub_ed).decompress().unwrap().to_montgomery().to_bytes();
     let mut ik_pub_wire = [0u8; 33];
     ik_pub_wire[0] = 0x05;
     ik_pub_wire[1..].copy_from_slice(&ik_pub_mont);
+    STANDARD.encode(ik_pub_wire)
+}
 
-    let (spk_pub, spk_sig) = generate_signed_pre_key(&identity_key);
+/// Generates a device creation payload whose keys belong to the given identity key.
+pub fn generate_device_payload_for(identity_key: &[u8; 32], reg_id: u32, otpk_count: usize) -> serde_json::Value {
+    let (spk_pub, spk_sig) = generate_signed_pre_key(identity_key);
 
     let mut otpk = Vec::new();
     for i in 0..otpk_count {
@@ -264,21 +272,20 @@ pub fn generate_device_payload(reg_id: u32, otpk_count: usize) -> (serde_json::V
         }));
     }
 
-    let payload = json!({
+    json!({
         "registrationId": reg_id,
-        "identityKey": STANDARD.encode(ik_pub_wire),
+        "identityKey": identity_public_key(identity_key),
         "signedPreKey": {
             "keyId": 1,
             "publicKey": STANDARD.encode(&spk_pub),
             "signature": STANDARD.encode(&spk_sig)
         },
         "oneTimePreKeys": otpk
-    });
-
-    (payload, identity_key)
+    })
 }
 
 pub struct TestUser {
+    pub username: String,
     pub user_id: Uuid,
     pub device_id: Uuid,
     pub token: String,
@@ -429,7 +436,62 @@ impl TestApp {
         let refresh_token = body["refreshToken"].as_str().unwrap_or_default().to_string();
         let device_id = Uuid::parse_str(body["deviceId"].as_str().unwrap()).unwrap();
 
-        TestUser { user_id, device_id, token, refresh_token, identity_key }
+        TestUser { username: username.to_string(), user_id, device_id, token, refresh_token, identity_key }
+    }
+
+    /// Logs in with the test password and returns a user-scoped token.
+    pub(crate) async fn login_user_scoped(&self, username: &str) -> String {
+        let resp = self
+            .client
+            .post(format!("{}/v1/sessions", self.server_url))
+            .json(&json!({ "username": username, "password": "password12345" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200, "Login failed: {}", resp.text().await.unwrap());
+        resp.json::<serde_json::Value>().await.unwrap()["token"].as_str().unwrap().to_string()
+    }
+
+    /// Issues a provisioning code with the given (primary) device token.
+    pub(crate) async fn issue_provisioning_code(&self, token: &str) -> String {
+        let resp = self
+            .client
+            .post(format!("{}/v1/devices/provisioning-code", self.server_url))
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 201, "Provisioning code failed: {}", resp.text().await.unwrap());
+        resp.json::<serde_json::Value>().await.unwrap()["code"].as_str().unwrap().to_string()
+    }
+
+    /// Registers a device linked to the primary's account, sharing its identity key.
+    pub(crate) async fn link_device(&self, primary: &TestUser) -> TestUser {
+        let code = self.issue_provisioning_code(&primary.token).await;
+        let user_token = self.login_user_scoped(&primary.username).await;
+
+        let mut payload = generate_device_payload_for(&primary.identity_key, 456, 1);
+        payload["provisioningCode"] = json!(code);
+
+        let resp = self
+            .client
+            .post(format!("{}/v1/devices", self.server_url))
+            .header("Authorization", format!("Bearer {user_token}"))
+            .json(&payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 201, "Linking device failed: {}", resp.text().await.unwrap());
+        let body = resp.json::<serde_json::Value>().await.unwrap();
+
+        TestUser {
+            username: primary.username.clone(),
+            user_id: primary.user_id,
+            device_id: Uuid::parse_str(body["deviceId"].as_str().unwrap()).unwrap(),
+            token: body["token"].as_str().unwrap().to_string(),
+            refresh_token: body["refreshToken"].as_str().unwrap().to_string(),
+            identity_key: primary.identity_key,
+        }
     }
 
     pub(crate) async fn send_message(&self, token: &str, device_id: Uuid, content: &[u8]) {
@@ -572,6 +634,20 @@ pub struct TestWsClient {
 }
 
 impl TestWsClient {
+    /// Waits until the server closes the connection.
+    pub(crate) async fn assert_closed(&mut self) {
+        let closed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match self.rx_raw.recv().await {
+                    Some(Ok(Message::Close(_)) | Err(_)) | None => return,
+                    Some(Ok(_)) => {}
+                }
+            }
+        })
+        .await;
+        assert!(closed.is_ok(), "WebSocket was not closed by the server");
+    }
+
     pub(crate) async fn receive_pong(&mut self) -> Option<Vec<u8>> {
         tokio::time::timeout(Duration::from_secs(5), self.rx_pong.recv()).await.ok().flatten().map(|b| b.to_vec())
     }

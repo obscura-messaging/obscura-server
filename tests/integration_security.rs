@@ -38,6 +38,8 @@ async fn test_unauthenticated_access_denied() {
         ("POST", format!("{}/v1/backup", app.server_url)),
         ("PUT", format!("{}/v1/push-tokens", app.server_url)),
         ("POST", format!("{}/v1/gateway/ticket", app.server_url)),
+        ("POST", format!("{}/v1/devices/provisioning-code", app.server_url)),
+        ("POST", format!("{}/v1/account/reset", app.server_url)),
     ];
 
     for (method, url) in endpoints {
@@ -129,6 +131,9 @@ async fn test_user_scoped_token_rejected_on_device_endpoints() {
         ("POST", format!("{}/v1/gateway/ticket", app.server_url)),
         // Push tokens
         ("PUT", format!("{}/v1/push-tokens", app.server_url)),
+        // Device linking
+        ("POST", format!("{}/v1/devices/provisioning-code", app.server_url)),
+        ("DELETE", format!("{}/v1/devices/{}", app.server_url, Uuid::new_v4())),
         // Backup (all three operations)
         ("POST", format!("{}/v1/backup", app.server_url)),
         ("GET", format!("{}/v1/backup", app.server_url)),
@@ -141,6 +146,7 @@ async fn test_user_scoped_token_rejected_on_device_endpoints() {
             "POST" => app.client.post(url),
             "PUT" => app.client.put(url),
             "HEAD" => app.client.head(url),
+            "DELETE" => app.client.delete(url),
             _ => panic!("Unsupported method"),
         };
         req = req.header("Authorization", format!("Bearer {user_token}"));

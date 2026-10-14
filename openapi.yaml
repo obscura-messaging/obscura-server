@@ -67,6 +67,8 @@ paths:
       summary: Fetch PreKey Bundles for all of a user's devices.
       description: |
         Returns an array of PreKey bundles, one per device registered to the target user.
+        Every bundle carries the account identity key, which all of the user's devices share;
+        the registration id, signed prekey and one-time prekey are per device.
         Server atomically consumes one One-Time PreKey per device (if available).
         Requires a Device-Scoped JWT (the caller's own device must be identified).
       tags: [Users]
@@ -194,6 +196,45 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  /v1/account/reset:
+    post:
+      operationId: resetAccount
+      summary: Reset the account's devices and identity.
+      description: |
+        Deletes all of the account's devices, with their keys, queued messages, push tokens,
+        backups, refresh tokens and provisioning codes, and clears the account identity key.
+        Live gateway connections of those devices are closed and their access tokens stop working.
+        The next `POST /v1/devices` registers a new primary device with a new identity key.
+
+        Requires a User-Scoped JWT (from a password login); a Device-Scoped JWT is rejected with 403.
+        Rate limited like registration and login.
+      tags: [Sessions]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Account reset.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          description: '`User-scoped token required`: the token is Device-Scoped.'
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '408':
+          $ref: '#/components/responses/RequestTimeoutError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
   # --- Devices ---
   /v1/devices:
     post:
@@ -203,7 +244,15 @@ paths:
         Creates a new device for the authenticated user, uploads its cryptographic keys,
         and returns a Device-Scoped JWT. Requires a User-Scoped or Device-Scoped JWT.
 
-        The server enforces a configurable maximum number of devices per user.
+        All of an account's devices share one identity key, the account identity.
+        - **Account without devices:** the device becomes the primary device and its `identityKey`
+          becomes the account identity, replacing any previous one.
+        - **Account with devices:** the request must carry a valid, unexpired, unused `provisioningCode`
+          issued by the account's primary device, and `identityKey` must equal the account identity.
+          The code is consumed when the device is created. The device is not primary.
+
+        The signed prekey must verify against `identityKey`.
+        The server enforces a configurable maximum number of devices per user, counting all devices.
       tags: [Devices]
       security:
         - bearerAuth: []
@@ -228,7 +277,20 @@ paths:
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '403':
-          $ref: '#/components/responses/ForbiddenError'
+          description: |
+            The device cannot be registered. The `error` is one of:
+            - `Device limit reached. Maximum allowed is <n>.`
+            - `Invalid provisioning code`: the account has devices and the code is missing, unknown,
+              expired, already used, or issued for another account.
+            - `Identity key does not match the account identity`: the account has devices and
+              `identityKey` is not the account identity.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '408':
           $ref: '#/components/responses/RequestTimeoutError'
         '429':
@@ -239,6 +301,8 @@ paths:
     get:
       operationId: listDevices
       summary: List all devices for the authenticated user.
+      description: |
+        Lists every device of the account, marking the primary device with `isPrimary`.
       tags: [Devices]
       security:
         - bearerAuth: []
@@ -337,8 +401,15 @@ paths:
       operationId: deleteDevice
       summary: Delete a device.
       description: |
-        Deletes a device owned by the authenticated user. Cascade delete removes
-        all associated keys, pending messages, and push tokens.
+        Deletes a device of the authenticated user's account. Requires a Device-Scoped JWT.
+        - The primary device may delete any other device of the account.
+        - Any other device may delete itself.
+        - The primary device cannot be deleted this way; use `POST /v1/account/reset`.
+
+        Cascade delete removes the device's keys, the messages queued for it, its push token,
+        backup, refresh tokens and provisioning codes. Messages the device sent that are still
+        queued for other devices are kept. The device's access tokens stop working immediately
+        and its live gateway connections are closed.
       tags: [Devices]
       security:
         - bearerAuth: []
@@ -357,6 +428,19 @@ paths:
               $ref: '#/components/headers/x-request-id'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          description: |
+            The caller may not delete this device. The `error` is one of:
+            - `Device-scoped token required`
+            - `The primary device cannot be deleted; reset the account instead`
+            - `Only the primary device can delete other devices`
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           $ref: '#/components/responses/NotFoundError'
         '408':
@@ -367,19 +451,14 @@ paths:
   /v1/devices/keys:
     post:
       operationId: uploadKeys
-      summary: Upload PreKeys or Perform Device Takeover.
+      summary: Upload PreKeys.
       description: |
-        Uploads new Signed PreKeys and One-Time PreKeys for the authenticated device.
+        Uploads a new Signed PreKey and One-Time PreKeys for the authenticated device.
         Requires a Device-Scoped JWT.
 
-        **Device Takeover:**
-        If an `identityKey` is provided and it *differs* from the stored key for this device:
-        - Replaces the Identity Key.
-        - Deletes ALL old keys (Signed and One-Time).
-        - Deletes ALL pending messages for this device.
-        - Disconnects active WebSockets for this device.
-
-        If `identityKey` matches the stored key or is omitted, it acts as a standard key refill (appending new keys).
+        The signed prekey must verify against the account identity key. An `identityKey`, if present,
+        must equal the account identity (`400 Identity key does not match the account identity`);
+        it cannot be changed here.
       tags: [Devices]
       security:
         - bearerAuth: []
@@ -390,7 +469,7 @@ paths:
               $ref: '#/components/schemas/PreKeyUploadRequest'
       responses:
         '200':
-          description: Keys updated or takeover successful.
+          description: Keys updated.
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'
@@ -407,6 +486,49 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  /v1/devices/provisioning-code:
+    post:
+      operationId: createProvisioningCode
+      summary: Issue a provisioning code.
+      description: |
+        Issues a code that authorizes registering one more device on the account
+        (`provisioningCode` in `POST /v1/devices`). Requires a Device-Scoped JWT of the primary device.
+
+        A code is single use, expires after 10 minutes and is bound to the account. Issuing a new code
+        does not invalidate older unexpired ones. The server stores only a hash of the code.
+      tags: [Provisioning]
+      security:
+        - bearerAuth: []
+      responses:
+        '201':
+          description: Code issued.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProvisioningCodeResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          description: |
+            The caller is not the primary device. The `error` is one of:
+            - `Device-scoped token required`
+            - `Primary device required`
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '408':
+          $ref: '#/components/responses/RequestTimeoutError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
   # --- Messaging (REST Upstream) ---
   /v1/messages:
@@ -846,7 +968,7 @@ components:
 
   responses:
     UnauthorizedError:
-      description: Unauthorized (Invalid or missing token).
+      description: Unauthorized (Invalid or missing token, or a token of a deleted device).
       headers:
         x-request-id:
           $ref: '#/components/headers/x-request-id'
@@ -1053,6 +1175,9 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/OneTimePreKey'
+        provisioningCode:
+          type: string
+          description: Required when the account already has devices. Issued by `POST /v1/devices/provisioning-code`.
 
     DeviceResponse:
       type: object
@@ -1063,6 +1188,9 @@ components:
         name:
           type: string
           nullable: true
+        isPrimary:
+          type: boolean
+          description: Whether this is the account's primary device, the only one that links or unlinks devices.
         createdAt:
           type: string
           format: date-time
@@ -1093,11 +1221,7 @@ components:
         identityKey:
           type: string
           format: byte
-          description: Optional Base64 Identity Key. Triggers takeover if changed.
-        registrationId:
-          type: integer
-          format: int32
-          description: Required if identityKey is provided.
+          description: Optional Base64 Identity Key. Must equal the account identity key.
         signedPreKey:
           description: Signed Pre-Key. ID must be strictly greater than the current stored ID.
           allOf:
@@ -1120,6 +1244,7 @@ components:
         identityKey:
           type: string
           format: byte
+          description: The account identity key, the same for every device of the user.
         signedPreKey:
           $ref: '#/components/schemas/SignedPreKey'
         oneTimePreKey:
@@ -1171,6 +1296,18 @@ components:
           type: integer
           format: int64
           description: UNIX timestamp of when the file will be deleted.
+
+    ProvisioningCodeResponse:
+      type: object
+      required: [code, expiresAt]
+      properties:
+        code:
+          type: string
+          description: Single-use provisioning code.
+        expiresAt:
+          type: integer
+          format: int64
+          description: UNIX timestamp after which the code is no longer accepted.
 
     TicketResponse:
       type: object

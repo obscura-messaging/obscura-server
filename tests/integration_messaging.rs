@@ -19,7 +19,6 @@ use common::TestApp;
 use futures::SinkExt;
 use obscura_server::proto::obscura::v1 as proto;
 use prost::Message as ProstMessage;
-use serde_json::json;
 
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
@@ -599,30 +598,9 @@ async fn test_multi_device_messaging() {
 
     // 1. Register Bob and give him TWO devices
     let bob = app.register_user_with_keys(&username, 111, 5).await;
-
-    // Login to get user token for creating second device
-    let login_payload = json!({
-        "username": username,
-        "password": "password12345"
-    });
-    let login_resp =
-        app.client.post(format!("{}/v1/sessions", app.server_url)).json(&login_payload).send().await.unwrap();
-    let user_token = login_resp.json::<serde_json::Value>().await.unwrap()["token"].as_str().unwrap().to_string();
-
-    // Create device 2
-    let (device2_payload, _) = common::generate_device_payload(222, 5);
-    let device2_resp = app
-        .client
-        .post(format!("{}/v1/devices", app.server_url))
-        .header("Authorization", format!("Bearer {}", user_token))
-        .json(&device2_payload)
-        .send()
-        .await
-        .unwrap();
-
-    let device2_json: serde_json::Value = device2_resp.json().await.unwrap();
-    let device2_token = device2_json["token"].as_str().unwrap().to_string();
-    let device2_id = Uuid::parse_str(device2_json["deviceId"].as_str().unwrap()).unwrap();
+    let bob_device2 = app.link_device(&bob).await;
+    let device2_token = bob_device2.token;
+    let device2_id = bob_device2.device_id;
 
     // 2. Register Alice (sender)
     let alice = app.register_user(&common::generate_username("alice_multi")).await;

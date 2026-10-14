@@ -1,6 +1,7 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::device_repo::DeviceRepository;
-use crate::adapters::database::message_repo::MessageRepository;
+use crate::adapters::database::provisioning_code_repo::ProvisioningCodeRepository;
+use crate::adapters::database::user_repo::UserRepository;
 use crate::domain::auth_session::AuthSession;
 use crate::domain::crypto::PublicKey;
 use crate::domain::device::Device;
@@ -8,16 +9,19 @@ use crate::domain::keys::{OneTimePreKey, SignedPreKey};
 use crate::domain::notification::UserEvent;
 use crate::error::{AppError, Result};
 use crate::services::auth_service::AuthService;
-use crate::services::key_service::{KeyService, KeyUploadParams};
+use crate::services::key_service::{IDENTITY_KEY_MISMATCH, KeyService};
 use crate::services::notification_service::NotificationService;
 use opentelemetry::{global, metrics::Counter};
 use uuid::Uuid;
+
+pub(crate) const INVALID_PROVISIONING_CODE: &str = "Invalid provisioning code";
+pub(crate) const DEVICE_SCOPE_REQUIRED: &str = "Device-scoped token required";
 
 #[derive(Clone, Debug)]
 struct Metrics {
     devices_created: Counter<u64>,
     devices_deleted: Counter<u64>,
-    takeovers: Counter<u64>,
+    account_resets: Counter<u64>,
 }
 
 impl Metrics {
@@ -32,19 +36,30 @@ impl Metrics {
                 .u64_counter("obscura_devices_deleted_total")
                 .with_description("Total number of devices deleted")
                 .build(),
-            takeovers: meter
-                .u64_counter("obscura_key_takeovers_total")
-                .with_description("Total number of device takeover events")
+            account_resets: meter
+                .u64_counter("obscura_account_resets_total")
+                .with_description("Total number of account resets")
                 .build(),
         }
     }
+}
+
+#[derive(Debug)]
+pub struct NewDevice {
+    pub name: Option<String>,
+    pub identity_key: PublicKey,
+    pub registration_id: i32,
+    pub signed_pre_key: SignedPreKey,
+    pub one_time_pre_keys: Vec<OneTimePreKey>,
+    pub provisioning_code: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct DeviceService {
     pool: DbPool,
     device_repo: DeviceRepository,
-    message_repo: MessageRepository,
+    user_repo: UserRepository,
+    code_repo: ProvisioningCodeRepository,
     key_service: KeyService,
     auth_service: AuthService,
     notifier: NotificationService,
@@ -54,10 +69,12 @@ pub struct DeviceService {
 
 impl DeviceService {
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pool: DbPool,
         device_repo: DeviceRepository,
-        message_repo: MessageRepository,
+        user_repo: UserRepository,
+        code_repo: ProvisioningCodeRepository,
         key_service: KeyService,
         auth_service: AuthService,
         notifier: NotificationService,
@@ -66,7 +83,8 @@ impl DeviceService {
         Self {
             pool,
             device_repo,
-            message_repo,
+            user_repo,
+            code_repo,
             key_service,
             auth_service,
             notifier,
@@ -75,94 +93,72 @@ impl DeviceService {
         }
     }
 
-    /// Creates a new device, uploads its keys, and returns a full JWT.
+    /// Creates a device with its keys and returns a device-scoped session.
+    /// The first device of an account becomes the primary and sets the account identity; any later device
+    /// must present the account identity and a provisioning code, which is consumed.
     ///
     /// # Errors
+    /// Returns `AppError::Forbidden` if the device limit is reached, the provisioning code is invalid, or the
+    /// identity key is not the account identity.
+    /// Returns `AppError::BadRequest` if the keys do not verify.
     /// Returns `AppError::Database` if any database operation fails.
     #[tracing::instrument(
-        skip(self, identity_key, signed_pre_key, one_time_pre_keys),
+        skip(self, device),
         fields(user.id = %user_id, device.id = tracing::field::Empty),
         err(level = "warn")
     )]
-    pub(crate) async fn create_device(
-        &self,
-        user_id: Uuid,
-        name: Option<String>,
-        identity_key: PublicKey,
-        registration_id: i32,
-        signed_pre_key: SignedPreKey,
-        one_time_pre_keys: Vec<OneTimePreKey>,
-    ) -> Result<AuthSession> {
-        let mut conn = self.pool.acquire().await?;
-        let current_device_count = self.device_repo.count_by_user(&mut conn, user_id).await?;
-        if current_device_count >= self.max_devices_per_user {
+    pub(crate) async fn create_device(&self, user_id: Uuid, device: NewDevice) -> Result<AuthSession> {
+        let mut tx = self.pool.begin().await?;
+
+        let account_identity = self.user_repo.lock_identity_key(&mut tx, user_id).await?;
+        let device_count = self.device_repo.count_by_user(&mut tx, user_id).await?;
+        if device_count >= self.max_devices_per_user {
             return Err(AppError::Forbidden(format!(
                 "Device limit reached. Maximum allowed is {}.",
                 self.max_devices_per_user
             )));
         }
-        drop(conn);
 
-        let mut tx = self.pool.begin().await?;
+        let is_primary = device_count == 0;
+        if is_primary {
+            self.user_repo.set_identity_key(&mut tx, user_id, Some(&device.identity_key)).await?;
+        } else {
+            if account_identity.as_ref() != Some(&device.identity_key) {
+                return Err(AppError::Forbidden(IDENTITY_KEY_MISMATCH.into()));
+            }
+            let consumed = match device.provisioning_code.as_deref() {
+                Some(code) => self.code_repo.consume(&mut tx, user_id, &AuthService::hash_opaque_token(code)).await?,
+                None => false,
+            };
+            if !consumed {
+                return Err(AppError::Forbidden(INVALID_PROVISIONING_CODE.into()));
+            }
+        }
 
-        // 1. Create Device
-        let device = self.device_repo.create(&mut tx, user_id, name.as_deref()).await?;
+        let created = self
+            .device_repo
+            .create(&mut tx, user_id, device.name.as_deref(), device.registration_id, is_primary)
+            .await?;
+        tracing::Span::current().record("device.id", tracing::field::display(created.id));
 
-        tracing::Span::current().record("device.id", tracing::field::display(device.id));
+        self.key_service
+            .store_new_device_keys(
+                &mut tx,
+                created.id,
+                &device.identity_key,
+                &device.signed_pre_key,
+                &device.one_time_pre_keys,
+            )
+            .await?;
 
-        // 2. Upload Keys
-        let key_params = KeyUploadParams {
-            device_id: device.id,
-            identity_key: Some(identity_key),
-            registration_id: Some(registration_id),
-            signed_pre_key,
-            one_time_pre_keys,
-        };
-
-        self.key_service.upsert_keys(&mut tx, key_params).await?;
-
-        // 3. Create Session with full JWT (includes device_id)
-        let session = self.auth_service.create_session(&mut tx, user_id, Some(device.id)).await?;
+        let session = self.auth_service.create_session(&mut tx, user_id, Some(created.id)).await?;
 
         tx.commit().await?;
 
-        tracing::info!("Device provisioned successfully");
+        tracing::info!(is_primary, "Device provisioned successfully");
         self.metrics.devices_created.add(1, &[]);
 
         Ok(session)
-    }
-
-    /// Uploads new keys for an existing device. Handles takeover if identity key changes.
-    ///
-    /// # Errors
-    /// Returns `AppError::BadRequest` if key validation fails.
-    /// Returns `AppError::Database` if the database operation fails.
-    #[tracing::instrument(
-        skip(self, params),
-        fields(device.id = %params.device_id),
-        err(level = "warn")
-    )]
-    pub(crate) async fn upload_keys(&self, params: KeyUploadParams) -> Result<()> {
-        let device_id = params.device_id;
-
-        let mut tx = self.pool.begin().await?;
-
-        let is_takeover = self.key_service.upsert_keys(&mut tx, params).await?;
-
-        if is_takeover {
-            self.message_repo.delete_all_for_device(&mut tx, device_id).await?;
-        }
-
-        tx.commit().await?;
-
-        if is_takeover {
-            tracing::warn!("Device takeover detected");
-            self.metrics.takeovers.add(1, &[]);
-
-            self.notifier.notify(&[device_id], UserEvent::Disconnect).await;
-        }
-
-        Ok(())
     }
 
     /// Lists all devices for a user.
@@ -175,21 +171,69 @@ impl DeviceService {
         self.device_repo.find_by_user(&mut conn, user_id).await
     }
 
-    /// Deletes a device owned by the user. Cascade delete handles keys/messages/push tokens.
+    /// Deletes a device of the caller's account and closes its gateway connection. The primary may delete
+    /// any other device, and any other device may delete itself. The primary itself is only removed by an
+    /// account reset.
     ///
     /// # Errors
     /// Returns `AppError::NotFound` if the device doesn't exist or isn't owned by the user.
-    #[tracing::instrument(skip(self), fields(user.id = %user_id, device.id = %device_id), err)]
-    pub(crate) async fn delete_device(&self, device_id: Uuid, user_id: Uuid) -> Result<()> {
-        let mut conn = self.pool.acquire().await?;
-        let deleted = self.device_repo.delete(&mut conn, device_id, user_id).await?;
+    /// Returns `AppError::Forbidden` if the caller may not delete the device.
+    #[tracing::instrument(skip(self), fields(user.id = %user_id, device.id = %device_id), err(level = "warn"))]
+    pub(crate) async fn delete_device(
+        &self,
+        user_id: Uuid,
+        caller_device_id: Option<Uuid>,
+        device_id: Uuid,
+    ) -> Result<()> {
+        let caller_device_id = caller_device_id.ok_or_else(|| AppError::Forbidden(DEVICE_SCOPE_REQUIRED.into()))?;
 
-        if !deleted {
+        let mut conn = self.pool.acquire().await?;
+        let target = self.device_repo.find_by_id(&mut conn, device_id, user_id).await?.ok_or(AppError::NotFound)?;
+        if target.is_primary {
+            return Err(AppError::Forbidden("The primary device cannot be deleted; reset the account instead".into()));
+        }
+        if caller_device_id != device_id {
+            let caller = self.device_repo.find_by_id(&mut conn, caller_device_id, user_id).await?;
+            if !caller.is_some_and(|c| c.is_primary) {
+                return Err(AppError::Forbidden("Only the primary device can delete other devices".into()));
+            }
+        }
+
+        if !self.device_repo.delete(&mut conn, device_id, user_id).await? {
             return Err(AppError::NotFound);
         }
 
+        self.notifier.notify(&[device_id], UserEvent::Disconnect).await;
+
         tracing::info!("Device deleted");
         self.metrics.devices_deleted.add(1, &[]);
+
+        Ok(())
+    }
+
+    /// Deletes every device of the account and clears the account identity, so the next registered device
+    /// becomes a new primary. Requires a user-scoped token, which only a password login issues.
+    ///
+    /// # Errors
+    /// Returns `AppError::Forbidden` if the token is device-scoped.
+    /// Returns `AppError::Database` if any database operation fails.
+    #[tracing::instrument(skip(self), fields(user.id = %user_id), err(level = "warn"))]
+    pub(crate) async fn reset_account(&self, user_id: Uuid, caller_device_id: Option<Uuid>) -> Result<()> {
+        if caller_device_id.is_some() {
+            return Err(AppError::Forbidden("User-scoped token required".into()));
+        }
+
+        let mut tx = self.pool.begin().await?;
+        self.user_repo.lock_identity_key(&mut tx, user_id).await?;
+        let deleted = self.device_repo.delete_all_for_user(&mut tx, user_id).await?;
+        self.user_repo.set_identity_key(&mut tx, user_id, None).await?;
+        tx.commit().await?;
+
+        self.notifier.notify(&deleted, UserEvent::Disconnect).await;
+
+        tracing::info!(devices = deleted.len(), "Account reset");
+        self.metrics.account_resets.add(1, &[]);
+        self.metrics.devices_deleted.add(deleted.len() as u64, &[]);
 
         Ok(())
     }
@@ -204,7 +248,7 @@ impl DeviceService {
         self.device_repo.find_by_id(&mut conn, device_id, user_id).await?.ok_or(AppError::NotFound)
     }
 
-    /// Updates a device's name! verifying ownership.
+    /// Updates a device's name, verifying ownership.
     ///
     /// # Errors
     /// Returns `AppError::NotFound` if the device doesn't exist or isn't owned by the user.

@@ -8,5 +8,6 @@ pub mod health_service;
 pub mod key_service;
 pub mod message_service;
 pub mod notification_service;
+pub mod provisioning_service;
 pub mod push_token_service;
 pub mod rate_limit_service;

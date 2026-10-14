@@ -3,6 +3,7 @@ pub mod backup_repo;
 pub mod device_repo;
 pub mod key_repo;
 pub mod message_repo;
+pub mod provisioning_code_repo;
 pub mod push_token_repo;
 pub mod records;
 pub mod refresh_token_repo;
