@@ -133,7 +133,11 @@ async fn test_prekey_signaling_push() {
 
 #[tokio::test]
 async fn test_prekey_coalescing() {
-    let app = common::TestApp::spawn_with_workers(common::get_test_config()).await;
+    const FETCHES: u32 = 20;
+    let mut config = common::get_test_config();
+    // The burst below must not queue on the pool: this test is about debouncing, not pool capacity.
+    config.database.max_connections = FETCHES * 2;
+    let app = common::TestApp::spawn_with_workers(config).await;
 
     // 1. Bob with 25 keys
     let bob = app.register_user_with_keys(&common::generate_username("bob_co"), 123, 25).await;
@@ -148,7 +152,7 @@ async fn test_prekey_coalescing() {
     // 2. Alice fetches 20 keys CONCURRENTLY.
     // This will definitely dip Bob below the 20-key threshold multiple times.
     let mut handles = Vec::new();
-    for _ in 0..20 {
+    for _ in 0..FETCHES {
         let client = app.client.clone();
         let url = format!("{}/v1/users/{}", app.server_url, bob.user_id);
         let token = alice.token.clone();
@@ -163,7 +167,7 @@ async fn test_prekey_coalescing() {
     }
 
     for h in handles {
-        let _ = h.await;
+        assert_eq!(h.await.unwrap().status(), StatusCode::OK, "every fetch must consume a key");
     }
 
     // Wait for the 500ms debounce window + some slack
