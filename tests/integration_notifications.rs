@@ -84,9 +84,10 @@ async fn test_push_cancellation_on_ack() {
     let app = TestApp::spawn_with_workers(config).await;
     let username = common::generate_username("u_ack");
     let user = app.register_user(&username).await;
+    let sender = app.register_user(&common::generate_username("u_ack_sender")).await;
 
     // 1. Schedule a push
-    app.send_message(&user.token, user.device_id, b"msg").await;
+    app.send_message(&sender.token, user.device_id, b"msg").await;
 
     // 2. Connect via WebSocket
     let mut ws = app.connect_ws(&user.token).await;
@@ -131,9 +132,10 @@ async fn test_push_cancellation_on_websocket_connect() {
     let app = TestApp::spawn_with_workers(config).await;
     let username = common::generate_username("u_ws");
     let user = app.register_user(&username).await;
+    let sender = app.register_user(&common::generate_username("u_ws_sender")).await;
 
     // 1. Schedule push
-    app.send_message(&user.token, user.device_id, b"msg").await;
+    app.send_message(&sender.token, user.device_id, b"msg").await;
 
     // 2. Connect WS
     let _ws = app.connect_ws(&user.token).await;

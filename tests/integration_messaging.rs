@@ -612,14 +612,15 @@ async fn test_multi_device_messaging() {
     let mut ws2 = app.connect_ws(&device2_token).await;
     ws2.ensure_subscribed().await;
 
-    // 4. Alice sends a message ONLY to Bob's Device 2
-    app.send_message(&alice.token, device2_id, b"Targeting Device 2").await;
+    // 4. Alice sends a separately encrypted message to each of Bob's devices
+    app.send_messages(&alice.token, &[(bob.device_id, b"For Device 1"), (device2_id, b"For Device 2")]).await;
 
-    // 5. Verify Device 2 receives the message
-    let env2 = ws2.receive_envelope_timeout(Duration::from_secs(2)).await.expect("Device 2 should receive the message");
-    assert_eq!(env2.message, b"Targeting Device 2");
+    // 5. Each device receives exactly its own message
+    let env1 = ws1.receive_envelope_timeout(Duration::from_secs(2)).await.expect("Device 1 should receive its message");
+    assert_eq!(env1.message, b"For Device 1");
+    let env2 = ws2.receive_envelope_timeout(Duration::from_secs(2)).await.expect("Device 2 should receive its message");
+    assert_eq!(env2.message, b"For Device 2");
 
-    // 6. Verify Device 1 DOES NOT receive the message
-    let env1 = ws1.receive_envelope_timeout(Duration::from_millis(500)).await;
-    assert!(env1.is_none(), "Device 1 should NOT receive the message meant for Device 2");
+    assert!(ws1.receive_envelope_timeout(Duration::from_millis(500)).await.is_none());
+    assert!(ws2.receive_envelope_timeout(Duration::from_millis(500)).await.is_none());
 }

@@ -524,6 +524,11 @@ impl TestApp {
             .unwrap();
 
         assert_eq!(resp.status(), 200, "Message sending failed: {}", resp.text().await.unwrap());
+        let response = proto::SendMessageResponse::decode(resp.bytes().await.unwrap()).unwrap();
+        assert!(
+            response.failed_submissions.is_empty() && response.device_mismatches.is_empty(),
+            "Message sending was rejected: {response:?}"
+        );
     }
 
     pub(crate) async fn connect_ws(&self, token: &str) -> TestWsClient {

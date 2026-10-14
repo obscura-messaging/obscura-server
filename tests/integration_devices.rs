@@ -110,7 +110,8 @@ async fn test_device_crud_lifecycle() {
     // 6. Send a message to Device 2 to verify cascade delete
     let device2_uuid = Uuid::parse_str(&device2_id).unwrap();
     let sender = app.register_user(&common::generate_username("crud_sender")).await;
-    app.send_message(&sender.token, device2_uuid, b"Ping").await;
+    app.send_messages(&sender.token, &[(Uuid::parse_str(&device1_id).unwrap(), b"Ping"), (device2_uuid, b"Ping")])
+        .await;
     app.assert_message_count(device2_uuid, 1).await;
 
     // 7. The primary deletes Device 2
