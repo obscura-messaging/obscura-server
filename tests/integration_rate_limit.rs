@@ -316,6 +316,24 @@ async fn test_rate_limit_retry_after_header() {
 
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
 
-    let retry_after = resp.headers().get("retry-after");
-    assert!(retry_after.is_some(), "Retry-After header should be present");
+    let retry_after: u64 = resp
+        .headers()
+        .get("retry-after")
+        .expect("Retry-After header should be present")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(retry_after >= 1, "a sub-second wait must not be advertised as 0");
+
+    tokio::time::sleep(Duration::from_secs(retry_after)).await;
+    let retried = app
+        .client
+        .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+        .header("Authorization", format!("Bearer {}", user.token))
+        .header("X-Forwarded-For", ip)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(retried.status(), StatusCode::NOT_FOUND, "waiting Retry-After seconds must be enough");
 }

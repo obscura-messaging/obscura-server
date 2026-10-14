@@ -839,9 +839,10 @@ components:
         type: string
         format: uuid
     retry-after:
-      description: The number of seconds to wait before retrying the request.
+      description: Whole seconds to wait before retrying. At least 1, and always long enough for the retry to pass the rate limiter.
       schema:
-        type: string
+        type: integer
+        minimum: 1
 
   responses:
     UnauthorizedError:
