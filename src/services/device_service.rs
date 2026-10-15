@@ -241,6 +241,15 @@ impl DeviceService {
         Ok(())
     }
 
+    /// Checks if a device exists.
+    ///
+    /// # Errors
+    /// Returns `AppError::Database` if the query fails.
+    pub(crate) async fn device_exists(&self, device_id: Uuid) -> Result<bool> {
+        let mut conn = self.pool.acquire().await?;
+        self.device_repo.exists(&mut conn, device_id).await
+    }
+
     /// Fetches a single device by ID, verifying ownership.
     ///
     /// # Errors

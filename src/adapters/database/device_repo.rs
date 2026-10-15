@@ -160,6 +160,20 @@ impl DeviceRepository {
         Ok(exists)
     }
 
+    /// Checks if a device exists.
+    ///
+    /// # Errors
+    /// Returns `sqlx::Error` if the query fails.
+    #[tracing::instrument(level = "debug", skip(self, conn), err)]
+    pub(crate) async fn exists(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<bool> {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM devices WHERE id = $1)")
+            .bind(device_id)
+            .fetch_one(conn)
+            .await?;
+
+        Ok(exists)
+    }
+
     /// Counts the number of devices for a user.
     ///
     /// # Errors

@@ -779,7 +779,7 @@ paths:
         Clients must connect here to receive messages for a specific device.
         - **Protocol:** `WebSocketFrame` (Protobuf).
         - **Auth:** Pass a valid ticket in the query string: `ws://.../v1/gateway?ticket=<ticket>`.
-        - **Handshake:** Server validates the ticket, ensuring it exists and hasn't expired or been used.
+        - **Handshake:** Server takes the ticket, ensuring it exists and hasn't expired or been used, and that its device still exists. A ticket is consumed by its first handshake attempt.
         - **Welcome:** Upon successful connection, the server may immediately push a `PreKeyStatus` frame if the device's one-time pre-key count is below the configured threshold.
         - **Flow:** Server pushes `Envelope` frames. Client MUST respond with `AckMessage` frames. Server batches deletions based on ACKs.
       tags: [Messaging]
