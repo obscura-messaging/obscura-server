@@ -90,24 +90,30 @@ async fn test_first_device_is_primary_and_sets_account_identity() {
 }
 
 #[tokio::test]
-async fn test_linked_device_requires_valid_provisioning_code() {
+async fn test_linked_device_requires_approved_link_session() {
     let app = TestApp::spawn().await;
-    let primary = app.register_user(&common::generate_username("link_code")).await;
+    let primary = app.register_user(&common::generate_username("link_session")).await;
     let user_token = app.login_user_scoped(&primary.username).await;
 
     let payload = common::generate_device_payload_for(&primary.identity_key, 2, 1);
     let resp = post_device(&app, &user_token, &payload).await;
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "Missing code must be rejected");
-    assert_eq!(error_of(resp).await, "Invalid provisioning code");
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "Missing link session must be rejected");
+    assert_eq!(error_of(resp).await, "Invalid link session");
 
-    let mut with_unknown_code = payload.clone();
-    with_unknown_code["provisioningCode"] = json!("not-a-real-code");
-    let resp = post_device(&app, &user_token, &with_unknown_code).await;
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "Unknown code must be rejected");
-    assert_eq!(error_of(resp).await, "Invalid provisioning code");
+    let mut unknown = payload.clone();
+    unknown["linkSessionId"] = json!("not-a-real-session");
+    let resp = post_device(&app, &user_token, &unknown).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "Unknown link session must be rejected");
+    assert_eq!(error_of(resp).await, "Invalid link session");
+
+    let mut unapproved = payload.clone();
+    unapproved["linkSessionId"] = json!(app.create_link_session(&user_token).await);
+    let resp = post_device(&app, &user_token, &unapproved).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "Unapproved link session must be rejected");
+    assert_eq!(error_of(resp).await, "Invalid link session");
 
     let linked = app.link_device(&primary).await;
-    let devices = list_devices(&app, &user_token).await;
+    let devices = list_devices(&app, &primary.token).await;
     let linked_entry = devices.iter().find(|d| d["deviceId"] == linked.device_id.to_string()).unwrap();
     assert_eq!(linked_entry["isPrimary"], json!(false));
     assert_eq!(devices.iter().filter(|d| d["isPrimary"] == json!(true)).count(), 1);
@@ -117,11 +123,10 @@ async fn test_linked_device_requires_valid_provisioning_code() {
 async fn test_linked_device_identity_must_match_account() {
     let app = TestApp::spawn().await;
     let primary = app.register_user(&common::generate_username("link_ik")).await;
-    let user_token = app.login_user_scoped(&primary.username).await;
-    let code = app.issue_provisioning_code(&primary.token).await;
+    let (user_token, link_session_id) = app.approved_link_session(&primary).await;
 
     let (mut foreign, _) = common::generate_device_payload(2, 1);
-    foreign["provisioningCode"] = json!(code);
+    foreign["linkSessionId"] = json!(link_session_id);
     let resp = post_device(&app, &user_token, &foreign).await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     assert_eq!(error_of(resp).await, "Identity key does not match the account identity");
@@ -131,13 +136,13 @@ async fn test_linked_device_identity_must_match_account() {
     let (spk_pub, spk_sig) = common::generate_signed_pre_key(&common::generate_signing_key());
     forged["signedPreKey"] =
         json!({ "keyId": 1, "publicKey": STANDARD.encode(spk_pub), "signature": STANDARD.encode(spk_sig) });
-    forged["provisioningCode"] = json!(code);
+    forged["linkSessionId"] = json!(link_session_id);
     let resp = post_device(&app, &user_token, &forged).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
-    // Neither failure consumed the code.
+    // Neither failure consumed the link session.
     let mut valid = common::generate_device_payload_for(&primary.identity_key, 2, 1);
-    valid["provisioningCode"] = json!(code);
+    valid["linkSessionId"] = json!(link_session_id);
     assert_eq!(post_device(&app, &user_token, &valid).await.status(), StatusCode::CREATED);
 }
 

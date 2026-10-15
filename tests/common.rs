@@ -452,26 +452,46 @@ impl TestApp {
         resp.json::<serde_json::Value>().await.unwrap()["token"].as_str().unwrap().to_string()
     }
 
-    /// Issues a provisioning code with the given (primary) device token.
-    pub(crate) async fn issue_provisioning_code(&self, token: &str) -> String {
+    /// Creates a link session with the given user-scoped token and returns its id.
+    pub(crate) async fn create_link_session(&self, user_token: &str) -> String {
         let resp = self
             .client
-            .post(format!("{}/v1/devices/provisioning-code", self.server_url))
-            .header("Authorization", format!("Bearer {token}"))
+            .post(format!("{}/v1/link-sessions", self.server_url))
+            .header("Authorization", format!("Bearer {user_token}"))
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), 201, "Provisioning code failed: {}", resp.text().await.unwrap());
-        resp.json::<serde_json::Value>().await.unwrap()["code"].as_str().unwrap().to_string()
+        assert_eq!(resp.status(), 201, "Creating link session failed: {}", resp.text().await.unwrap());
+        resp.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string()
+    }
+
+    /// Stores the provisioning message of a link session with the given device token, approving it.
+    pub(crate) async fn approve_link_session(&self, device_token: &str, id: &str, body: &[u8]) -> reqwest::StatusCode {
+        self.client
+            .put(format!("{}/v1/link-sessions/{id}", self.server_url))
+            .header("Authorization", format!("Bearer {device_token}"))
+            .header("Content-Type", "application/octet-stream")
+            .body(body.to_vec())
+            .send()
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// Returns a fresh user-scoped token of the primary's account and a link session the primary approved.
+    pub(crate) async fn approved_link_session(&self, primary: &TestUser) -> (String, String) {
+        let user_token = self.login_user_scoped(&primary.username).await;
+        let id = self.create_link_session(&user_token).await;
+        assert_eq!(self.approve_link_session(&primary.token, &id, b"provisioning message").await, 200);
+        (user_token, id)
     }
 
     /// Registers a device linked to the primary's account, sharing its identity key.
     pub(crate) async fn link_device(&self, primary: &TestUser) -> TestUser {
-        let code = self.issue_provisioning_code(&primary.token).await;
-        let user_token = self.login_user_scoped(&primary.username).await;
+        let (user_token, link_session_id) = self.approved_link_session(primary).await;
 
         let mut payload = generate_device_payload_for(&primary.identity_key, 456, 1);
-        payload["provisioningCode"] = json!(code);
+        payload["linkSessionId"] = json!(link_session_id);
 
         let resp = self
             .client

@@ -11,11 +11,9 @@ use tracing::Instrument;
 
 pub mod cache;
 pub mod notification_repo;
-pub mod provisioning_relay;
 
 pub use cache::RedisCache;
 pub use notification_repo::NotificationRepository;
-pub use provisioning_relay::ProvisioningRelay;
 
 #[derive(Debug, Clone)]
 pub struct PubSubMessage {
@@ -108,16 +106,6 @@ impl RedisClient {
     #[must_use]
     pub fn publisher(&self) -> redis::aio::ConnectionManager {
         self.publisher.clone()
-    }
-
-    /// Opens a connection of its own without a response timeout, for blocking commands that would
-    /// otherwise stall the shared publisher connection.
-    ///
-    /// # Errors
-    /// Returns an error if the connection fails.
-    pub async fn dedicated_connection(&self) -> anyhow::Result<redis::aio::MultiplexedConnection> {
-        let config = redis::AsyncConnectionConfig::new().set_response_timeout(None);
-        Ok(self.client.get_multiplexed_async_connection_with_config(&config).await?)
     }
 
     /// Subscribes to a Redis pattern.

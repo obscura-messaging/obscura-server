@@ -66,11 +66,12 @@ async fn test_device_crud_lifecycle() {
     let device1_id = device1_json["deviceId"].as_str().unwrap().to_string();
     let device1_token = device1_json["token"].as_str().unwrap().to_string();
 
-    // 4. Link Device 2 (with a name) using a provisioning code from the primary
-    let code = app.issue_provisioning_code(&device1_token).await;
+    // 4. Link Device 2 (with a name) through a link session the primary approved
+    let link_session_id = app.create_link_session(&user_token).await;
+    assert_eq!(app.approve_link_session(&device1_token, &link_session_id, b"message").await, StatusCode::OK);
     let mut dev2 = common::generate_device_payload_for(&identity_key, 222, 5);
     dev2["name"] = json!("My Phone");
-    dev2["provisioningCode"] = json!(code);
+    dev2["linkSessionId"] = json!(link_session_id);
 
     let resp_device2 = app
         .client
@@ -162,11 +163,10 @@ async fn test_device_limit_enforced() {
     app.link_device(&primary).await;
     app.link_device(&primary).await;
 
-    // 2. A 4th device is rejected even with a valid code and identity
-    let code = app.issue_provisioning_code(&primary.token).await;
-    let user_token = app.login_user_scoped(&primary.username).await;
+    // 2. A 4th device is rejected even with an approved link session and the account identity
+    let (user_token, link_session_id) = app.approved_link_session(&primary).await;
     let mut device4_payload = common::generate_device_payload_for(&primary.identity_key, 4, 5);
-    device4_payload["provisioningCode"] = json!(code);
+    device4_payload["linkSessionId"] = json!(link_session_id);
     let resp_device4 = app
         .client
         .post(format!("{}/v1/devices", app.server_url))

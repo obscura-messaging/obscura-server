@@ -202,7 +202,7 @@ paths:
       summary: Reset the account's devices and identity.
       description: |
         Deletes all of the account's devices, with their keys, queued messages, push tokens,
-        backups, refresh tokens and provisioning codes, and clears the account identity key.
+        backups and refresh tokens, and the account's link sessions, and clears the account identity key.
         Live gateway connections of those devices are closed and their access tokens stop working.
         The next `POST /v1/devices` registers a new primary device with a new identity key.
 
@@ -247,9 +247,10 @@ paths:
         All of an account's devices share one identity key, the account identity.
         - **Account without devices:** the device becomes the primary device and its `identityKey`
           becomes the account identity, replacing any previous one.
-        - **Account with devices:** the request must carry a valid, unexpired, unused `provisioningCode`
-          issued by the account's primary device, and `identityKey` must equal the account identity.
-          The code is consumed when the device is created. The device is not primary.
+        - **Account with devices:** the request must carry the `linkSessionId` of an unexpired link session
+          of the account that the primary device approved, and `identityKey` must equal the account
+          identity. The session is consumed in the same transaction that creates the device.
+          The device is not primary.
 
         The signed prekey must verify against `identityKey`.
         The server enforces a configurable maximum number of devices per user, counting all devices.
@@ -280,8 +281,8 @@ paths:
           description: |
             The device cannot be registered. The `error` is one of:
             - `Device limit reached. Maximum allowed is <n>.`
-            - `Invalid provisioning code`: the account has devices and the code is missing, unknown,
-              expired, already used, or issued for another account.
+            - `Invalid link session`: the account has devices and `linkSessionId` is missing, unknown,
+              expired, not approved, already used, or bound to another account.
             - `Identity key does not match the account identity`: the account has devices and
               `identityKey` is not the account identity.
           headers:
@@ -407,7 +408,7 @@ paths:
         - The primary device cannot be deleted this way; use `POST /v1/account/reset`.
 
         Cascade delete removes the device's keys, the messages queued for it, its push token,
-        backup, refresh tokens and provisioning codes. Messages the device sent that are still
+        backup and refresh tokens. Messages the device sent that are still
         queued for other devices are kept. The device's access tokens stop working immediately
         and its live gateway connections are closed.
       tags: [Devices]
@@ -486,36 +487,36 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
-  /v1/devices/provisioning-code:
+  # --- Link sessions ---
+  /v1/link-sessions:
     post:
-      operationId: createProvisioningCode
-      summary: Issue a provisioning code.
+      operationId: createLinkSession
+      summary: Create a link session.
       description: |
-        Issues a code that authorizes registering one more device on the account
-        (`provisioningCode` in `POST /v1/devices`). Requires a Device-Scoped JWT of the primary device.
+        Starts linking a new device to the account. The new device creates the session, shows its id to
+        the primary device (e.g. in a QR code), and waits for the primary to approve it with
+        `PUT /v1/link-sessions/{id}`. An approved session authorizes one `POST /v1/devices`
+        (`linkSessionId`), which consumes it.
 
-        A code is single use, expires after 10 minutes and is bound to the account. Issuing a new code
-        does not invalidate older unexpired ones. The server stores only a hash of the code.
-      tags: [Provisioning]
+        Requires a User-Scoped JWT. The session is bound to the account and expires after 10 minutes.
+        The id is an unguessable secret; the server stores only its hash.
+      tags: [Link Sessions]
       security:
         - bearerAuth: []
       responses:
         '201':
-          description: Code issued.
+          description: Session created.
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProvisioningCodeResponse'
+                $ref: '#/components/schemas/LinkSessionResponse'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '403':
-          description: |
-            The caller is not the primary device. The `error` is one of:
-            - `Device-scoped token required`
-            - `Primary device required`
+          description: '`User-scoped token required`: the token is Device-Scoped.'
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'
@@ -530,53 +531,22 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
-  /v1/provisioning:
-    post:
-      operationId: createProvisioningRelay
-      summary: Create a provisioning relay address.
-      description: |
-        Creates a relay address through which the primary device hands its encrypted provisioning
-        message to a new device. The address is bound to the authenticated user and expires after
-        10 minutes, together with any message stored for it. Accepts a User-Scoped or Device-Scoped JWT;
-        a new device uses the User-Scoped JWT from its login.
-      tags: [Provisioning]
-      security:
-        - bearerAuth: []
-      responses:
-        '201':
-          description: Address created.
-          headers:
-            x-request-id:
-              $ref: '#/components/headers/x-request-id'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ProvisioningRelayResponse'
-        '401':
-          $ref: '#/components/responses/UnauthorizedError'
-        '408':
-          $ref: '#/components/responses/RequestTimeoutError'
-        '429':
-          $ref: '#/components/responses/TooManyRequestsError'
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /v1/provisioning/{address}:
+  /v1/link-sessions/{id}:
     parameters:
-      - name: address
+      - name: id
         in: path
         required: true
         schema:
           type: string
-        description: Address returned by `POST /v1/provisioning`.
+        description: Id returned by `POST /v1/link-sessions`.
     put:
-      operationId: putProvisioningMessage
-      summary: Store the provisioning message.
+      operationId: approveLinkSession
+      summary: Approve a link session.
       description: |
-        Stores one opaque body (the encrypted provisioning message) for the address. The server never
-        parses it. Requires a Device-Scoped JWT of the primary device of the user the address is bound to.
-        An address accepts one body only.
-      tags: [Provisioning]
+        Stores one opaque body (the encrypted provisioning message for the new device), which approves
+        the session. The server never parses it. Requires a Device-Scoped JWT of the primary device of
+        the account the session is bound to. A session is approved once.
+      tags: [Link Sessions]
       security:
         - bearerAuth: []
       requestBody:
@@ -589,7 +559,7 @@ paths:
               maxLength: 65536
       responses:
         '200':
-          description: Message stored.
+          description: Session approved.
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'
@@ -608,7 +578,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: The address is unknown, expired, or bound to another user.
+          description: The session is unknown, expired, or bound to another account.
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'
@@ -619,7 +589,7 @@ paths:
         '408':
           $ref: '#/components/responses/RequestTimeoutError'
         '409':
-          description: A message was already stored for this address.
+          description: '`Link session already approved`.'
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'
@@ -634,13 +604,13 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
     get:
-      operationId: takeProvisioningMessage
-      summary: Fetch the provisioning message.
+      operationId: getLinkSession
+      summary: Wait for a link session's approval.
       description: |
-        Returns the stored message and deletes it, so it can be read once. Returns 204 if no message
-        is stored, after waiting up to `wait` seconds for one to arrive. Accepts any User-Scoped or
-        Device-Scoped JWT of the user the address is bound to.
-      tags: [Provisioning]
+        Returns the body stored by the primary once the session is approved, or 204 if it is not
+        approved after waiting up to `wait` seconds. Reading does not consume the session.
+        Requires a User-Scoped JWT of the account the session is bound to.
+      tags: [Link Sessions]
       security:
         - bearerAuth: []
       parameters:
@@ -651,10 +621,10 @@ paths:
             type: integer
             minimum: 0
             default: 0
-          description: Seconds to wait for a message before answering 204. Values above 25 are treated as 25.
+          description: Seconds to wait for the approval before answering 204. Values above 25 are treated as 25.
       responses:
         '200':
-          description: The provisioning message, now deleted from the server.
+          description: The session is approved; the body stored by the primary.
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'
@@ -664,7 +634,7 @@ paths:
                 type: string
                 format: binary
         '204':
-          description: No message arrived within the wait.
+          description: The session was not approved within the wait.
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'
@@ -672,8 +642,17 @@ paths:
           $ref: '#/components/responses/BadRequestError'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          description: '`User-scoped token required`: the token is Device-Scoped.'
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: The address is unknown, expired, or bound to another user.
+          description: The session is unknown, expired, consumed, or bound to another account.
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'
@@ -1335,9 +1314,9 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/OneTimePreKey'
-        provisioningCode:
+        linkSessionId:
           type: string
-          description: Required when the account already has devices. Issued by `POST /v1/devices/provisioning-code`.
+          description: Required when the account already has devices. An approved session from `POST /v1/link-sessions`.
 
     DeviceResponse:
       type: object
@@ -1457,29 +1436,17 @@ components:
           format: int64
           description: UNIX timestamp of when the file will be deleted.
 
-    ProvisioningCodeResponse:
+    LinkSessionResponse:
       type: object
-      required: [code, expiresAt]
+      required: [id, expiresAt]
       properties:
-        code:
+        id:
           type: string
-          description: Single-use provisioning code.
+          description: Secret session id, used in `/v1/link-sessions/{id}` and as `linkSessionId`.
         expiresAt:
           type: integer
           format: int64
-          description: UNIX timestamp after which the code is no longer accepted.
-
-    ProvisioningRelayResponse:
-      type: object
-      required: [address, expiresAt]
-      properties:
-        address:
-          type: string
-          description: Relay address, used in `/v1/provisioning/{address}`.
-        expiresAt:
-          type: integer
-          format: int64
-          description: UNIX timestamp after which the address and its message are deleted.
+          description: UNIX timestamp after which the session and its body are no longer accepted.
 
     TicketResponse:
       type: object

@@ -10,7 +10,7 @@ pub struct CreateDeviceRequest {
     pub registration_id: i32,
     pub signed_pre_key: SignedPreKey,
     pub one_time_pre_keys: Vec<OneTimePreKey>,
-    pub provisioning_code: Option<String>,
+    pub link_session_id: Option<String>,
 }
 
 impl CreateDeviceRequest {
@@ -69,7 +69,7 @@ mod tests {
                 .into_iter()
                 .map(|id| OneTimePreKey { key_id: id, public_key: PublicKey("D".repeat(44)) })
                 .collect(),
-            provisioning_code: None,
+            link_session_id: None,
         }
     }
 

@@ -15,6 +15,19 @@ pub struct AuthUser {
     pub(crate) device_id: Option<Uuid>,
 }
 
+impl AuthUser {
+    /// Rejects device-scoped tokens.
+    ///
+    /// # Errors
+    /// Returns `AppError::Forbidden` if the token is device-scoped.
+    pub(crate) fn require_user_scope(&self) -> Result<(), AppError> {
+        if self.device_id.is_some() {
+            return Err(AppError::Forbidden("User-scoped token required".into()));
+        }
+        Ok(())
+    }
+}
+
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = AppError;
 

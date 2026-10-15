@@ -1,6 +1,6 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::device_repo::DeviceRepository;
-use crate::adapters::database::provisioning_code_repo::ProvisioningCodeRepository;
+use crate::adapters::database::link_session_repo::LinkSessionRepository;
 use crate::adapters::database::user_repo::UserRepository;
 use crate::domain::auth_session::AuthSession;
 use crate::domain::crypto::PublicKey;
@@ -14,7 +14,7 @@ use crate::services::notification_service::NotificationService;
 use opentelemetry::{global, metrics::Counter};
 use uuid::Uuid;
 
-pub(crate) const INVALID_PROVISIONING_CODE: &str = "Invalid provisioning code";
+pub(crate) const INVALID_LINK_SESSION: &str = "Invalid link session";
 pub(crate) const DEVICE_SCOPE_REQUIRED: &str = "Device-scoped token required";
 
 #[derive(Clone, Debug)]
@@ -51,7 +51,7 @@ pub struct NewDevice {
     pub registration_id: i32,
     pub signed_pre_key: SignedPreKey,
     pub one_time_pre_keys: Vec<OneTimePreKey>,
-    pub provisioning_code: Option<String>,
+    pub link_session_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -59,7 +59,7 @@ pub struct DeviceService {
     pool: DbPool,
     device_repo: DeviceRepository,
     user_repo: UserRepository,
-    code_repo: ProvisioningCodeRepository,
+    link_session_repo: LinkSessionRepository,
     key_service: KeyService,
     auth_service: AuthService,
     notifier: NotificationService,
@@ -74,7 +74,7 @@ impl DeviceService {
         pool: DbPool,
         device_repo: DeviceRepository,
         user_repo: UserRepository,
-        code_repo: ProvisioningCodeRepository,
+        link_session_repo: LinkSessionRepository,
         key_service: KeyService,
         auth_service: AuthService,
         notifier: NotificationService,
@@ -84,7 +84,7 @@ impl DeviceService {
             pool,
             device_repo,
             user_repo,
-            code_repo,
+            link_session_repo,
             key_service,
             auth_service,
             notifier,
@@ -95,10 +95,10 @@ impl DeviceService {
 
     /// Creates a device with its keys and returns a device-scoped session.
     /// The first device of an account becomes the primary and sets the account identity; any later device
-    /// must present the account identity and a provisioning code, which is consumed.
+    /// must present the account identity and an approved link session, which is consumed.
     ///
     /// # Errors
-    /// Returns `AppError::Forbidden` if the device limit is reached, the provisioning code is invalid, or the
+    /// Returns `AppError::Forbidden` if the device limit is reached, the link session is invalid, or the
     /// identity key is not the account identity.
     /// Returns `AppError::BadRequest` if the keys do not verify.
     /// Returns `AppError::Database` if any database operation fails.
@@ -126,12 +126,16 @@ impl DeviceService {
             if account_identity.as_ref() != Some(&device.identity_key) {
                 return Err(AppError::Forbidden(IDENTITY_KEY_MISMATCH.into()));
             }
-            let consumed = match device.provisioning_code.as_deref() {
-                Some(code) => self.code_repo.consume(&mut tx, user_id, &AuthService::hash_opaque_token(code)).await?,
+            let consumed = match device.link_session_id.as_deref() {
+                Some(id) => {
+                    self.link_session_repo
+                        .consume_approved(&mut tx, &AuthService::hash_opaque_token(id), user_id)
+                        .await?
+                }
                 None => false,
             };
             if !consumed {
-                return Err(AppError::Forbidden(INVALID_PROVISIONING_CODE.into()));
+                return Err(AppError::Forbidden(INVALID_LINK_SESSION.into()));
             }
         }
 
@@ -211,8 +215,8 @@ impl DeviceService {
         Ok(())
     }
 
-    /// Deletes every device of the account and clears the account identity, so the next registered device
-    /// becomes a new primary. Requires a user-scoped token, which only a password login issues.
+    /// Deletes every device and link session of the account and clears the account identity, so the next
+    /// registered device becomes a new primary. Requires a user-scoped token, which only a password login issues.
     ///
     /// # Errors
     /// Returns `AppError::Forbidden` if the token is device-scoped.
@@ -226,6 +230,7 @@ impl DeviceService {
         let mut tx = self.pool.begin().await?;
         self.user_repo.lock_identity_key(&mut tx, user_id).await?;
         let deleted = self.device_repo.delete_all_for_user(&mut tx, user_id).await?;
+        self.link_session_repo.delete_all_for_user(&mut tx, user_id).await?;
         self.user_repo.set_identity_key(&mut tx, user_id, None).await?;
         tx.commit().await?;
 

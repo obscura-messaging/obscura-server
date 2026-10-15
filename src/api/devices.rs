@@ -1,7 +1,6 @@
 use crate::api::AppState;
 use crate::api::middleware::AuthUser;
 use crate::api::schemas::devices::{CreateDeviceRequest, DeviceListResponse, DeviceResponse, UpdateDeviceRequest};
-use crate::api::schemas::provisioning::ProvisioningCodeResponse;
 use crate::error::{AppError, Result};
 use crate::services::device_service::NewDevice;
 use axum::{
@@ -17,8 +16,8 @@ use uuid::Uuid;
 ///
 /// # Errors
 /// Returns `AppError::BadRequest` if validation fails or keys are malformed.
-/// Returns `AppError::Forbidden` if the device limit is reached, or a linked device lacks a valid provisioning
-/// code or the account identity key.
+/// Returns `AppError::Forbidden` if the device limit is reached, or a linked device lacks an approved link
+/// session or the account identity key.
 pub(crate) async fn create_device(
     auth_user: AuthUser,
     State(state): State<AppState>,
@@ -37,27 +36,12 @@ pub(crate) async fn create_device(
             .map(TryInto::try_into)
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(AppError::BadRequest)?,
-        provisioning_code: payload.provisioning_code,
+        link_session_id: payload.link_session_id,
     };
     let session = state.device_service.create_device(auth_user.user_id, device).await?;
 
     let auth_response = crate::api::auth::map_session(session);
     Ok((StatusCode::CREATED, Json(auth_response)))
-}
-
-/// Issues a single-use provisioning code that authorizes registering one more device.
-///
-/// # Errors
-/// Returns `AppError::Forbidden` if the caller is not the primary device.
-pub(crate) async fn create_provisioning_code(
-    auth_user: AuthUser,
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse> {
-    let code = state.provisioning_service.issue_code(auth_user.user_id, auth_user.device_id).await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(ProvisioningCodeResponse { code: code.value, expires_at: code.expires_at.unix_timestamp() }),
-    ))
 }
 
 /// Lists all devices for the authenticated user.
