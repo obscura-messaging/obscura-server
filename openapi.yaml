@@ -23,7 +23,7 @@ paths:
       summary: Register a new user account.
       description: |
         Creates a new user account with the provided credentials.
-        Returns a User-Scoped JWT (no `deviceId` claim). The client must then
+        Returns a User-Scoped JWT (no `deviceId` claim) without a refresh token. The client must then
         create a device via `POST /v1/devices` to obtain a Device-Scoped JWT
         required for key management, messaging, and WebSocket connections.
       tags: [Users]
@@ -67,6 +67,8 @@ paths:
       summary: Fetch PreKey Bundles for all of a user's devices.
       description: |
         Returns an array of PreKey bundles, one per device registered to the target user.
+        Every bundle carries the account identity key, which all of the user's devices share;
+        the registration id, signed prekey and one-time prekey are per device.
         Server atomically consumes one One-Time PreKey per device (if available).
         Requires a Device-Scoped JWT (the caller's own device must be identified).
       tags: [Users]
@@ -110,7 +112,8 @@ paths:
       description: |
         Authenticates with username and password. If an optional `deviceId` is provided
         and belongs to the user, the returned JWT will include that `deviceId` claim
-        (Device-Scoped). Otherwise, a User-Scoped JWT is returned.
+        (Device-Scoped) and a refresh token is returned. Otherwise, a User-Scoped JWT is returned
+        without a refresh token.
       tags: [Sessions]
       security: []
       requestBody:
@@ -168,8 +171,9 @@ paths:
       operationId: refreshToken
       summary: Refresh Access Token.
       description: |
-        Exchanges a valid Refresh Token for a new pair (Access Token + Refresh Token).
+        Exchanges a valid Refresh Token for a new pair (Device-Scoped Access Token + Refresh Token).
         Implements Rotation: The old Refresh Token is invalidated immediately.
+        Only Device-Scoped sessions have refresh tokens.
       tags: [Sessions]
       security: []
       requestBody:
@@ -194,6 +198,50 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  /v1/account/reset:
+    post:
+      operationId: resetAccount
+      summary: Reset the account's devices and identity.
+      description: |
+        Deletes all of the account's devices, with their keys, queued messages, push tokens,
+        backups and refresh tokens, and the account's link sessions, and clears the account identity key.
+        Live gateway connections of those devices are closed and their access tokens stop working.
+        The next `POST /v1/devices` registers a new primary device with a new identity key.
+
+        Authorized by the account's username and password, not by a token.
+        Rate limited like registration and login.
+      tags: [Sessions]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetAccountRequest'
+      responses:
+        '200':
+          description: Account reset.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          description: The username or password is wrong.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '408':
+          $ref: '#/components/responses/RequestTimeoutError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
   # --- Devices ---
   /v1/devices:
     post:
@@ -201,9 +249,18 @@ paths:
       summary: Provision a new device.
       description: |
         Creates a new device for the authenticated user, uploads its cryptographic keys,
-        and returns a Device-Scoped JWT. Requires a User-Scoped or Device-Scoped JWT.
+        and returns a Device-Scoped JWT with a refresh token. Requires a User-Scoped JWT.
 
-        The server enforces a configurable maximum number of devices per user.
+        All of an account's devices share one identity key, the account identity.
+        - **Account without devices:** the device becomes the primary device and its `identityKey`
+          becomes the account identity, replacing any previous one.
+        - **Account with devices:** the request must carry the `linkSessionId` of an unexpired link session
+          of the account that the primary device approved, and `identityKey` must equal the account
+          identity. The session is consumed in the same transaction that creates the device.
+          The device is not primary.
+
+        The signed prekey must verify against `identityKey`.
+        The server enforces a configurable maximum number of devices per user, counting all devices.
       tags: [Devices]
       security:
         - bearerAuth: []
@@ -228,7 +285,21 @@ paths:
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '403':
-          $ref: '#/components/responses/ForbiddenError'
+          description: |
+            The device cannot be registered. The `error` is one of:
+            - `User-scoped token required`: the token is Device-Scoped.
+            - `Device limit reached. Maximum allowed is <n>.`
+            - `Invalid link session`: the account has devices and `linkSessionId` is missing, unknown,
+              expired, not approved, already used, or bound to another account.
+            - `Identity key does not match the account identity`: the account has devices and
+              `identityKey` is not the account identity.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '408':
           $ref: '#/components/responses/RequestTimeoutError'
         '429':
@@ -239,6 +310,8 @@ paths:
     get:
       operationId: listDevices
       summary: List all devices for the authenticated user.
+      description: |
+        Lists every device of the account, marking the primary device with `isPrimary`.
       tags: [Devices]
       security:
         - bearerAuth: []
@@ -337,8 +410,15 @@ paths:
       operationId: deleteDevice
       summary: Delete a device.
       description: |
-        Deletes a device owned by the authenticated user. Cascade delete removes
-        all associated keys, pending messages, and push tokens.
+        Deletes a device of the authenticated user's account. Requires a Device-Scoped JWT.
+        - The primary device may delete any other device of the account.
+        - Any other device may delete itself.
+        - The primary device cannot be deleted this way; use `POST /v1/account/reset`.
+
+        Cascade delete removes the device's keys, the messages queued for it, its push token,
+        backup and refresh tokens. Messages the device sent that are still
+        queued for other devices are kept. The device's access tokens stop working immediately
+        and its live gateway connections are closed.
       tags: [Devices]
       security:
         - bearerAuth: []
@@ -357,6 +437,19 @@ paths:
               $ref: '#/components/headers/x-request-id'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          description: |
+            The caller may not delete this device. The `error` is one of:
+            - `Device-scoped token required`
+            - `The primary device cannot be deleted; reset the account instead`
+            - `Only the primary device can delete other devices`
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           $ref: '#/components/responses/NotFoundError'
         '408':
@@ -367,19 +460,12 @@ paths:
   /v1/devices/keys:
     post:
       operationId: uploadKeys
-      summary: Upload PreKeys or Perform Device Takeover.
+      summary: Upload PreKeys.
       description: |
-        Uploads new Signed PreKeys and One-Time PreKeys for the authenticated device.
+        Uploads a new Signed PreKey and One-Time PreKeys for the authenticated device.
         Requires a Device-Scoped JWT.
 
-        **Device Takeover:**
-        If an `identityKey` is provided and it *differs* from the stored key for this device:
-        - Replaces the Identity Key.
-        - Deletes ALL old keys (Signed and One-Time).
-        - Deletes ALL pending messages for this device.
-        - Disconnects active WebSockets for this device.
-
-        If `identityKey` matches the stored key or is omitted, it acts as a standard key refill (appending new keys).
+        The signed prekey must verify against the account identity key, which cannot be changed here.
       tags: [Devices]
       security:
         - bearerAuth: []
@@ -390,7 +476,7 @@ paths:
               $ref: '#/components/schemas/PreKeyUploadRequest'
       responses:
         '200':
-          description: Keys updated or takeover successful.
+          description: Keys updated.
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'
@@ -407,6 +493,185 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  # --- Link sessions ---
+  /v1/link-sessions:
+    post:
+      operationId: createLinkSession
+      summary: Create a link session.
+      description: |
+        Starts linking a new device to the account. The new device creates the session, shows its id to
+        the primary device (e.g. in a QR code), and waits for the primary to approve it with
+        `PUT /v1/link-sessions/{id}`. An approved session authorizes one `POST /v1/devices`
+        (`linkSessionId`), which consumes it.
+
+        Requires a User-Scoped JWT. The session is bound to the account and expires after 10 minutes.
+        The id is an unguessable secret; the server stores only its hash.
+      tags: [Link Sessions]
+      security:
+        - bearerAuth: []
+      responses:
+        '201':
+          description: Session created.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LinkSessionResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          description: '`User-scoped token required`: the token is Device-Scoped.'
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '408':
+          $ref: '#/components/responses/RequestTimeoutError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/link-sessions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Id returned by `POST /v1/link-sessions`.
+    put:
+      operationId: approveLinkSession
+      summary: Approve a link session.
+      description: |
+        Stores one opaque body (the encrypted provisioning message for the new device), which approves
+        the session. The server never parses it. Requires a Device-Scoped JWT of the primary device of
+        the account the session is bound to. A session is approved once.
+      tags: [Link Sessions]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              maxLength: 65536
+      responses:
+        '200':
+          description: Session approved.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          description: |
+            The caller is not the primary device. The `error` is one of:
+            - `Device-scoped token required`
+            - `Primary device required`
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The session is unknown, expired, or bound to another account.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '408':
+          $ref: '#/components/responses/RequestTimeoutError'
+        '409':
+          description: '`Link session already approved`.'
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/PayloadTooLargeError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    get:
+      operationId: getLinkSession
+      summary: Wait for a link session's approval.
+      description: |
+        Returns the body stored by the primary once the session is approved, or 204 if it is not
+        approved after waiting up to `wait` seconds. Reading does not consume the session.
+        Requires a User-Scoped JWT of the account the session is bound to.
+      tags: [Link Sessions]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: wait
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Seconds to wait for the approval before answering 204. Values above 25 are treated as 25.
+      responses:
+        '200':
+          description: The session is approved; the body stored by the primary.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '204':
+          description: The session was not approved within the wait.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          description: '`User-scoped token required`: the token is Device-Scoped.'
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The session is unknown, expired, consumed, or bound to another account.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '408':
+          $ref: '#/components/responses/RequestTimeoutError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
   # --- Messaging (REST Upstream) ---
   /v1/messages:
@@ -417,9 +682,11 @@ paths:
         Pushes an array of encrypted envelopes to target devices' queues.
         Accepts a batch of messages to support multi-device fan-out or single messages.
 
-        **Idempotency:** Requires an `Idempotency-Key` header to safely retry dropped network requests.
+        **Complete delivery:** For each user owning a target device, the targeted devices must equal that user's current devices, excluding the sending device when the user is the sender. Otherwise none of that user's submissions are queued: each fails with `ERROR_CODE_DEVICE_MISMATCH` and `device_mismatches` lists the user's untargeted devices. Unknown devices and the sending device itself fail individually with `ERROR_CODE_INVALID_DEVICE` and do not by themselves make a mismatch.
+
+        **Idempotency:** Requires an `Idempotency-Key` header to safely retry dropped network requests. The response is cached per key, a mismatch included, so a retry with a corrected device set needs a new key.
         **Payload:** `SendMessageRequest` (Protobuf).
-        **Response:** `SendMessageResponse` (Protobuf) detailing any partial failures. An empty response array indicates total success.
+        **Response:** `SendMessageResponse` (Protobuf) detailing any partial failures. Empty `failed_submissions` indicates total success.
       tags: [Messaging]
       security:
         - bearerAuth: []
@@ -441,7 +708,7 @@ paths:
               description: Serialized `SendMessageRequest` protobuf.
       responses:
         '200':
-          description: Batch processed. Parse the response payload to check for partial failures via the `failed_messages` array.
+          description: Batch processed. Parse the response payload to check for partial failures via `failed_submissions` and `device_mismatches`.
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'
@@ -510,7 +777,7 @@ paths:
         Clients must connect here to receive messages for a specific device.
         - **Protocol:** `WebSocketFrame` (Protobuf).
         - **Auth:** Pass a valid ticket in the query string: `ws://.../v1/gateway?ticket=<ticket>`.
-        - **Handshake:** Server validates the ticket, ensuring it exists and hasn't expired or been used.
+        - **Handshake:** Server takes the ticket, ensuring it exists and hasn't expired or been used, and that its device still exists. A ticket is consumed by its first handshake attempt.
         - **Welcome:** Upon successful connection, the server may immediately push a `PreKeyStatus` frame if the device's one-time pre-key count is below the configured threshold.
         - **Flow:** Server pushes `Envelope` frames. Client MUST respond with `AckMessage` frames. Server batches deletions based on ACKs.
       tags: [Messaging]
@@ -846,7 +1113,7 @@ components:
 
   responses:
     UnauthorizedError:
-      description: Unauthorized (Invalid or missing token).
+      description: Unauthorized (Invalid or missing token, or a token of a deleted device).
       headers:
         x-request-id:
           $ref: '#/components/headers/x-request-id'
@@ -956,7 +1223,6 @@ components:
       type: object
       required:
         - token
-        - refreshToken
         - expiresAt
       properties:
         token:
@@ -964,7 +1230,9 @@ components:
           description: Short-lived JWT Access Token.
         refreshToken:
           type: string
-          description: Long-lived opaque Refresh Token.
+          description: |
+            Long-lived opaque Refresh Token. Present only with a Device-Scoped JWT; a User-Scoped JWT
+            cannot be refreshed.
         expiresAt:
           type: integer
           format: int64
@@ -991,6 +1259,19 @@ components:
           type: string
           format: uuid
           description: Optional. If provided and belongs to the user, the returned JWT will be Device-Scoped.
+
+    ResetAccountRequest:
+      type: object
+      required:
+        - username
+        - password
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 50
+        password:
+          type: string
 
     LogoutRequest:
       type: object
@@ -1053,6 +1334,9 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/OneTimePreKey'
+        linkSessionId:
+          type: string
+          description: Required when the account already has devices. An approved session from `POST /v1/link-sessions`.
 
     DeviceResponse:
       type: object
@@ -1063,6 +1347,9 @@ components:
         name:
           type: string
           nullable: true
+        isPrimary:
+          type: boolean
+          description: Whether this is the account's primary device, the only one that links or unlinks devices.
         createdAt:
           type: string
           format: date-time
@@ -1090,14 +1377,6 @@ components:
         - signedPreKey
         - oneTimePreKeys
       properties:
-        identityKey:
-          type: string
-          format: byte
-          description: Optional Base64 Identity Key. Triggers takeover if changed.
-        registrationId:
-          type: integer
-          format: int32
-          description: Required if identityKey is provided.
         signedPreKey:
           description: Signed Pre-Key. ID must be strictly greater than the current stored ID.
           allOf:
@@ -1120,6 +1399,7 @@ components:
         identityKey:
           type: string
           format: byte
+          description: The account identity key, the same for every device of the user.
         signedPreKey:
           $ref: '#/components/schemas/SignedPreKey'
         oneTimePreKey:
@@ -1171,6 +1451,18 @@ components:
           type: integer
           format: int64
           description: UNIX timestamp of when the file will be deleted.
+
+    LinkSessionResponse:
+      type: object
+      required: [id, expiresAt]
+      properties:
+        id:
+          type: string
+          description: Secret session id, used in `/v1/link-sessions/{id}` and as `linkSessionId`.
+        expiresAt:
+          type: integer
+          format: int64
+          description: UNIX timestamp after which the session and its body are no longer accepted.
 
     TicketResponse:
       type: object

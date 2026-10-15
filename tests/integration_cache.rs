@@ -28,12 +28,13 @@ async fn test_redis_cache_basic_operations() {
     let result = cache.get(&key).await.expect("Failed to get").expect("Expected value but got None");
     assert_eq!(result, value, "Value mismatch");
 
-    // 4. Delete key
-    cache.delete(&key).await.expect("Failed to delete");
+    // 4. Take returns the value and removes the key
+    let result = cache.take(&key).await.expect("Failed to take");
+    assert_eq!(result, Some(value), "Value mismatch");
 
-    // 5. Get deleted key should return None
-    let result = cache.get(&key).await.expect("Failed to get");
-    assert_eq!(result, None, "Expected None for deleted key");
+    // 5. Taken key is gone
+    assert_eq!(cache.get(&key).await.expect("Failed to get"), None, "Expected None for taken key");
+    assert_eq!(cache.take(&key).await.expect("Failed to take"), None, "Expected None for taken key");
 }
 
 #[tokio::test]

@@ -100,6 +100,13 @@ pub struct LoginRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ResetAccountRequest {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RefreshRequest {
     pub refresh_token: String,
 }
@@ -114,7 +121,8 @@ pub struct LogoutRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AuthResponse {
     pub token: String,
-    pub refresh_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
     pub expires_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,

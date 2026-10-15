@@ -1,7 +1,9 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::message_repo::MessageRepository;
 use crate::config::MessagingConfig;
-use crate::domain::message::{FailedSubmission, Message, RawSubmission, SubmissionErrorCode, SubmissionOutcome};
+use crate::domain::message::{
+    DeviceMismatch, FailedSubmission, Message, RawSubmission, SubmissionErrorCode, SubmissionOutcome,
+};
 use crate::domain::notification::UserEvent;
 use crate::error::Result;
 use crate::services::notification_service::NotificationService;
@@ -9,6 +11,7 @@ use opentelemetry::{
     KeyValue, global,
     metrics::{Counter, Histogram},
 };
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -55,7 +58,8 @@ impl MessageService {
     }
 
     /// Processes a batch of raw submissions.
-    /// Performs structural validation, device checking, and bulk insertion.
+    /// Performs structural validation, device checking, the complete-delivery check per target user,
+    /// and bulk insertion, with the target users' device sets locked from the check to the commit.
     ///
     /// # Errors
     /// Returns `AppError::Database` if any database operation fails.
@@ -72,7 +76,7 @@ impl MessageService {
     ) -> Result<SubmissionOutcome> {
         let mut failed_submissions = Vec::new();
         let mut potential_valid = Vec::with_capacity(submissions.len());
-        let mut device_ids_to_check = std::collections::HashSet::new();
+        let mut device_ids_to_check = HashSet::new();
 
         // Pass 1: Structural Validation
         for raw in submissions {
@@ -94,6 +98,15 @@ impl MessageService {
                 continue;
             };
 
+            if device_id == sender_device_id {
+                failed_submissions.push(FailedSubmission {
+                    submission_id: raw.submission_id,
+                    error_code: SubmissionErrorCode::InvalidDevice,
+                    error_message: "Cannot send to the sending device".to_string(),
+                });
+                continue;
+            }
+
             if raw.message.is_empty() {
                 failed_submissions.push(FailedSubmission {
                     submission_id: raw.submission_id,
@@ -108,25 +121,54 @@ impl MessageService {
         }
 
         if potential_valid.is_empty() {
-            return Ok(SubmissionOutcome { failed_submissions });
+            return Ok(SubmissionOutcome { failed_submissions, device_mismatches: Vec::new() });
         }
 
-        // Pass 2: Business Validation (Device Existence)
+        // Pass 2: Business Validation (Device Existence and Complete Delivery)
         let mut tx = self.pool.begin().await?;
         let check_ids: Vec<Uuid> = device_ids_to_check.into_iter().collect();
-        let valid_devices_set: std::collections::HashSet<Uuid> =
-            self.repo.check_devices_exist(&mut tx, &check_ids).await?.into_iter().collect();
+        let mut owner_of = HashMap::new();
+        let mut current_devices: BTreeMap<Uuid, BTreeSet<Uuid>> = BTreeMap::new();
+        for (device_id, user_id) in self.repo.lock_device_sets(&mut tx, &check_ids).await? {
+            owner_of.insert(device_id, user_id);
+            if device_id != sender_device_id {
+                current_devices.entry(user_id).or_default().insert(device_id);
+            }
+        }
+
+        let mut targeted: BTreeMap<Uuid, BTreeSet<Uuid>> = BTreeMap::new();
+        for (device_id, _, _) in &potential_valid {
+            if let Some(user_id) = owner_of.get(device_id) {
+                targeted.entry(*user_id).or_default().insert(*device_id);
+            }
+        }
+
+        let mut device_mismatches = Vec::new();
+        for (user_id, targets) in &targeted {
+            let current = current_devices.remove(user_id).unwrap_or_default();
+            if *targets != current {
+                device_mismatches.push(DeviceMismatch {
+                    user_id: *user_id,
+                    missing_device_ids: current.difference(targets).copied().collect(),
+                });
+            }
+        }
+        let mismatched: HashSet<Uuid> = device_mismatches.iter().map(|m| m.user_id).collect();
 
         let mut to_insert = Vec::with_capacity(potential_valid.len());
         for (d_id, s_id, msg) in potential_valid {
-            if valid_devices_set.contains(&d_id) {
-                to_insert.push((d_id, s_id, msg));
-            } else {
-                failed_submissions.push(FailedSubmission {
+            match owner_of.get(&d_id) {
+                None => failed_submissions.push(FailedSubmission {
                     submission_id: s_id.as_bytes().to_vec(),
                     error_code: SubmissionErrorCode::InvalidDevice,
                     error_message: "Device not found".to_string(),
-                });
+                }),
+                Some(user_id) if mismatched.contains(user_id) => failed_submissions.push(FailedSubmission {
+                    submission_id: s_id.as_bytes().to_vec(),
+                    error_code: SubmissionErrorCode::DeviceMismatch,
+                    error_message: "Targeted devices do not match the user's current devices".to_string(),
+                }),
+                Some(_) => to_insert.push((d_id, s_id, msg)),
             }
         }
 
@@ -143,7 +185,7 @@ impl MessageService {
             self.notifier.notify(&inserted_device_ids, UserEvent::MessageReceived).await;
         }
 
-        Ok(SubmissionOutcome { failed_submissions })
+        Ok(SubmissionOutcome { failed_submissions, device_mismatches })
     }
 
     /// Fetches a batch of pending messages for a device.

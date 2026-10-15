@@ -1,7 +1,9 @@
 use crate::adapters::database::records::UserRecord;
+use crate::domain::crypto::PublicKey;
 use crate::domain::user::User;
 use crate::error::{AppError, Result};
 use sqlx::PgConnection;
+use uuid::Uuid;
 
 #[derive(Clone, Debug, Default)]
 pub struct UserRepository {}
@@ -60,5 +62,48 @@ impl UserRepository {
         .await?;
 
         Ok(user.map(Into::into))
+    }
+
+    /// Locks the user row `FOR UPDATE` and returns the account identity key, if one is set.
+    /// Holding the lock serializes changes to the user's devices. Every device insert must hold it; see
+    /// `MessageRepository::lock_device_sets`.
+    ///
+    /// # Errors
+    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Internal` if stored data is corrupt.
+    #[tracing::instrument(level = "debug", skip(self, conn), err)]
+    pub(crate) async fn lock_identity_key(&self, conn: &mut PgConnection, user_id: Uuid) -> Result<Option<PublicKey>> {
+        let bytes: Option<Vec<u8>> = sqlx::query_scalar("SELECT identity_key FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user_id)
+            .fetch_one(conn)
+            .await?;
+
+        bytes
+            .map(|b| {
+                PublicKey::try_from_bytes(&b).map_err(|e| {
+                    tracing::error!(error = %e, "Database data corruption: Invalid identity key format");
+                    AppError::Internal
+                })
+            })
+            .transpose()
+    }
+
+    /// Sets or clears the account identity key.
+    ///
+    /// # Errors
+    /// Returns `sqlx::Error` if the update fails.
+    #[tracing::instrument(level = "debug", skip(self, conn, identity_key), err)]
+    pub(crate) async fn set_identity_key(
+        &self,
+        conn: &mut PgConnection,
+        user_id: Uuid,
+        identity_key: Option<&PublicKey>,
+    ) -> Result<()> {
+        sqlx::query("UPDATE users SET identity_key = $2 WHERE id = $1")
+            .bind(user_id)
+            .bind(identity_key.map(PublicKey::as_bytes))
+            .execute(conn)
+            .await?;
+        Ok(())
     }
 }

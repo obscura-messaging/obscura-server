@@ -12,6 +12,7 @@ use crate::adapters::database::attachment_repo::AttachmentRepository;
 use crate::adapters::database::backup_repo::BackupRepository;
 use crate::adapters::database::device_repo::DeviceRepository;
 use crate::adapters::database::key_repo::KeyRepository;
+use crate::adapters::database::link_session_repo::LinkSessionRepository;
 use crate::adapters::database::message_repo::MessageRepository;
 use crate::adapters::database::push_token_repo::PushTokenRepository;
 use crate::adapters::database::refresh_token_repo::RefreshTokenRepository;
@@ -28,6 +29,7 @@ use crate::services::device_service::DeviceService;
 use crate::services::gateway::GatewayService;
 use crate::services::health_service::HealthService;
 use crate::services::key_service::KeyService;
+use crate::services::link_session_service::LinkSessionService;
 use crate::services::message_service::MessageService;
 use crate::services::notification_service::NotificationService;
 use crate::services::push_token_service::PushTokenService;
@@ -50,6 +52,7 @@ pub struct Resources {
 pub struct Adapters {
     pub device: DeviceRepository,
     pub key: KeyRepository,
+    pub link_session: LinkSessionRepository,
     pub message: MessageRepository,
     pub user: UserRepository,
     pub refresh: RefreshTokenRepository,
@@ -66,6 +69,7 @@ impl std::fmt::Debug for Adapters {
         f.debug_struct("Adapters")
             .field("device", &self.device)
             .field("key", &self.key)
+            .field("link_session", &self.link_session)
             .field("message", &self.message)
             .field("user", &self.user)
             .field("refresh", &self.refresh)
@@ -87,6 +91,7 @@ pub struct Services {
     pub(crate) message_service: MessageService,
     pub(crate) gateway_service: GatewayService,
     pub notification_service: NotificationService,
+    pub link_session_service: LinkSessionService,
     pub push_token_service: PushTokenService,
     pub rate_limit_service: RateLimitService,
     pub submission_cache: RedisCache,
@@ -238,6 +243,7 @@ impl AppBuilder {
         let adapters = Adapters {
             device: DeviceRepository::new(),
             key: KeyRepository::new(),
+            link_session: LinkSessionRepository::new(),
             message: MessageRepository::new(),
             user: UserRepository::new(),
             refresh: RefreshTokenRepository::new(),
@@ -286,12 +292,15 @@ impl AppBuilder {
         let device_service = DeviceService::new(
             pool.clone(),
             adapters.device.clone(),
-            adapters.message.clone(),
+            adapters.user.clone(),
+            adapters.link_session.clone(),
             key_service.clone(),
             auth_service.clone(),
             notifier.clone(),
             config.auth.max_devices_per_user,
         );
+        let link_session_service =
+            LinkSessionService::new(pool.clone(), adapters.device.clone(), adapters.link_session.clone());
         let gateway_service = GatewayService::new(
             message_service.clone(),
             key_service.clone(),
@@ -330,6 +339,7 @@ impl AppBuilder {
             message_service,
             gateway_service,
             notification_service: notifier.clone(),
+            link_session_service,
             push_token_service,
             rate_limit_service,
             submission_cache,

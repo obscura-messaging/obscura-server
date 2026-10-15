@@ -22,6 +22,13 @@ pub(crate) struct RawSubmission {
 #[derive(Debug, Clone)]
 pub struct SubmissionOutcome {
     pub failed_submissions: Vec<FailedSubmission>,
+    pub device_mismatches: Vec<DeviceMismatch>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeviceMismatch {
+    pub user_id: Uuid,
+    pub missing_device_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,4 +44,5 @@ pub enum SubmissionErrorCode {
     MalformedDeviceId,
     MalformedSubmissionId,
     MessageMissing,
+    DeviceMismatch,
 }

@@ -15,6 +15,19 @@ pub struct AuthUser {
     pub(crate) device_id: Option<Uuid>,
 }
 
+impl AuthUser {
+    /// Rejects device-scoped tokens.
+    ///
+    /// # Errors
+    /// Returns `AppError::Forbidden` if the token is device-scoped.
+    pub(crate) fn require_user_scope(&self) -> Result<(), AppError> {
+        if self.device_id.is_some() {
+            return Err(AppError::Forbidden("User-scoped token required".into()));
+        }
+        Ok(())
+    }
+}
+
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = AppError;
 
@@ -31,7 +44,7 @@ impl FromRequestParts<AppState> for AuthUser {
         let token = &auth_str[7..];
         let jwt = Jwt::new(token.to_string());
 
-        let (user_id, device_id) = state.auth_service.verify_token(&jwt).map_err(|_| AppError::AuthError)?;
+        let (user_id, device_id) = state.auth_service.authenticate(&jwt).await?;
 
         tracing::Span::current().record("user.id", tracing::field::display(user_id));
         if let Some(did) = device_id {

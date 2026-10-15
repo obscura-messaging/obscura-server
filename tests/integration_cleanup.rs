@@ -41,7 +41,11 @@ async fn test_message_cleanup_worker_full_orchestration() {
         .await
         .unwrap();
 
-    sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)").bind(user_a).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
+        .bind(user_a)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Seed 3 messages (exceeds limit of 2)
     for i in 0..3 {
@@ -67,7 +71,11 @@ async fn test_message_cleanup_worker_full_orchestration() {
         .await
         .unwrap();
 
-    sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)").bind(user_b).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
+        .bind(user_b)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Insert one expired message
     let expired_msg_id = Uuid::new_v4();

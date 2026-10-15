@@ -136,3 +136,62 @@ async fn test_websocket_with_invalid_utf8_in_cache() {
         Ok(_) => panic!("Expected connection failure for invalid UTF-8 in cache"),
     }
 }
+
+async fn issue_ticket(app: &common::TestApp, token: &str) -> String {
+    let resp = app
+        .client
+        .post(format!("{}/v1/gateway/ticket", app.server_url))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    resp.json::<serde_json::Value>().await.unwrap()["ticket"].as_str().unwrap().to_string()
+}
+
+async fn connect_status(app: &common::TestApp, ticket: &str) -> u16 {
+    match tokio_tungstenite::connect_async(format!("{}?ticket={ticket}", app.ws_url)).await {
+        Ok((_, resp)) => resp.status().as_u16(),
+        Err(tungstenite::Error::Http(resp)) => resp.status().as_u16(),
+        Err(e) => panic!("Unexpected WebSocket error: {e:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_ticket_is_redeemed_once_under_concurrency() {
+    let app = common::TestApp::spawn().await;
+    let user = app.register_user(&common::generate_username("ticket_race")).await;
+    let ticket = issue_ticket(&app, &user.token).await;
+
+    let attempts = (0..16).map(|_| async {
+        match tokio_tungstenite::connect_async(format!("{}?ticket={ticket}", app.ws_url)).await {
+            Ok((ws, _)) => Ok(ws),
+            Err(tungstenite::Error::Http(resp)) => Err(resp.status().as_u16()),
+            Err(e) => panic!("Unexpected WebSocket error: {e:?}"),
+        }
+    });
+    let results = futures::future::join_all(attempts).await;
+
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "Exactly one redemption may succeed");
+    assert!(results.iter().filter_map(|r| r.as_ref().err()).all(|status| *status == 401));
+    assert_eq!(connect_status(&app, &ticket).await, 401);
+}
+
+#[tokio::test]
+async fn test_ticket_of_deleted_device_is_refused() {
+    let app = common::TestApp::spawn().await;
+    let primary = app.register_user(&common::generate_username("ticket_deleted")).await;
+    let linked = app.link_device(&primary).await;
+    let ticket = issue_ticket(&app, &linked.token).await;
+
+    let resp = app
+        .client
+        .delete(format!("{}/v1/devices/{}", app.server_url, linked.device_id))
+        .header("Authorization", format!("Bearer {}", primary.token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    assert_eq!(connect_status(&app, &ticket).await, 401);
+}
