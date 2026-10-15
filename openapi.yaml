@@ -465,9 +465,7 @@ paths:
         Uploads a new Signed PreKey and One-Time PreKeys for the authenticated device.
         Requires a Device-Scoped JWT.
 
-        The signed prekey must verify against the account identity key. An `identityKey`, if present,
-        must equal the account identity (`400 Identity key does not match the account identity`);
-        it cannot be changed here.
+        The signed prekey must verify against the account identity key, which cannot be changed here.
       tags: [Devices]
       security:
         - bearerAuth: []
@@ -1379,10 +1377,6 @@ components:
         - signedPreKey
         - oneTimePreKeys
       properties:
-        identityKey:
-          type: string
-          format: byte
-          description: Optional Base64 Identity Key. Must equal the account identity key.
         signedPreKey:
           description: Signed Pre-Key. ID must be strictly greater than the current stored ID.
           allOf:

@@ -257,13 +257,12 @@ async fn test_prekey_status_low_keys() {
 }
 
 #[tokio::test]
-async fn test_upload_keys_identity_key_must_match_account() {
+async fn test_upload_keys_verified_against_account_identity() {
     let app = TestApp::spawn().await;
     let user = app.register_user_with_keys(&common::generate_username("ik_upload"), 111, 1).await;
     let upload = |identity_key: &[u8; 32], key_id: i32| {
         let (spk_pub, spk_sig) = common::generate_signed_pre_key(identity_key);
         json!({
-            "identityKey": common::identity_public_key(identity_key),
             "signedPreKey": { "keyId": key_id, "publicKey": STANDARD.encode(&spk_pub), "signature": STANDARD.encode(&spk_sig) },
             "oneTimePreKeys": []
         })
@@ -278,9 +277,7 @@ async fn test_upload_keys_identity_key_must_match_account() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 400);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["error"], "Identity key does not match the account identity");
+    assert_eq!(resp.status(), 400, "A signed pre-key from another identity must not verify");
 
     let resp = app
         .client

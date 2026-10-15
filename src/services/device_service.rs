@@ -9,13 +9,13 @@ use crate::domain::keys::{OneTimePreKey, SignedPreKey};
 use crate::domain::notification::UserEvent;
 use crate::error::{AppError, Result};
 use crate::services::auth_service::AuthService;
-use crate::services::key_service::{IDENTITY_KEY_MISMATCH, KeyService};
+use crate::services::key_service::KeyService;
 use crate::services::notification_service::NotificationService;
 use opentelemetry::{global, metrics::Counter};
 use uuid::Uuid;
 
-pub(crate) const INVALID_LINK_SESSION: &str = "Invalid link session";
-pub(crate) const DEVICE_SCOPE_REQUIRED: &str = "Device-scoped token required";
+const INVALID_LINK_SESSION: &str = "Invalid link session";
+const IDENTITY_KEY_MISMATCH: &str = "Identity key does not match the account identity";
 
 #[derive(Clone, Debug)]
 struct Metrics {
@@ -183,29 +183,21 @@ impl DeviceService {
     /// Returns `AppError::NotFound` if the device doesn't exist or isn't owned by the user.
     /// Returns `AppError::Forbidden` if the caller may not delete the device.
     #[tracing::instrument(skip(self), fields(user.id = %user_id, device.id = %device_id), err(level = "warn"))]
-    pub(crate) async fn delete_device(
-        &self,
-        user_id: Uuid,
-        caller_device_id: Option<Uuid>,
-        device_id: Uuid,
-    ) -> Result<()> {
-        let caller_device_id = caller_device_id.ok_or_else(|| AppError::Forbidden(DEVICE_SCOPE_REQUIRED.into()))?;
-
-        let mut conn = self.pool.acquire().await?;
-        let target = self.device_repo.find_by_id(&mut conn, device_id, user_id).await?.ok_or(AppError::NotFound)?;
+    pub(crate) async fn delete_device(&self, user_id: Uuid, caller_device_id: Uuid, device_id: Uuid) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        self.user_repo.lock_identity_key(&mut tx, user_id).await?;
+        let target = self.device_repo.find_by_id(&mut tx, device_id, user_id).await?.ok_or(AppError::NotFound)?;
         if target.is_primary {
             return Err(AppError::Forbidden("The primary device cannot be deleted; reset the account instead".into()));
         }
         if caller_device_id != device_id {
-            let caller = self.device_repo.find_by_id(&mut conn, caller_device_id, user_id).await?;
+            let caller = self.device_repo.find_by_id(&mut tx, caller_device_id, user_id).await?;
             if !caller.is_some_and(|c| c.is_primary) {
                 return Err(AppError::Forbidden("Only the primary device can delete other devices".into()));
             }
         }
-
-        if !self.device_repo.delete(&mut conn, device_id, user_id).await? {
-            return Err(AppError::NotFound);
-        }
+        self.device_repo.delete(&mut tx, device_id, user_id).await?;
+        tx.commit().await?;
 
         self.notifier.notify(&[device_id], UserEvent::Disconnect).await;
 

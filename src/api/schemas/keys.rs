@@ -51,7 +51,6 @@ impl TryFrom<OneTimePreKey> for keys::OneTimePreKey {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreKeyUploadRequest {
-    pub identity_key: Option<PublicKey>,
     pub signed_pre_key: SignedPreKey,
     pub one_time_pre_keys: Vec<OneTimePreKey>,
 }
@@ -80,7 +79,6 @@ mod tests {
 
     fn mock_upload() -> PreKeyUploadRequest {
         PreKeyUploadRequest {
-            identity_key: None,
             signed_pre_key: SignedPreKey {
                 key_id: 1,
                 public_key: SchemaPublicKey("A".repeat(44)),

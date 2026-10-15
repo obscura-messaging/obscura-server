@@ -65,7 +65,8 @@ impl UserRepository {
     }
 
     /// Locks the user row `FOR UPDATE` and returns the account identity key, if one is set.
-    /// Every device insert must hold this lock; see `MessageRepository::lock_device_sets`.
+    /// Holding the lock serializes changes to the user's devices. Every device insert must hold it; see
+    /// `MessageRepository::lock_device_sets`.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the query fails.

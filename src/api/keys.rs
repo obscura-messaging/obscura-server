@@ -38,8 +38,7 @@ pub(crate) async fn get_pre_key_bundles(
 ///
 /// # Errors
 /// Returns `AppError::Forbidden` if a device-scoped token is not provided.
-/// Returns `AppError::BadRequest` if the keys are malformed, validation fails, or the identity key is not the
-/// account identity.
+/// Returns `AppError::BadRequest` if the keys are malformed or validation fails.
 pub(crate) async fn upload_keys(
     auth_user: AuthUser,
     State(state): State<AppState>,
@@ -51,7 +50,6 @@ pub(crate) async fn upload_keys(
 
     let params = KeyUploadParams {
         device_id,
-        identity_key: payload.identity_key.map(TryInto::try_into).transpose().map_err(AppError::BadRequest)?,
         signed_pre_key: payload.signed_pre_key.try_into().map_err(AppError::BadRequest)?,
         one_time_pre_keys: payload
             .one_time_pre_keys

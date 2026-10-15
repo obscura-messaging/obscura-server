@@ -60,19 +60,17 @@ impl DeviceRepository {
     }
 
     /// Deletes a device owned by a specific user.
-    /// Returns true if the device was found and deleted.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the deletion fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn delete(&self, conn: &mut PgConnection, device_id: Uuid, user_id: Uuid) -> Result<bool> {
-        let result = sqlx::query("DELETE FROM devices WHERE id = $1 AND user_id = $2")
+    pub(crate) async fn delete(&self, conn: &mut PgConnection, device_id: Uuid, user_id: Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM devices WHERE id = $1 AND user_id = $2")
             .bind(device_id)
             .bind(user_id)
             .execute(conn)
             .await?;
-
-        Ok(result.rows_affected() > 0)
+        Ok(())
     }
 
     /// Deletes every device of a user and returns their ids.

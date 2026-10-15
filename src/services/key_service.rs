@@ -11,8 +11,6 @@ use opentelemetry::{global, metrics::Counter};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-pub(crate) const IDENTITY_KEY_MISMATCH: &str = "Identity key does not match the account identity";
-
 #[derive(Clone, Debug)]
 struct Metrics {
     prekey_low_total: Counter<u64>,
@@ -43,7 +41,6 @@ pub struct KeyService {
 #[derive(Debug)]
 pub struct KeyUploadParams {
     pub device_id: Uuid,
-    pub identity_key: Option<PublicKey>,
     pub signed_pre_key: SignedPreKey,
     pub one_time_pre_keys: Vec<OneTimePreKey>,
 }
@@ -112,8 +109,8 @@ impl KeyService {
     /// Uploads a new signed pre-key and one-time pre-keys for an existing device.
     ///
     /// # Errors
-    /// Returns `AppError::BadRequest` if the identity key is not the account identity, the signature does not
-    /// verify, the signed pre-key id does not increase, or the batch is too large.
+    /// Returns `AppError::BadRequest` if the signature does not verify against the account identity, the signed
+    /// pre-key id does not increase, or the batch is too large.
     /// Returns `AppError::Database` if the database operation fails.
     #[tracing::instrument(skip(self, params), fields(device.id = %params.device_id), err(level = "warn"))]
     pub(crate) async fn upload_keys(&self, params: KeyUploadParams) -> Result<()> {
@@ -121,9 +118,6 @@ impl KeyService {
 
         let identity_key =
             self.repo.lock_device_identity_key(&mut tx, params.device_id).await?.ok_or(AppError::NotFound)?;
-        if params.identity_key.is_some_and(|ik| ik != identity_key) {
-            return Err(AppError::BadRequest(IDENTITY_KEY_MISMATCH.into()));
-        }
         self.verify_keys(&identity_key, &params.signed_pre_key)?;
         self.check_batch_size(&params.one_time_pre_keys)?;
 

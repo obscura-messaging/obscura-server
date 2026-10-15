@@ -95,7 +95,9 @@ pub(crate) async fn delete_device(
     State(state): State<AppState>,
     Path(device_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    state.device_service.delete_device(auth_user.user_id, auth_user.device_id, device_id).await?;
+    let caller_device_id =
+        auth_user.device_id.ok_or_else(|| AppError::Forbidden("Device-scoped token required".into()))?;
+    state.device_service.delete_device(auth_user.user_id, caller_device_id, device_id).await?;
     Ok(StatusCode::OK)
 }
 
