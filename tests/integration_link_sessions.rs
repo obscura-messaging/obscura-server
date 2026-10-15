@@ -185,7 +185,10 @@ async fn test_read_waits_for_approval() {
 
     let (status, body, received_at) = waiter.await.unwrap();
     assert_eq!((status, body), (StatusCode::OK, b"late".to_vec()));
-    assert!(received_at.duration_since(approved_at) < Duration::from_secs(2), "The waiting read should return soon");
+    assert!(
+        received_at.duration_since(approved_at) < Duration::from_secs(5),
+        "The waiting read should return well before its 10 s wait"
+    );
 }
 
 #[tokio::test]

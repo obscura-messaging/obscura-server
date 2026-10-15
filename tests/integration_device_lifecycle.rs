@@ -17,6 +17,7 @@ mod common;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use common::{TestApp, TestUser};
+use futures::future::join_all;
 use reqwest::StatusCode;
 use serde_json::json;
 use uuid::Uuid;
@@ -279,13 +280,18 @@ async fn test_account_reset_is_rate_limited_like_auth() {
     let user: TestUser = app.register_user(&common::generate_username("reset_rl")).await;
     let ip = format!("10.9.{}.{}", rand::random::<u8>(), rand::random::<u8>());
 
-    let reset = || {
+    // Concurrent, because the limiter runs before the password check: sequential requests could be
+    // spaced past the refill interval by a slow hash.
+    let statuses: Vec<StatusCode> = join_all((0..3).map(|_| {
         app.client
             .post(format!("{}/v1/account/reset", app.server_url))
             .json(&json!({ "username": user.username, "password": "wrong-password" }))
             .header("X-Forwarded-For", &ip)
             .send()
-    };
-    assert_ne!(reset().await.unwrap().status(), StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(reset().await.unwrap().status(), StatusCode::TOO_MANY_REQUESTS);
+    }))
+    .await
+    .into_iter()
+    .map(|r| r.unwrap().status())
+    .collect();
+    assert_eq!(statuses.iter().filter(|s| **s == StatusCode::TOO_MANY_REQUESTS).count(), 2, "{statuses:?}");
 }
