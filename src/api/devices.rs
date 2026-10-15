@@ -1,5 +1,6 @@
 use crate::api::AppState;
 use crate::api::middleware::AuthUser;
+use crate::api::schemas::auth::ResetAccountRequest;
 use crate::api::schemas::devices::{CreateDeviceRequest, DeviceListResponse, DeviceResponse, UpdateDeviceRequest};
 use crate::error::{AppError, Result};
 use crate::services::device_service::NewDevice;
@@ -16,13 +17,14 @@ use uuid::Uuid;
 ///
 /// # Errors
 /// Returns `AppError::BadRequest` if validation fails or keys are malformed.
-/// Returns `AppError::Forbidden` if the device limit is reached, or a linked device lacks an approved link
+/// Returns `AppError::Forbidden` if the token is device-scoped, the device limit is reached, or a linked device lacks an approved link
 /// session or the account identity key.
 pub(crate) async fn create_device(
     auth_user: AuthUser,
     State(state): State<AppState>,
     Json(payload): Json<CreateDeviceRequest>,
 ) -> Result<impl IntoResponse> {
+    auth_user.require_user_scope()?;
     payload.validate().map_err(AppError::BadRequest)?;
 
     let device = NewDevice {
@@ -100,9 +102,12 @@ pub(crate) async fn delete_device(
 /// Deletes all of the account's devices and clears its identity.
 ///
 /// # Errors
-/// Returns `AppError::Forbidden` if the token is device-scoped.
-pub(crate) async fn reset_account(auth_user: AuthUser, State(state): State<AppState>) -> Result<impl IntoResponse> {
-    state.device_service.reset_account(auth_user.user_id, auth_user.device_id).await?;
+/// Returns `AppError::AuthError` if the credentials are invalid.
+pub(crate) async fn reset_account(
+    State(state): State<AppState>,
+    Json(payload): Json<ResetAccountRequest>,
+) -> Result<impl IntoResponse> {
+    state.device_service.reset_account(&payload.username.to_lowercase(), &payload.password).await?;
     Ok(StatusCode::OK)
 }
 

@@ -216,16 +216,14 @@ impl DeviceService {
     }
 
     /// Deletes every device and link session of the account and clears the account identity, so the next
-    /// registered device becomes a new primary. Requires a user-scoped token, which only a password login issues.
+    /// registered device becomes a new primary. Authorized by the account password.
     ///
     /// # Errors
-    /// Returns `AppError::Forbidden` if the token is device-scoped.
+    /// Returns `AppError::AuthError` if the credentials are invalid.
     /// Returns `AppError::Database` if any database operation fails.
-    #[tracing::instrument(skip(self), fields(user.id = %user_id), err(level = "warn"))]
-    pub(crate) async fn reset_account(&self, user_id: Uuid, caller_device_id: Option<Uuid>) -> Result<()> {
-        if caller_device_id.is_some() {
-            return Err(AppError::Forbidden("User-scoped token required".into()));
-        }
+    #[tracing::instrument(skip(self, username, password), fields(user.id = tracing::field::Empty), err(level = "warn"))]
+    pub(crate) async fn reset_account(&self, username: &str, password: &str) -> Result<()> {
+        let user_id = self.auth_service.verify_credentials(username, password).await?;
 
         let mut tx = self.pool.begin().await?;
         self.user_repo.lock_identity_key(&mut tx, user_id).await?;

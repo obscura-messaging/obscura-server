@@ -218,3 +218,59 @@ async fn test_login_with_device_id() {
 
     assert_eq!(resp_keys.status(), StatusCode::OK, "Should be able to use device-scoped token on /keys");
 }
+
+#[tokio::test]
+async fn test_user_scoped_sessions_are_not_refreshable() {
+    let app = common::TestApp::spawn().await;
+    let username = common::generate_username("user_scoped");
+
+    let resp = app
+        .client
+        .post(format!("{}/v1/users", app.server_url))
+        .json(&json!({ "username": username, "password": "password12345" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let registered: serde_json::Value = resp.json().await.unwrap();
+    assert!(registered.get("refreshToken").is_none());
+    assert!(registered["expiresAt"].as_i64().is_some());
+
+    let device = app.register_user(&common::generate_username("user_scoped_device")).await;
+    let login = |device_id: Option<String>| {
+        app.client
+            .post(format!("{}/v1/sessions", app.server_url))
+            .json(&json!({ "username": device.username, "password": "password12345", "deviceId": device_id }))
+            .send()
+    };
+
+    let user_scoped: serde_json::Value = login(None).await.unwrap().json().await.unwrap();
+    assert!(user_scoped.get("deviceId").is_none());
+    assert!(user_scoped.get("refreshToken").is_none(), "A user-scoped login must not be refreshable");
+
+    let device_scoped: serde_json::Value =
+        login(Some(device.device_id.to_string())).await.unwrap().json().await.unwrap();
+    assert_eq!(device_scoped["deviceId"], device.device_id.to_string());
+    let refresh_token = device_scoped["refreshToken"].as_str().unwrap();
+
+    let resp = app
+        .client
+        .post(format!("{}/v1/sessions/refresh", app.server_url))
+        .json(&json!({ "refreshToken": refresh_token }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let refreshed: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(refreshed["deviceId"], device.device_id.to_string());
+    assert!(refreshed["refreshToken"].as_str().is_some());
+
+    let device_less: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM refresh_tokens r JOIN devices d ON d.id = r.device_id WHERE d.user_id = $1",
+    )
+    .bind(device.user_id)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+    assert_eq!(device_less, 2, "Only the device-scoped sessions hold refresh tokens");
+}

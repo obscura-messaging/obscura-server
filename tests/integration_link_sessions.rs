@@ -225,3 +225,20 @@ async fn test_session_is_bound_to_its_user() {
     assert_eq!(register_linked(&app, &mallory, &mallory_token, &id).await, StatusCode::FORBIDDEN);
     assert_eq!(register_linked(&app, &alice, &alice_token, &id).await, StatusCode::CREATED);
 }
+
+#[tokio::test]
+async fn test_account_reset_discards_sessions() {
+    let app = TestApp::spawn().await;
+    let primary = app.register_user(&common::generate_username("ls_reset")).await;
+    let (_, id) = app.approved_link_session(&primary).await;
+
+    let resp = app
+        .client
+        .post(format!("{}/v1/account/reset", app.server_url))
+        .json(&json!({ "username": primary.username, "password": "password12345" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(!stored(&app, &id).await);
+}

@@ -23,7 +23,7 @@ paths:
       summary: Register a new user account.
       description: |
         Creates a new user account with the provided credentials.
-        Returns a User-Scoped JWT (no `deviceId` claim). The client must then
+        Returns a User-Scoped JWT (no `deviceId` claim) without a refresh token. The client must then
         create a device via `POST /v1/devices` to obtain a Device-Scoped JWT
         required for key management, messaging, and WebSocket connections.
       tags: [Users]
@@ -112,7 +112,8 @@ paths:
       description: |
         Authenticates with username and password. If an optional `deviceId` is provided
         and belongs to the user, the returned JWT will include that `deviceId` claim
-        (Device-Scoped). Otherwise, a User-Scoped JWT is returned.
+        (Device-Scoped) and a refresh token is returned. Otherwise, a User-Scoped JWT is returned
+        without a refresh token.
       tags: [Sessions]
       security: []
       requestBody:
@@ -170,8 +171,9 @@ paths:
       operationId: refreshToken
       summary: Refresh Access Token.
       description: |
-        Exchanges a valid Refresh Token for a new pair (Access Token + Refresh Token).
+        Exchanges a valid Refresh Token for a new pair (Device-Scoped Access Token + Refresh Token).
         Implements Rotation: The old Refresh Token is invalidated immediately.
+        Only Device-Scoped sessions have refresh tokens.
       tags: [Sessions]
       security: []
       requestBody:
@@ -206,21 +208,26 @@ paths:
         Live gateway connections of those devices are closed and their access tokens stop working.
         The next `POST /v1/devices` registers a new primary device with a new identity key.
 
-        Requires a User-Scoped JWT (from a password login); a Device-Scoped JWT is rejected with 403.
+        Authorized by the account's username and password, not by a token.
         Rate limited like registration and login.
       tags: [Sessions]
-      security:
-        - bearerAuth: []
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetAccountRequest'
       responses:
         '200':
           description: Account reset.
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
         '401':
-          $ref: '#/components/responses/UnauthorizedError'
-        '403':
-          description: '`User-scoped token required`: the token is Device-Scoped.'
+          description: The username or password is wrong.
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'
@@ -242,7 +249,7 @@ paths:
       summary: Provision a new device.
       description: |
         Creates a new device for the authenticated user, uploads its cryptographic keys,
-        and returns a Device-Scoped JWT. Requires a User-Scoped or Device-Scoped JWT.
+        and returns a Device-Scoped JWT with a refresh token. Requires a User-Scoped JWT.
 
         All of an account's devices share one identity key, the account identity.
         - **Account without devices:** the device becomes the primary device and its `identityKey`
@@ -280,6 +287,7 @@ paths:
         '403':
           description: |
             The device cannot be registered. The `error` is one of:
+            - `User-scoped token required`: the token is Device-Scoped.
             - `Device limit reached. Maximum allowed is <n>.`
             - `Invalid link session`: the account has devices and `linkSessionId` is missing, unknown,
               expired, not approved, already used, or bound to another account.
@@ -1217,7 +1225,6 @@ components:
       type: object
       required:
         - token
-        - refreshToken
         - expiresAt
       properties:
         token:
@@ -1225,7 +1232,9 @@ components:
           description: Short-lived JWT Access Token.
         refreshToken:
           type: string
-          description: Long-lived opaque Refresh Token.
+          description: |
+            Long-lived opaque Refresh Token. Present only with a Device-Scoped JWT; a User-Scoped JWT
+            cannot be refreshed.
         expiresAt:
           type: integer
           format: int64
@@ -1252,6 +1261,19 @@ components:
           type: string
           format: uuid
           description: Optional. If provided and belongs to the user, the returned JWT will be Device-Scoped.
+
+    ResetAccountRequest:
+      type: object
+      required:
+        - username
+        - password
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 50
+        password:
+          type: string
 
     LogoutRequest:
       type: object

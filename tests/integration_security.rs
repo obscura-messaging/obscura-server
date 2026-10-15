@@ -41,7 +41,6 @@ async fn test_unauthenticated_access_denied() {
         ("POST", format!("{}/v1/link-sessions", app.server_url)),
         ("PUT", format!("{}/v1/link-sessions/some-id", app.server_url)),
         ("GET", format!("{}/v1/link-sessions/some-id", app.server_url)),
-        ("POST", format!("{}/v1/account/reset", app.server_url)),
     ];
 
     for (method, url) in endpoints {
@@ -183,5 +182,31 @@ async fn test_user_scoped_token_rejected_on_device_endpoints() {
             "Endpoint {method} {url} should return 403 for user-scoped token, got {}",
             resp.status()
         );
+    }
+}
+
+#[tokio::test]
+async fn test_device_scoped_token_rejected_on_user_scoped_endpoints() {
+    let app = TestApp::spawn().await;
+    let user = app.register_user(&common::generate_username("user_scope")).await;
+    let (device_payload, _) = common::generate_device_payload(1, 1);
+
+    let resp = app
+        .client
+        .post(format!("{}/v1/devices", app.server_url))
+        .header("Authorization", format!("Bearer {}", user.token))
+        .json(&device_payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    for (method, url) in [
+        ("POST", format!("{}/v1/link-sessions", app.server_url)),
+        ("GET", format!("{}/v1/link-sessions/some-id", app.server_url)),
+    ] {
+        let req = if method == "POST" { app.client.post(&url) } else { app.client.get(&url) };
+        let resp = req.header("Authorization", format!("Bearer {}", user.token)).send().await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{method} {url} must reject a device-scoped token");
     }
 }

@@ -41,10 +41,10 @@ async fn delete_device(app: &TestApp, token: &str, device_id: Uuid) -> StatusCod
         .status()
 }
 
-async fn reset_account(app: &TestApp, token: &str) -> StatusCode {
+async fn reset_account(app: &TestApp, username: &str, password: &str) -> StatusCode {
     app.client
         .post(format!("{}/v1/account/reset", app.server_url))
-        .header("Authorization", format!("Bearer {token}"))
+        .json(&json!({ "username": username, "password": password }))
         .send()
         .await
         .unwrap()
@@ -234,14 +234,15 @@ async fn test_account_reset() {
     let primary = app.register_user(&common::generate_username("reset")).await;
     let linked = app.link_device(&primary).await;
 
-    assert_eq!(reset_account(&app, &primary.token).await, StatusCode::FORBIDDEN, "Device tokens cannot reset");
-    assert_eq!(reset_account(&app, &linked.token).await, StatusCode::FORBIDDEN, "Device tokens cannot reset");
+    assert_eq!(reset_account(&app, &primary.username, "wrong-password").await, StatusCode::UNAUTHORIZED);
+    assert_eq!(reset_account(&app, "no_such_user", "password12345").await, StatusCode::UNAUTHORIZED);
+    assert_eq!(list_devices(&app, &primary.token).await.len(), 2, "Rejected resets must not delete devices");
 
     let mut ws = app.connect_ws(&linked.token).await;
     ws.ensure_subscribed().await;
 
+    assert_eq!(reset_account(&app, &primary.username.to_uppercase(), "password12345").await, StatusCode::OK);
     let user_token = app.login_user_scoped(&primary.username).await;
-    assert_eq!(reset_account(&app, &user_token).await, StatusCode::OK);
 
     ws.assert_closed().await;
     assert!(list_devices(&app, &user_token).await.is_empty());
@@ -257,7 +258,7 @@ async fn test_account_reset() {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
-    // The next device registers as a new primary with a new identity, without a code.
+    // The next device registers as a new primary with a new identity, without a link session.
     let (payload, new_identity) = common::generate_device_payload(9, 1);
     let resp = post_device(&app, &user_token, &payload).await;
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -281,7 +282,7 @@ async fn test_account_reset_is_rate_limited_like_auth() {
     let reset = || {
         app.client
             .post(format!("{}/v1/account/reset", app.server_url))
-            .header("Authorization", format!("Bearer {}", user.token))
+            .json(&json!({ "username": user.username, "password": "wrong-password" }))
             .header("X-Forwarded-For", &ip)
             .send()
     };

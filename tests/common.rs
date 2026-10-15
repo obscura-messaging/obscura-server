@@ -433,7 +433,7 @@ impl TestApp {
         assert_eq!(resp.status(), 201, "Device creation failed: {}", resp.text().await.unwrap());
         let body = resp.json::<serde_json::Value>().await.unwrap();
         let token = body["token"].as_str().unwrap().to_string();
-        let refresh_token = body["refreshToken"].as_str().unwrap_or_default().to_string();
+        let refresh_token = body["refreshToken"].as_str().unwrap().to_string();
         let device_id = Uuid::parse_str(body["deviceId"].as_str().unwrap()).unwrap();
 
         TestUser { username: username.to_string(), user_id, device_id, token, refresh_token, identity_key }
