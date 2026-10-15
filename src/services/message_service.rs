@@ -98,6 +98,15 @@ impl MessageService {
                 continue;
             };
 
+            if device_id == sender_device_id {
+                failed_submissions.push(FailedSubmission {
+                    submission_id: raw.submission_id,
+                    error_code: SubmissionErrorCode::InvalidDevice,
+                    error_message: "Cannot send to the sending device".to_string(),
+                });
+                continue;
+            }
+
             if raw.message.is_empty() {
                 failed_submissions.push(FailedSubmission {
                     submission_id: raw.submission_id,
@@ -120,7 +129,7 @@ impl MessageService {
         let check_ids: Vec<Uuid> = device_ids_to_check.into_iter().collect();
         let mut owner_of = HashMap::new();
         let mut current_devices: BTreeMap<Uuid, BTreeSet<Uuid>> = BTreeMap::new();
-        for (device_id, user_id) in self.repo.lock_device_sets(&mut tx, sender_id, &check_ids).await? {
+        for (device_id, user_id) in self.repo.lock_device_sets(&mut tx, &check_ids).await? {
             owner_of.insert(device_id, user_id);
             if device_id != sender_device_id {
                 current_devices.entry(user_id).or_default().insert(device_id);

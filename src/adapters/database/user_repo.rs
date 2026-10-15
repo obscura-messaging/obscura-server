@@ -64,8 +64,8 @@ impl UserRepository {
         Ok(user.map(Into::into))
     }
 
-    /// Locks the user row and returns the account identity key, if one is set.
-    /// Holding the lock serializes device registrations and account resets for the user.
+    /// Locks the user row `FOR UPDATE` and returns the account identity key, if one is set.
+    /// Every device insert must hold this lock; see `MessageRepository::lock_device_sets`.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the query fails.

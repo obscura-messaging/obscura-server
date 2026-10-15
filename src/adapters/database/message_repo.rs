@@ -14,14 +14,13 @@ impl MessageRepository {
         Self {}
     }
 
-    /// Locks the device sets of the sender and of every user owning one of `target_device_ids`, and
-    /// returns `(device_id, user_id)` for each of their devices.
+    /// Locks the device sets of every user owning one of `target_device_ids`, and returns
+    /// `(device_id, user_id)` for each of their devices.
     ///
-    /// The user rows are locked `FOR UPDATE` in id order. Inserting a device takes `FOR KEY SHARE` on
-    /// its user row through the foreign key, so no device can be added to these users until the
-    /// transaction ends; the devices are locked `FOR KEY SHARE`, so none can be deleted either. The
-    /// sender is locked too because inserting messages takes `FOR KEY SHARE` on the sender's row, and
-    /// locking it in the same ordered statement keeps two users sending to each other deadlock-free.
+    /// Invariant: a device is only inserted after `FOR UPDATE` on its user row in the same transaction.
+    /// So `FOR SHARE` on the owners' rows (in id order) keeps devices from being added to them until the
+    /// transaction ends, while concurrent sends share the lock; `FOR KEY SHARE` on the devices keeps them
+    /// from being deleted.
     ///
     /// # Errors
     /// Returns `AppError::Database` if a query fails.
@@ -29,18 +28,16 @@ impl MessageRepository {
     pub(crate) async fn lock_device_sets(
         &self,
         conn: &mut PgConnection,
-        sender_id: Uuid,
         target_device_ids: &[Uuid],
     ) -> Result<Vec<(Uuid, Uuid)>> {
         let user_ids: Vec<Uuid> = sqlx::query_scalar(
             r#"
             SELECT id FROM users
-            WHERE id = $1 OR id IN (SELECT user_id FROM devices WHERE id = ANY($2))
+            WHERE id IN (SELECT user_id FROM devices WHERE id = ANY($1))
             ORDER BY id
-            FOR UPDATE
+            FOR SHARE
             "#,
         )
-        .bind(sender_id)
         .bind(target_device_ids)
         .fetch_all(&mut *conn)
         .await?;
