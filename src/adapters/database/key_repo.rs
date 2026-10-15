@@ -120,7 +120,7 @@ impl KeyRepository {
         device_id: Uuid,
         registration_id: i32,
         identity_key: PublicKey,
-    ) -> Result<Option<(PreKeyBundle, i64)>> {
+    ) -> Result<Option<PreKeyBundle>> {
         let signed_rec = sqlx::query_as::<_, SignedPreKeyRecord>(
             r#"
             SELECT id, public_key, signature
@@ -151,33 +151,23 @@ impl KeyRepository {
             )
             DELETE FROM one_time_pre_keys
             WHERE id IN (SELECT id FROM target) AND device_id = $1
-            RETURNING id, public_key, (SELECT COUNT(*) - 1 FROM one_time_pre_keys WHERE device_id = $1) AS remaining_count
+            RETURNING id, public_key
             "#,
         )
         .bind(device_id)
         .fetch_optional(&mut *conn)
         .await?;
 
-        let (one_time_pre_key, remaining_count) = match otpk_rec {
-            Some(rec) => {
-                let (pk, count) = <(OneTimePreKey, i64)>::try_from(rec).map_err(|e| {
-                    tracing::error!(error = %e, "Database data corruption: Invalid one-time pre-key format");
-                    AppError::Internal
-                })?;
-                (Some(pk), count)
-            }
-            None => (None, 0),
-        };
+        let one_time_pre_key = otpk_rec.map(OneTimePreKey::try_from).transpose().map_err(|e| {
+            tracing::error!(error = %e, "Database data corruption: Invalid one-time pre-key format");
+            AppError::Internal
+        })?;
 
-        Ok(Some((
-            PreKeyBundle { device_id, registration_id, identity_key, signed_pre_key, one_time_pre_key },
-            remaining_count,
-        )))
+        Ok(Some(PreKeyBundle { device_id, registration_id, identity_key, signed_pre_key, one_time_pre_key }))
     }
 
     /// Fetches exactly one pre-key bundle for every device owned by a specific user, each carrying the
     /// account identity key. Mutates the database to consume one one-time pre-key per device.
-    /// Returns each bundle with the number of one-time pre-keys its device has left.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the database operation fails.
@@ -187,7 +177,7 @@ impl KeyRepository {
         &self,
         conn: &mut PgConnection,
         user_id: Uuid,
-    ) -> Result<Vec<(PreKeyBundle, i64)>> {
+    ) -> Result<Vec<PreKeyBundle>> {
         let identity: Option<Option<Vec<u8>>> = sqlx::query_scalar("SELECT identity_key FROM users WHERE id = $1")
             .bind(user_id)
             .fetch_optional(&mut *conn)

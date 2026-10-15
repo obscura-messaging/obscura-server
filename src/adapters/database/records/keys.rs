@@ -21,14 +21,11 @@ impl TryFrom<SignedPreKeyRecord> for SignedPreKey {
 pub struct ConsumedPreKeyRecord {
     pub(crate) id: i32,
     pub(crate) public_key: Vec<u8>,
-    pub(crate) remaining_count: Option<i64>,
 }
 
-impl TryFrom<ConsumedPreKeyRecord> for (OneTimePreKey, i64) {
+impl TryFrom<ConsumedPreKeyRecord> for OneTimePreKey {
     type Error = String;
     fn try_from(record: ConsumedPreKeyRecord) -> Result<Self, Self::Error> {
-        let public_key = PublicKey::try_from(record.public_key)?;
-        let count = record.remaining_count.unwrap_or(0);
-        Ok((OneTimePreKey { key_id: record.id, public_key }, count))
+        Ok(Self { key_id: record.id, public_key: PublicKey::try_from(record.public_key)? })
     }
 }

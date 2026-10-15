@@ -69,24 +69,21 @@ impl KeyService {
     pub(crate) async fn get_pre_key_bundles_for_user(&self, user_id: Uuid) -> Result<Vec<PreKeyBundle>> {
         let mut conn = self.pool.begin().await?;
 
-        let results = self.repo.get_all_bundles_for_user(&mut conn, user_id).await?;
+        let bundles = self.repo.get_all_bundles_for_user(&mut conn, user_id).await?;
 
         conn.commit().await?;
 
-        let mut bundles = Vec::new();
-
-        // 2. Check thresholds asynchronously, so we don't hold the DB transaction or slow down the response
-        for (bundle, remaining) in results {
-            if remaining < i64::from(self.config.pre_key_refill_threshold) {
-                self.metrics.prekey_low_total.add(1, &[]);
+        // Counted after commit: a count inside the consuming statement misses concurrent consumers,
+        // so under a burst no fetch would see the device go low. The last fetch to commit sees all.
+        for bundle in &bundles {
+            if let Some(status) = self.check_pre_key_status(bundle.device_id).await? {
                 tracing::warn!(
                     device.id = %bundle.device_id,
-                    remaining = %remaining,
+                    remaining = %status.one_time_pre_key_count,
                     "Pre-keys falling below minimum threshold"
                 );
                 self.notifier.notify(&[bundle.device_id], UserEvent::PreKeyLow).await;
             }
-            bundles.push(bundle);
         }
 
         Ok(bundles)
