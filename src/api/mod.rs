@@ -142,6 +142,7 @@ fn api_router(
         .route("/link-sessions", post(link_sessions::create_link_session))
         .route("/link-sessions/{id}", put(link_sessions::approve_link_session).get(link_sessions::get_link_session))
         .route("/users/{userId}", get(keys::get_pre_key_bundles))
+        .route("/users/{userId}/devices/{deviceId}", get(keys::get_device_pre_key_bundle))
         .route("/messages", post(messages::send_messages))
         .route("/gateway", get(gateway::websocket_handler))
         .route("/gateway/ticket", post(gateway::generate_ticket))

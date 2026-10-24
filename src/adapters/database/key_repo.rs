@@ -166,17 +166,18 @@ impl KeyRepository {
         Ok(Some(PreKeyBundle { device_id, registration_id, identity_key, signed_pre_key, one_time_pre_key }))
     }
 
-    /// Fetches exactly one pre-key bundle for every device owned by a specific user, each carrying the
-    /// account identity key. Mutates the database to consume one one-time pre-key per device.
+    /// Fetches one pre-key bundle for each of a user's devices, or for `device_id` only, each carrying the
+    /// account identity key. Consumes one one-time pre-key per returned device.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the database operation fails.
     /// Returns `AppError::Internal` if stored data is corrupt.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn get_all_bundles_for_user(
+    pub(crate) async fn get_bundles(
         &self,
         conn: &mut PgConnection,
         user_id: Uuid,
+        device_id: Option<Uuid>,
     ) -> Result<Vec<PreKeyBundle>> {
         let identity: Option<Option<Vec<u8>>> = sqlx::query_scalar("SELECT identity_key FROM users WHERE id = $1")
             .bind(user_id)
@@ -188,11 +189,13 @@ impl KeyRepository {
         };
         let identity_key = decode_identity_key(Some(&identity))?;
 
-        let devices: Vec<(Uuid, i32)> =
-            sqlx::query_as("SELECT id, registration_id FROM devices WHERE user_id = $1 ORDER BY created_at ASC")
-                .bind(user_id)
-                .fetch_all(&mut *conn)
-                .await?;
+        let devices: Vec<(Uuid, i32)> = sqlx::query_as(
+            "SELECT id, registration_id FROM devices WHERE user_id = $1 AND ($2::uuid IS NULL OR id = $2) ORDER BY created_at ASC",
+        )
+        .bind(user_id)
+        .bind(device_id)
+        .fetch_all(&mut *conn)
+        .await?;
 
         let mut bundles = Vec::with_capacity(devices.len());
         for (device_id, registration_id) in devices {

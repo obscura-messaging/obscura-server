@@ -365,3 +365,43 @@ async fn test_fetch_keys_multiple_devices() {
     assert_eq!(d1_bundle.unwrap()["registrationId"], 111);
     assert_eq!(d2_bundle.unwrap()["registrationId"], 456);
 }
+
+#[tokio::test]
+async fn test_fetch_one_device_bundle_consumes_only_that_device() {
+    let app = TestApp::spawn().await;
+    let user = app.register_user_with_keys(&common::generate_username("one_dev"), 111, 10).await;
+    let linked = app.link_device(&user).await;
+    let other = app.register_user(&common::generate_username("one_dev_other")).await;
+    let remaining = |device_id: uuid::Uuid| {
+        let pool = app.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM one_time_pre_keys WHERE device_id = $1")
+                .bind(device_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    let fetch = |owner: uuid::Uuid, device: uuid::Uuid, token: String| {
+        app.client
+            .get(format!("{}/v1/users/{owner}/devices/{device}", app.server_url))
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+    };
+    let before_primary = remaining(user.device_id).await;
+
+    let resp = fetch(user.user_id, linked.device_id, other.token.clone()).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let bundle: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(bundle["deviceId"], linked.device_id.to_string());
+    assert!(bundle["oneTimePreKey"].is_object(), "the linked device's one-time prekey is returned");
+    assert_eq!(remaining(linked.device_id).await, 0);
+    assert_eq!(remaining(user.device_id).await, before_primary, "other devices keep their one-time prekeys");
+
+    let resp = fetch(other.user_id, linked.device_id, other.token.clone()).await.unwrap();
+    assert_eq!(resp.status(), 404, "a device of another user is not found");
+
+    let user_token = app.login_user_scoped(&user.username).await;
+    let resp = fetch(user.user_id, linked.device_id, user_token).await.unwrap();
+    assert_eq!(resp.status(), 403, "a user-scoped token is rejected");
+}

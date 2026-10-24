@@ -24,7 +24,7 @@ pub(crate) async fn get_pre_key_bundles(
 ) -> Result<impl IntoResponse> {
     let _ = auth_user.device_id.ok_or_else(|| AppError::Forbidden("Device-scoped token required".to_string()))?;
 
-    let bundles = state.key_service.get_pre_key_bundles_for_user(user_id).await?;
+    let bundles = state.key_service.get_pre_key_bundles(user_id, None).await?;
 
     if bundles.is_empty() {
         return Err(AppError::NotFound);
@@ -32,6 +32,24 @@ pub(crate) async fn get_pre_key_bundles(
 
     let response: Vec<PreKeyBundleResponse> = bundles.into_iter().map(PreKeyBundleResponse::from).collect();
     Ok(Json(response))
+}
+
+/// Fetches the pre-key bundle of one device of a user, consuming a one-time pre-key on that device only.
+///
+/// # Errors
+/// Returns `AppError::Forbidden` if a device-scoped token is not provided.
+/// Returns `AppError::NotFound` if the user has no such device.
+pub(crate) async fn get_device_pre_key_bundle(
+    auth_user: AuthUser,
+    State(state): State<AppState>,
+    Path((user_id, device_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse> {
+    let _ = auth_user.device_id.ok_or_else(|| AppError::Forbidden("Device-scoped token required".to_string()))?;
+
+    let bundle =
+        state.key_service.get_pre_key_bundles(user_id, Some(device_id)).await?.pop().ok_or(AppError::NotFound)?;
+
+    Ok(Json(PreKeyBundleResponse::from(bundle)))
 }
 
 /// Uploads new pre-keys for the authenticated device.

@@ -57,16 +57,20 @@ impl KeyService {
         Self { pool, repo, crypto_service, notifier, config, metrics: Metrics::new() }
     }
 
-    /// Fetches one pre-key bundle per device owned by the specified user.
-    /// Emits notifications if any device drops below the minimum threshold.
+    /// Fetches one pre-key bundle for each of a user's devices, or for `device_id` only, consuming a
+    /// one-time pre-key on each. Notifies any device that drops below the refill threshold.
     ///
     /// # Errors
     /// Returns `AppError::Database` if database query fails.
     #[tracing::instrument(skip(self), fields(user.id = %user_id), err)]
-    pub(crate) async fn get_pre_key_bundles_for_user(&self, user_id: Uuid) -> Result<Vec<PreKeyBundle>> {
+    pub(crate) async fn get_pre_key_bundles(
+        &self,
+        user_id: Uuid,
+        device_id: Option<Uuid>,
+    ) -> Result<Vec<PreKeyBundle>> {
         let mut conn = self.pool.begin().await?;
 
-        let bundles = self.repo.get_all_bundles_for_user(&mut conn, user_id).await?;
+        let bundles = self.repo.get_bundles(&mut conn, user_id, device_id).await?;
 
         conn.commit().await?;
 
