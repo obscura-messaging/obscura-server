@@ -73,7 +73,7 @@ impl AuthService {
         Self { config, pool, user_repo, refresh_repo, device_repo, metrics: Metrics::new() }
     }
 
-    /// Registers a new user account. Returns a user-only JWT (no `device_id`).
+    /// Registers a new user account. Returns a user-scoped session (no `device_id`).
     ///
     /// # Errors
     /// Returns `AppError::Conflict` if the username already exists.
@@ -95,8 +95,8 @@ impl AuthService {
         Ok(session)
     }
 
-    /// Authenticates a user. If `device_id` is provided and belongs to user, returns a full JWT.
-    /// Otherwise returns a user-only JWT.
+    /// Authenticates a user. If `device_id` is provided and belongs to user, returns a device-scoped session.
+    /// Otherwise returns a user-scoped session.
     ///
     /// # Errors
     /// Returns `AppError::AuthError` if credentials are invalid.
@@ -111,37 +111,44 @@ impl AuthService {
         password: String,
         device_id: Option<Uuid>,
     ) -> Result<AuthSession> {
+        let user_id = self.verify_credentials(&username, &password).await?;
+
         let mut conn = self.pool.acquire().await?;
-        let Some(user) = self.user_repo.find_by_username(&mut conn, &username).await? else {
-            tracing::warn!("Login failed: user not found");
-            return Err(AppError::AuthError);
-        };
-
-        tracing::Span::current().record("user_id", tracing::field::display(user.id));
-
-        let is_valid = self.verify_password(&password, &user.password_hash).await?;
-
-        if !is_valid {
-            tracing::warn!("Login failed: invalid password");
-            return Err(AppError::AuthError);
-        }
-
-        // If device_id provided, validate it belongs to this user
         let validated_device_id = if let Some(did) = device_id {
-            if self.device_repo.belongs_to_user(&mut conn, did, user.id).await? {
+            if self.device_repo.belongs_to_user(&mut conn, did, user_id).await? {
                 Some(did)
             } else {
-                tracing::warn!(device_id = %did, "Login with unknown device_id, issuing user-only JWT");
+                tracing::warn!(device_id = %did, "Login with unknown device_id, issuing user-scoped session");
                 None
             }
         } else {
             None
         };
 
-        // Generate Tokens
-        let session = self.create_session(&mut conn, user.id, validated_device_id).await?;
+        let session = self.create_session(&mut conn, user_id, validated_device_id).await?;
         self.metrics.login.add(1, &[]);
         Ok(session)
+    }
+
+    /// Verifies a username and password and returns the user's id.
+    ///
+    /// # Errors
+    /// Returns `AppError::AuthError` if credentials are invalid.
+    pub(crate) async fn verify_credentials(&self, username: &str, password: &str) -> Result<Uuid> {
+        let mut conn = self.pool.acquire().await?;
+        let Some(user) = self.user_repo.find_by_username(&mut conn, username).await? else {
+            tracing::warn!("Credentials rejected: user not found");
+            return Err(AppError::AuthError);
+        };
+        drop(conn);
+
+        tracing::Span::current().record("user.id", tracing::field::display(user.id));
+
+        if !self.verify_password(password, &user.password_hash).await? {
+            tracing::warn!("Credentials rejected: invalid password");
+            return Err(AppError::AuthError);
+        }
+        Ok(user.id)
     }
 
     /// Hashes a password using Argon2.
@@ -175,7 +182,8 @@ impl AuthService {
         .map_err(|_| AppError::Internal)?
     }
 
-    /// Creates a new authenticated session with optional `device_id`.
+    /// Creates a session. A device-scoped session gets a refresh token; a user-scoped session (no `device_id`)
+    /// is short-lived and cannot be refreshed.
     ///
     /// # Errors
     /// Returns `AppError::Database` if the session cannot be saved.
@@ -186,28 +194,22 @@ impl AuthService {
         user_id: Uuid,
         device_id: Option<Uuid>,
     ) -> Result<AuthSession> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0)).as_secs();
+        let (token, expires_at) = self.issue_access_token(user_id, device_id)?;
 
-        let exp = now.checked_add(self.config.access_token_ttl_secs).ok_or(AppError::Internal)?;
-        let exp_usize = usize::try_from(exp).map_err(|_| AppError::Internal)?;
+        let refresh_token = match device_id {
+            Some(device_id) => {
+                let refresh_token = Self::generate_opaque_token();
+                let refresh_hash = Self::hash_opaque_token(&refresh_token);
+                self.refresh_repo.create(conn, device_id, &refresh_hash, self.config.refresh_token_ttl_days).await?;
+                Some(refresh_token)
+            }
+            None => None,
+        };
 
-        let claims = Claims::new(user_id, device_id, exp_usize);
-        let jwt = self.encode_jwt(&claims)?;
-
-        let refresh_token = Self::generate_opaque_token();
-        let refresh_hash = Self::hash_opaque_token(&refresh_token);
-
-        self.refresh_repo.create(conn, user_id, device_id, &refresh_hash, self.config.refresh_token_ttl_days).await?;
-
-        Ok(AuthSession {
-            token: jwt.as_str().to_string(),
-            refresh_token,
-            expires_at: i64::try_from(exp).map_err(|_| AppError::Internal)?,
-            device_id,
-        })
+        Ok(AuthSession { token, refresh_token, expires_at, device_id })
     }
 
-    /// Refreshes an existing session. Preserves the `device_id` from the original refresh token.
+    /// Refreshes a device-scoped session.
     ///
     /// # Errors
     /// Returns `AppError::AuthError` if the refresh token is invalid.
@@ -226,23 +228,20 @@ impl AuthService {
 
         tracing::Span::current().record("user_id", tracing::field::display(user_id));
 
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0)).as_secs();
-
-        let exp = now.checked_add(self.config.access_token_ttl_secs).ok_or(AppError::Internal)?;
-        let exp_usize = usize::try_from(exp).map_err(|_| AppError::Internal)?;
-
-        let claims = Claims::new(user_id, device_id, exp_usize);
-        let new_jwt = self.encode_jwt(&claims)?;
+        let (token, expires_at) = self.issue_access_token(user_id, Some(device_id))?;
 
         tracing::info!("Tokens rotated successfully");
         self.metrics.refresh.add(1, &[]);
 
-        Ok(AuthSession {
-            token: new_jwt.as_str().to_string(),
-            refresh_token: new_refresh_token,
-            expires_at: i64::try_from(exp).map_err(|_| AppError::Internal)?,
-            device_id,
-        })
+        Ok(AuthSession { token, refresh_token: Some(new_refresh_token), expires_at, device_id: Some(device_id) })
+    }
+
+    fn issue_access_token(&self, user_id: Uuid, device_id: Option<Uuid>) -> Result<(String, i64)> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0)).as_secs();
+        let exp = now.checked_add(self.config.access_token_ttl_secs).ok_or(AppError::Internal)?;
+        let claims = Claims::new(user_id, device_id, usize::try_from(exp).map_err(|_| AppError::Internal)?);
+        let jwt = self.encode_jwt(&claims)?;
+        Ok((jwt.0, i64::try_from(exp).map_err(|_| AppError::Internal)?))
     }
 
     /// Logs out a user by deleting their refresh token.
@@ -258,11 +257,27 @@ impl AuthService {
         Ok(())
     }
 
+    /// Verifies a JWT access token and that its device, if any, still exists. Returns (`user_id`, `device_id`).
+    ///
+    /// # Errors
+    /// Returns `AppError::AuthError` if the token is invalid, expired, or names a deleted device.
+    /// Returns `AppError::Database` if the device lookup fails.
+    pub(crate) async fn authenticate(&self, jwt: &Jwt) -> Result<(Uuid, Option<Uuid>)> {
+        let (user_id, device_id) = self.verify_token(jwt)?;
+        if let Some(device_id) = device_id {
+            let mut conn = self.pool.acquire().await?;
+            if !self.device_repo.belongs_to_user(&mut conn, device_id, user_id).await? {
+                return Err(AppError::AuthError);
+            }
+        }
+        Ok((user_id, device_id))
+    }
+
     /// Verifies a JWT access token and returns (`user_id`, `device_id`).
     ///
     /// # Errors
     /// Returns `AppError::AuthError` if the token is invalid or expired.
-    pub(crate) fn verify_token(&self, jwt: &Jwt) -> Result<(Uuid, Option<Uuid>)> {
+    fn verify_token(&self, jwt: &Jwt) -> Result<(Uuid, Option<Uuid>)> {
         let token_data = decode::<Claims>(
             jwt.as_str(),
             &DecodingKey::from_secret(self.config.jwt_secret.as_bytes()),
@@ -280,12 +295,12 @@ impl AuthService {
         Ok(Jwt(token))
     }
 
-    fn generate_opaque_token() -> String {
+    pub(crate) fn generate_opaque_token() -> String {
         let bytes = rand::random::<[u8; 32]>();
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
     }
 
-    fn hash_opaque_token(token: &str) -> String {
+    pub(crate) fn hash_opaque_token(token: &str) -> String {
         let mut hasher = Sha256::new();
         hasher.update(token.as_bytes());
         hex::encode(hasher.finalize())

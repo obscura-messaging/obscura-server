@@ -14,23 +14,40 @@ impl MessageRepository {
         Self {}
     }
 
-    /// Checks which devices exist in the database.
+    /// Locks the device sets of every user owning one of `target_device_ids`, and returns
+    /// `(device_id, user_id)` for each of their devices.
+    ///
+    /// Invariant: a device is only inserted after `FOR UPDATE` on its user row in the same transaction.
+    /// So `FOR SHARE` on the owners' rows (in id order) keeps devices from being added to them until the
+    /// transaction ends, while concurrent sends share the lock; `FOR KEY SHARE` on the devices keeps them
+    /// from being deleted.
     ///
     /// # Errors
-    /// Returns `AppError::Database` if the query fails.
+    /// Returns `AppError::Database` if a query fails.
     #[tracing::instrument(level = "debug", skip(self, conn))]
-    pub(crate) async fn check_devices_exist(&self, conn: &mut PgConnection, device_ids: &[Uuid]) -> Result<Vec<Uuid>> {
-        if device_ids.is_empty() {
-            return Ok(Vec::new());
-        }
+    pub(crate) async fn lock_device_sets(
+        &self,
+        conn: &mut PgConnection,
+        target_device_ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, Uuid)>> {
+        let user_ids: Vec<Uuid> = sqlx::query_scalar(
+            r#"
+            SELECT id FROM users
+            WHERE id IN (SELECT user_id FROM devices WHERE id = ANY($1))
+            ORDER BY id
+            FOR SHARE
+            "#,
+        )
+        .bind(target_device_ids)
+        .fetch_all(&mut *conn)
+        .await?;
 
-        let rows: Vec<(Uuid,)> = sqlx::query_as("SELECT id FROM devices WHERE id = ANY($1)")
-            .bind(device_ids)
+        let devices = sqlx::query_as("SELECT id, user_id FROM devices WHERE user_id = ANY($1) FOR KEY SHARE")
+            .bind(user_ids)
             .fetch_all(conn)
-            .await
-            .map_err(AppError::Database)?;
+            .await?;
 
-        Ok(rows.into_iter().map(|(id,)| id).collect())
+        Ok(devices)
     }
 
     /// Inserts a batch of messages.
@@ -193,16 +210,6 @@ impl MessageRepository {
         .bind(limit)
         .execute(conn)
         .await?;
-        Ok(result.rows_affected())
-    }
-
-    /// Deletes all messages for a specific device (Inbox wipe).
-    ///
-    /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
-    #[tracing::instrument(level = "debug", skip(self, conn))]
-    pub(crate) async fn delete_all_for_device(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<u64> {
-        let result = sqlx::query("DELETE FROM messages WHERE device_id = $1").bind(device_id).execute(conn).await?;
         Ok(result.rows_affected())
     }
 }

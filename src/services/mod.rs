@@ -6,6 +6,7 @@ pub mod device_service;
 pub mod gateway;
 pub mod health_service;
 pub mod key_service;
+pub mod link_session_service;
 pub mod message_service;
 pub mod notification_service;
 pub mod push_token_service;

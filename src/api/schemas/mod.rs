@@ -6,5 +6,6 @@ pub mod devices;
 pub mod gateway;
 pub mod health;
 pub mod keys;
+pub mod link_sessions;
 pub mod messaging;
 pub mod push_tokens;

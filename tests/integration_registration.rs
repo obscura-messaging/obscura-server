@@ -36,7 +36,7 @@ async fn test_register_flow() {
     // Verify response structure
     let json: serde_json::Value = resp.json().await.unwrap();
     assert!(json.get("token").is_some());
-    assert!(json.get("refreshToken").is_some(), "Registration response must include refreshToken");
+    assert!(json.get("refreshToken").is_none(), "A user-scoped session must not be refreshable");
     assert!(json.get("expiresAt").is_some(), "Registration response must include expiresAt");
     // User-only JWT should NOT have deviceId
     assert!(json.get("deviceId").is_none(), "User-only registration should not include deviceId");

@@ -9,6 +9,7 @@ use crate::services::device_service::DeviceService;
 use crate::services::gateway::GatewayService;
 use crate::services::health_service::HealthService;
 use crate::services::key_service::KeyService;
+use crate::services::link_session_service::LinkSessionService;
 use crate::services::message_service::MessageService;
 use crate::services::push_token_service::PushTokenService;
 use crate::services::rate_limit_service::RateLimitService;
@@ -35,6 +36,7 @@ pub mod docs;
 pub mod gateway;
 pub mod health;
 pub mod keys;
+pub mod link_sessions;
 pub mod messages;
 pub mod middleware;
 pub mod push_tokens;
@@ -51,6 +53,7 @@ pub(crate) struct AppState {
     pub(crate) auth_service: AuthService,
     pub(crate) message_service: MessageService,
     pub(crate) gateway_service: GatewayService,
+    pub(crate) link_session_service: LinkSessionService,
     pub(crate) push_token_service: PushTokenService,
     pub(crate) rate_limit_service: RateLimitService,
     pub(crate) submission_cache: RedisCache,
@@ -69,6 +72,7 @@ impl AppState {
             auth_service: services.auth_service,
             message_service: services.message_service,
             gateway_service: services.gateway_service,
+            link_session_service: services.link_session_service,
             push_token_service: services.push_token_service,
             rate_limit_service: services.rate_limit_service,
             submission_cache: services.submission_cache,
@@ -108,6 +112,7 @@ fn auth_router(
         .route("/sessions", post(auth::login))
         .route("/sessions", delete(auth::logout))
         .route("/sessions/refresh", post(auth::refresh))
+        .route("/account/reset", post(devices::reset_account))
         .layer(GovernorLayer::new(auth_conf))
         .layer(standard_timeout)
 }
@@ -134,7 +139,10 @@ fn api_router(
             delete(devices::delete_device).get(devices::get_device).put(devices::update_device),
         )
         .route("/devices/keys", post(keys::upload_keys))
+        .route("/link-sessions", post(link_sessions::create_link_session))
+        .route("/link-sessions/{id}", put(link_sessions::approve_link_session).get(link_sessions::get_link_session))
         .route("/users/{userId}", get(keys::get_pre_key_bundles))
+        .route("/users/{userId}/devices/{deviceId}", get(keys::get_device_pre_key_bundle))
         .route("/messages", post(messages::send_messages))
         .route("/gateway", get(gateway::websocket_handler))
         .route("/gateway/ticket", post(gateway::generate_ticket))

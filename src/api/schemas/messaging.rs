@@ -24,8 +24,17 @@ impl From<SubmissionOutcome> for proto::SendMessageResponse {
                             proto::send_message_response::ErrorCode::MalformedSubmissionId
                         }
                         SubmissionErrorCode::MessageMissing => proto::send_message_response::ErrorCode::MessageMissing,
+                        SubmissionErrorCode::DeviceMismatch => proto::send_message_response::ErrorCode::DeviceMismatch,
                     } as i32,
                     error_message: f.error_message,
+                })
+                .collect(),
+            device_mismatches: outcome
+                .device_mismatches
+                .into_iter()
+                .map(|m| proto::send_message_response::DeviceMismatch {
+                    user_id: m.user_id.as_bytes().to_vec(),
+                    missing_device_ids: m.missing_device_ids.iter().map(|id| id.as_bytes().to_vec()).collect(),
                 })
                 .collect(),
         }

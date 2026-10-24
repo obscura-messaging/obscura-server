@@ -41,8 +41,6 @@ pub struct KeyService {
 #[derive(Debug)]
 pub struct KeyUploadParams {
     pub device_id: Uuid,
-    pub identity_key: Option<PublicKey>,
-    pub registration_id: Option<i32>,
     pub signed_pre_key: SignedPreKey,
     pub one_time_pre_keys: Vec<OneTimePreKey>,
 }
@@ -59,16 +57,20 @@ impl KeyService {
         Self { pool, repo, crypto_service, notifier, config, metrics: Metrics::new() }
     }
 
-    /// Fetches one pre-key bundle per device owned by the specified user.
-    /// Emits notifications if any device drops below the minimum threshold.
+    /// Fetches one pre-key bundle for each of a user's devices, or for `device_id` only, consuming a
+    /// one-time pre-key on each. Notifies any device that drops below the refill threshold.
     ///
     /// # Errors
     /// Returns `AppError::Database` if database query fails.
     #[tracing::instrument(skip(self), fields(user.id = %user_id), err)]
-    pub(crate) async fn get_pre_key_bundles_for_user(&self, user_id: Uuid) -> Result<Vec<PreKeyBundle>> {
+    pub(crate) async fn get_pre_key_bundles(
+        &self,
+        user_id: Uuid,
+        device_id: Option<Uuid>,
+    ) -> Result<Vec<PreKeyBundle>> {
         let mut conn = self.pool.begin().await?;
 
-        let bundles = self.repo.get_all_bundles_for_user(&mut conn, user_id).await?;
+        let bundles = self.repo.get_bundles(&mut conn, user_id, device_id).await?;
 
         conn.commit().await?;
 
@@ -86,16 +88,6 @@ impl KeyService {
         }
 
         Ok(bundles)
-    }
-
-    /// Fetches the identity key for a device.
-    ///
-    /// # Errors
-    /// Returns `AppError::Database` if the database operation fails.
-    #[tracing::instrument(err, skip(self), fields(device.id = %device_id))]
-    pub async fn fetch_identity_key(&self, device_id: Uuid) -> Result<Option<PublicKey>> {
-        let mut conn = self.pool.acquire().await?;
-        self.repo.fetch_identity_key(&mut conn, device_id).await
     }
 
     /// Checks if a device needs to refill their one-time pre-keys.
@@ -118,105 +110,88 @@ impl KeyService {
         }
     }
 
-    /// Internal implementation that accepts a mutable connection.
-    #[tracing::instrument(level = "debug", skip(self, conn, params), err(level = "debug"))]
-    pub(crate) async fn upsert_keys(&self, conn: &mut PgConnection, params: KeyUploadParams) -> Result<bool> {
-        let mut is_takeover = false;
+    /// Uploads a new signed pre-key and one-time pre-keys for an existing device.
+    ///
+    /// # Errors
+    /// Returns `AppError::BadRequest` if the signature does not verify against the account identity, the signed
+    /// pre-key id does not increase, or the batch is too large.
+    /// Returns `AppError::Database` if the database operation fails.
+    #[tracing::instrument(skip(self, params), fields(device.id = %params.device_id), err(level = "warn"))]
+    pub(crate) async fn upload_keys(&self, params: KeyUploadParams) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
 
-        // 1. Identify/Verify Identity Key
-        let ik = if let Some(new_ik) = params.identity_key {
-            // Fetch existing identity key with LOCK
-            let existing_ik_opt = self.repo.fetch_identity_key_for_update(&mut *conn, params.device_id).await?;
+        let identity_key =
+            self.repo.lock_device_identity_key(&mut tx, params.device_id).await?.ok_or(AppError::NotFound)?;
+        self.verify_keys(&identity_key, &params.signed_pre_key)?;
+        self.check_batch_size(&params.one_time_pre_keys)?;
 
-            if let Some(existing_ik) = existing_ik_opt {
-                if existing_ik != new_ik {
-                    tracing::info!("Device takeover detected: identity key has changed");
-                    is_takeover = true;
-                }
-            } else {
-                tracing::info!("New identity key for device");
-                is_takeover = true;
-            }
-
-            self.verify_keys(&new_ik, &params.signed_pre_key)?;
-            new_ik
-        } else {
-            // Must exist
-            let ik = self
-                .repo
-                .fetch_identity_key_for_update(&mut *conn, params.device_id)
-                .await?
-                .ok_or_else(|| AppError::BadRequest("Identity key missing".into()))?;
-
-            // Verify signature with the stored key
-            self.verify_keys(&ik, &params.signed_pre_key)?;
-            ik
-        };
-
-        // 2. Monotonic ID Check (Prevent Replay / Rollback)
-        if !is_takeover {
-            let max_id = self.repo.find_max_signed_pre_key_id(&mut *conn, params.device_id).await?;
-            if let Some(current_max) = max_id
-                && params.signed_pre_key.key_id <= current_max
-            {
-                return Err(AppError::BadRequest(format!(
-                    "Signed Pre-Key ID {} must be greater than current ID {}",
-                    params.signed_pre_key.key_id, current_max
-                )));
-            }
+        let max_id = self.repo.find_max_signed_pre_key_id(&mut tx, params.device_id).await?;
+        if let Some(current_max) = max_id
+            && params.signed_pre_key.key_id <= current_max
+        {
+            return Err(AppError::BadRequest(format!(
+                "Signed Pre-Key ID {} must be greater than current ID {}",
+                params.signed_pre_key.key_id, current_max
+            )));
         }
 
-        // 3. Limit Check (Atomic within transaction)
-        let current_count =
-            if is_takeover { 0 } else { self.repo.count_one_time_pre_keys(&mut *conn, params.device_id).await? };
-
+        let current_count = self.repo.count_one_time_pre_keys(&mut tx, params.device_id).await?;
         let new_keys_count = i64::try_from(params.one_time_pre_keys.len()).unwrap_or(i64::MAX);
-
-        if new_keys_count > self.config.max_pre_keys {
-            return Err(AppError::BadRequest(format!("Batch too large. Limit is {}", self.config.max_pre_keys)));
+        if current_count + new_keys_count > self.config.max_pre_keys {
+            let to_delete = (current_count + new_keys_count) - self.config.max_pre_keys;
+            self.repo.delete_oldest_one_time_pre_keys(&mut tx, params.device_id, to_delete).await?;
         }
 
-        // 4. Handle Takeover Cleanup
-        if is_takeover {
-            let reg_id =
-                params.registration_id.expect("registration_id must be present for takeover (validated at boundary)");
+        self.store_pre_keys(&mut tx, params.device_id, &params.signed_pre_key, &params.one_time_pre_keys).await?;
+        self.repo.delete_signed_pre_keys_older_than(&mut tx, params.device_id, params.signed_pre_key.key_id).await?;
 
-            self.repo.delete_all_signed_pre_keys(&mut *conn, params.device_id).await?;
-            self.repo.delete_all_one_time_pre_keys(&mut *conn, params.device_id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
 
-            // Note: Message deletion and notification are now handled by the orchestrator (DeviceService).
+    /// Stores the first keys of a device created in the same transaction, verified against the account
+    /// identity key.
+    ///
+    /// # Errors
+    /// Returns `AppError::BadRequest` if the signature does not verify or the batch is too large.
+    /// Returns `AppError::Database` if the database operation fails.
+    pub(crate) async fn store_new_device_keys(
+        &self,
+        conn: &mut PgConnection,
+        device_id: Uuid,
+        identity_key: &PublicKey,
+        signed_pre_key: &SignedPreKey,
+        one_time_pre_keys: &[OneTimePreKey],
+    ) -> Result<()> {
+        self.verify_keys(identity_key, signed_pre_key)?;
+        self.check_batch_size(one_time_pre_keys)?;
+        self.store_pre_keys(conn, device_id, signed_pre_key, one_time_pre_keys).await
+    }
 
-            // Upsert Identity Key
-            self.repo.upsert_identity_key(&mut *conn, params.device_id, &ik, reg_id).await?;
-        } else {
-            // If not a takeover, we might need to prune old keys to make room for new ones
-            if current_count + new_keys_count > self.config.max_pre_keys {
-                let to_delete = (current_count + new_keys_count) - self.config.max_pre_keys;
-                self.repo.delete_oldest_one_time_pre_keys(&mut *conn, params.device_id, to_delete).await?;
-            }
-        }
-
-        // 5. Common flow: Upsert Keys
+    async fn store_pre_keys(
+        &self,
+        conn: &mut PgConnection,
+        device_id: Uuid,
+        signed_pre_key: &SignedPreKey,
+        one_time_pre_keys: &[OneTimePreKey],
+    ) -> Result<()> {
         self.repo
             .upsert_signed_pre_key(
                 &mut *conn,
-                params.device_id,
-                params.signed_pre_key.key_id,
-                &params.signed_pre_key.public_key,
-                &params.signed_pre_key.signature,
+                device_id,
+                signed_pre_key.key_id,
+                &signed_pre_key.public_key,
+                &signed_pre_key.signature,
             )
             .await?;
+        self.repo.insert_one_time_pre_keys(&mut *conn, device_id, one_time_pre_keys).await
+    }
 
-        // 6. Cleanup old Signed Pre-Keys
-        if !is_takeover {
-            self.repo
-                .delete_signed_pre_keys_older_than(&mut *conn, params.device_id, params.signed_pre_key.key_id)
-                .await?;
+    fn check_batch_size(&self, one_time_pre_keys: &[OneTimePreKey]) -> Result<()> {
+        if i64::try_from(one_time_pre_keys.len()).unwrap_or(i64::MAX) > self.config.max_pre_keys {
+            return Err(AppError::BadRequest(format!("Batch too large. Limit is {}", self.config.max_pre_keys)));
         }
-
-        self.repo.insert_one_time_pre_keys(&mut *conn, params.device_id, &params.one_time_pre_keys).await?;
-
-        Ok(is_takeover)
+        Ok(())
     }
 
     fn verify_keys(&self, ik: &PublicKey, signed_pre_key: &SignedPreKey) -> Result<()> {
