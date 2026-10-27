@@ -43,10 +43,17 @@ pub(crate) async fn send_messages(
     }
 
     // 3. Simple Domain Mapping (moves only)
+    let recipient_user_ids = request
+        .recipient_user_ids
+        .iter()
+        .map(|bytes| Uuid::from_slice(bytes))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|_| AppError::BadRequest("Invalid recipient_user_ids UUID bytes (expected 16)".to_string()))?;
     let submissions: Vec<RawSubmission> = request.messages.into_iter().map(RawSubmission::from).collect();
 
     // 4. Domain Logic: Call Pure Service
-    let outcome = state.message_service.send(auth_user.user_id, sender_device_id, submissions).await?;
+    let outcome =
+        state.message_service.send(auth_user.user_id, sender_device_id, &recipient_user_ids, submissions).await?;
 
     // 5. Result Mapping
     let response = proto::SendMessageResponse::from(outcome);

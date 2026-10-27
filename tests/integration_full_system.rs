@@ -90,7 +90,7 @@ async fn test_full_system_flow() {
         });
     }
 
-    let request = proto::SendMessageRequest { messages };
+    let request = proto::SendMessageRequest { recipient_user_ids: Vec::new(), messages };
     let mut payload = Vec::new();
     request.encode(&mut payload).unwrap();
 

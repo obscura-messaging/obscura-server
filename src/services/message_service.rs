@@ -72,6 +72,7 @@ impl MessageService {
         &self,
         sender_id: Uuid,
         sender_device_id: Uuid,
+        recipient_user_ids: &[Uuid],
         submissions: Vec<RawSubmission>,
     ) -> Result<SubmissionOutcome> {
         let mut failed_submissions = Vec::new();
@@ -120,7 +121,7 @@ impl MessageService {
             potential_valid.push((device_id, submission_id, raw.message));
         }
 
-        if potential_valid.is_empty() {
+        if potential_valid.is_empty() && recipient_user_ids.is_empty() {
             return Ok(SubmissionOutcome { failed_submissions, device_mismatches: Vec::new() });
         }
 
@@ -129,14 +130,16 @@ impl MessageService {
         let check_ids: Vec<Uuid> = device_ids_to_check.into_iter().collect();
         let mut owner_of = HashMap::new();
         let mut current_devices: BTreeMap<Uuid, BTreeSet<Uuid>> = BTreeMap::new();
-        for (device_id, user_id) in self.repo.lock_device_sets(&mut tx, &check_ids).await? {
+        for (device_id, user_id) in self.repo.lock_device_sets(&mut tx, &check_ids, recipient_user_ids).await? {
             owner_of.insert(device_id, user_id);
             if device_id != sender_device_id {
                 current_devices.entry(user_id).or_default().insert(device_id);
             }
         }
 
-        let mut targeted: BTreeMap<Uuid, BTreeSet<Uuid>> = BTreeMap::new();
+        // A listed user is checked even when the request targets none of its devices.
+        let mut targeted: BTreeMap<Uuid, BTreeSet<Uuid>> =
+            recipient_user_ids.iter().map(|user_id| (*user_id, BTreeSet::new())).collect();
         for (device_id, _, _) in &potential_valid {
             if let Some(user_id) = owner_of.get(device_id) {
                 targeted.entry(*user_id).or_default().insert(*device_id);

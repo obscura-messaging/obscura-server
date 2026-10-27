@@ -24,17 +24,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 fn request(targets: &[(Uuid, Uuid)]) -> Vec<u8> {
-    proto::SendMessageRequest {
-        messages: targets
-            .iter()
-            .map(|(submission_id, device_id)| proto::send_message_request::Submission {
-                submission_id: submission_id.as_bytes().to_vec(),
-                device_id: device_id.as_bytes().to_vec(),
-                message: b"payload".to_vec(),
-            })
-            .collect(),
-    }
-    .encode_to_vec()
+    request_to(&[], targets)
 }
 
 async fn send_raw(
@@ -323,4 +313,68 @@ async fn test_idempotency_key_reuse_returns_the_cached_mismatch() {
     assert!(retry.device_mismatches.is_empty());
     app.assert_message_count(bob1.device_id, 1).await;
     app.assert_message_count(bob2.device_id, 1).await;
+}
+
+fn request_to(recipients: &[Uuid], targets: &[(Uuid, Uuid)]) -> Vec<u8> {
+    proto::SendMessageRequest {
+        recipient_user_ids: recipients.iter().map(|id| id.as_bytes().to_vec()).collect(),
+        messages: targets
+            .iter()
+            .map(|(submission_id, device_id)| proto::send_message_request::Submission {
+                submission_id: submission_id.as_bytes().to_vec(),
+                device_id: device_id.as_bytes().to_vec(),
+                message: b"payload".to_vec(),
+            })
+            .collect(),
+    }
+    .encode_to_vec()
+}
+
+async fn send_to(
+    app: &TestApp,
+    token: &str,
+    recipients: &[Uuid],
+    targets: &[(Uuid, Uuid)],
+) -> proto::SendMessageResponse {
+    let body = send_raw(&app.client, &app.server_url, token, Uuid::new_v4(), request_to(recipients, targets)).await;
+    proto::SendMessageResponse::decode(body).unwrap()
+}
+
+#[tokio::test]
+async fn test_a_listed_recipient_with_no_targets_is_checked() {
+    let app = TestApp::spawn().await;
+    let alice = app.register_user(&common::generate_username("cd_alice")).await;
+    let bob = app.register_user(&common::generate_username("cd_bob")).await;
+    let bob2 = app.link_device(&bob).await;
+
+    let response = send_to(&app, &alice.token, &[bob.user_id], &[]).await;
+
+    assert!(response.failed_submissions.is_empty());
+    assert_eq!(response.device_mismatches, vec![mismatch(bob.user_id, &sorted(vec![bob.device_id, bob2.device_id]))]);
+}
+
+#[tokio::test]
+async fn test_listing_the_sender_reveals_its_unknown_devices() {
+    let app = TestApp::spawn().await;
+    let alice = app.register_user(&common::generate_username("cd_alice")).await;
+
+    let alone = send_to(&app, &alice.token, &[alice.user_id], &[]).await;
+    assert!(alone.device_mismatches.is_empty(), "the sending device alone is complete");
+
+    let alice2 = app.link_device(&alice).await;
+    let response = send_to(&app, &alice.token, &[alice.user_id], &[]).await;
+    assert_eq!(response.device_mismatches, vec![mismatch(alice.user_id, &[alice2.device_id])]);
+}
+
+#[tokio::test]
+async fn test_a_listed_recipient_whose_known_devices_are_gone_reports_the_current_ones() {
+    let app = TestApp::spawn().await;
+    let alice = app.register_user(&common::generate_username("cd_alice")).await;
+    let bob = app.register_user(&common::generate_username("cd_bob")).await;
+    let stale = (Uuid::new_v4(), Uuid::new_v4());
+
+    let response = send_to(&app, &alice.token, &[bob.user_id], &[stale]).await;
+
+    assert_eq!(failure_codes(&response), vec![(stale.0.as_bytes().to_vec(), ErrorCode::InvalidDevice as i32)]);
+    assert_eq!(response.device_mismatches, vec![mismatch(bob.user_id, &[bob.device_id])]);
 }

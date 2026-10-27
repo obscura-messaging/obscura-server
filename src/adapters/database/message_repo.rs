@@ -29,16 +29,18 @@ impl MessageRepository {
         &self,
         conn: &mut PgConnection,
         target_device_ids: &[Uuid],
+        recipient_user_ids: &[Uuid],
     ) -> Result<Vec<(Uuid, Uuid)>> {
         let user_ids: Vec<Uuid> = sqlx::query_scalar(
             r#"
             SELECT id FROM users
-            WHERE id IN (SELECT user_id FROM devices WHERE id = ANY($1))
+            WHERE id = ANY($2) OR id IN (SELECT user_id FROM devices WHERE id = ANY($1))
             ORDER BY id
             FOR SHARE
             "#,
         )
         .bind(target_device_ids)
+        .bind(recipient_user_ids)
         .fetch_all(&mut *conn)
         .await?;
 

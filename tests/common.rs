@@ -528,7 +528,7 @@ impl TestApp {
             })
             .collect();
 
-        let request = proto::SendMessageRequest { messages: outgoing };
+        let request = proto::SendMessageRequest { recipient_user_ids: Vec::new(), messages: outgoing };
         let mut buf = Vec::new();
         request.encode(&mut buf).unwrap();
 
