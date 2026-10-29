@@ -9,7 +9,6 @@ pub mod telemetry;
 pub mod workers;
 
 use crate::adapters::database::attachment_repo::AttachmentRepository;
-use crate::adapters::database::backup_repo::BackupRepository;
 use crate::adapters::database::device_repo::DeviceRepository;
 use crate::adapters::database::key_repo::KeyRepository;
 use crate::adapters::database::link_session_repo::LinkSessionRepository;
@@ -23,7 +22,6 @@ use crate::adapters::storage::S3Storage;
 use crate::config::{Config, StorageConfig};
 use crate::services::attachment_service::AttachmentService;
 use crate::services::auth_service::AuthService;
-use crate::services::backup_service::BackupService;
 use crate::services::crypto_service::CryptoService;
 use crate::services::device_service::DeviceService;
 use crate::services::gateway::GatewayService;
@@ -35,7 +33,7 @@ use crate::services::notification_service::NotificationService;
 use crate::services::push_token_service::PushTokenService;
 use crate::services::rate_limit_service::RateLimitService;
 use crate::workers::{
-    AttachmentCleanupWorker, BackupCleanupWorker, MessageCleanupWorker, NotificationWorker, PushNotificationWorker,
+    AttachmentCleanupWorker, MessageCleanupWorker, NotificationWorker, PushNotificationWorker,
     RefreshTokenCleanupWorker,
 };
 use std::sync::Arc;
@@ -57,7 +55,6 @@ pub struct Adapters {
     pub user: UserRepository,
     pub refresh: RefreshTokenRepository,
     pub attachment: AttachmentRepository,
-    pub backup: BackupRepository,
     pub push_token: PushTokenRepository,
     pub notification: Arc<adapters::redis::NotificationRepository>,
     pub storage: Arc<dyn adapters::storage::ObjectStorage>,
@@ -74,7 +71,6 @@ impl std::fmt::Debug for Adapters {
             .field("user", &self.user)
             .field("refresh", &self.refresh)
             .field("attachment", &self.attachment)
-            .field("backup", &self.backup)
             .field("push_token", &self.push_token)
             .field("notification", &self.notification)
             .finish_non_exhaustive()
@@ -85,7 +81,6 @@ impl std::fmt::Debug for Adapters {
 pub struct Services {
     pub key_service: KeyService,
     pub attachment_service: AttachmentService,
-    pub backup_service: BackupService,
     pub device_service: DeviceService,
     pub auth_service: AuthService,
     pub(crate) message_service: MessageService,
@@ -110,7 +105,6 @@ pub struct App {
 pub struct Workers {
     pub message_worker: MessageCleanupWorker,
     pub attachment_worker: AttachmentCleanupWorker,
-    pub backup_worker: BackupCleanupWorker,
     pub push_worker: PushNotificationWorker,
     pub notification_worker: NotificationWorker,
     pub refresh_token_worker: RefreshTokenCleanupWorker,
@@ -135,13 +129,6 @@ impl Workers {
         tasks.spawn(async move {
             attachment_worker.run(attachment_rx).await;
             "attachment_cleanup"
-        });
-
-        let backup_worker = self.backup_worker;
-        let backup_rx = shutdown_rx.clone();
-        tasks.spawn(async move {
-            backup_worker.run(backup_rx).await;
-            "backup_cleanup"
         });
 
         let push_worker = self.push_worker;
@@ -248,7 +235,6 @@ impl AppBuilder {
             user: UserRepository::new(),
             refresh: RefreshTokenRepository::new(),
             attachment: AttachmentRepository::new(),
-            backup: BackupRepository::new(),
             push_token: PushTokenRepository::new(),
             notification: Arc::new(adapters::redis::NotificationRepository::new(
                 Arc::clone(&pubsub),
@@ -289,12 +275,6 @@ impl AppBuilder {
             config.messaging.clone(),
             config.ttl_days,
         );
-        let backup_service = BackupService::new(
-            pool.clone(),
-            adapters.backup.clone(),
-            Arc::clone(&adapters.storage),
-            config.backup.clone(),
-        );
         let device_service = DeviceService::new(
             pool.clone(),
             adapters.device.clone(),
@@ -302,16 +282,11 @@ impl AppBuilder {
             adapters.link_session.clone(),
             key_service.clone(),
             auth_service.clone(),
-            backup_service.clone(),
             notifier.clone(),
             config.auth.max_devices_per_user,
         );
-        let link_session_service = LinkSessionService::new(
-            pool.clone(),
-            adapters.device.clone(),
-            adapters.link_session.clone(),
-            notifier.clone(),
-        );
+        let link_session_service =
+            LinkSessionService::new(pool.clone(), adapters.device.clone(), adapters.link_session.clone());
         let gateway_service = GatewayService::new(
             message_service.clone(),
             key_service.clone(),
@@ -338,7 +313,6 @@ impl AppBuilder {
         let services = Services {
             key_service,
             attachment_service,
-            backup_service,
             device_service,
             auth_service,
             message_service,
@@ -369,12 +343,6 @@ impl AppBuilder {
                 adapters.attachment.clone(),
                 Arc::clone(&adapters.storage),
                 config.attachment.clone(),
-            ),
-            backup_worker: BackupCleanupWorker::new(
-                pool.clone(),
-                adapters.backup.clone(),
-                Arc::clone(&adapters.storage),
-                config.backup.clone(),
             ),
             push_worker: PushNotificationWorker::new(
                 pool.clone(),

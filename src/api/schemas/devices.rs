@@ -44,12 +44,6 @@ pub struct DeviceListResponse {
     pub devices: Vec<DeviceResponse>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateDeviceRequest {
-    pub name: Option<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

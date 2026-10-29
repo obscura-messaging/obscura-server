@@ -1,15 +1,14 @@
 use crate::api::AppState;
 use crate::api::middleware::{DeviceAuth, UserAuth};
-use crate::api::schemas::link_sessions::{LinkSessionResponse, LinkSessionWaitParams};
+use crate::api::schemas::link_sessions::LinkSessionResponse;
 use crate::error::Result;
 use axum::{
     Json,
     body::Bytes,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use std::time::Duration;
 
 /// Creates a link session bound to the caller's account.
 ///
@@ -40,7 +39,7 @@ pub(crate) async fn approve_link_session(
     Ok(StatusCode::OK)
 }
 
-/// Returns the provisioning message of an approved link session, or 204 if it is not approved within the wait.
+/// Returns the provisioning message of an approved link session, or 204 if it is not approved yet.
 ///
 /// # Errors
 /// Returns `AppError::Forbidden` if the token is device-scoped.
@@ -49,10 +48,8 @@ pub(crate) async fn get_link_session(
     auth: UserAuth,
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Query(params): Query<LinkSessionWaitParams>,
 ) -> Result<Response> {
-    let body =
-        state.link_session_service.wait_for_approval(auth.user_id, &id, Duration::from_secs(params.wait)).await?;
+    let body = state.link_session_service.get_body(auth.user_id, &id).await?;
     Ok(body.map_or_else(
         || StatusCode::NO_CONTENT.into_response(),
         |body| ([(header::CONTENT_TYPE, "application/octet-stream")], body).into_response(),

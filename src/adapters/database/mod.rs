@@ -1,5 +1,4 @@
 pub mod attachment_repo;
-pub mod backup_repo;
 pub mod device_repo;
 pub mod key_repo;
 pub mod link_session_repo;

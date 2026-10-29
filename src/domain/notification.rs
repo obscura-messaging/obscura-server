@@ -6,7 +6,6 @@ pub enum UserEvent {
     MessageReceived = 1,
     Disconnect = 2,
     PreKeyLow = 3,
-    LinkApproved = 4,
 }
 
 #[derive(Debug, Clone)]
@@ -23,7 +22,6 @@ impl TryFrom<u8> for UserEvent {
             1 => Ok(Self::MessageReceived),
             2 => Ok(Self::Disconnect),
             3 => Ok(Self::PreKeyLow),
-            4 => Ok(Self::LinkApproved),
             _ => Err(()),
         }
     }

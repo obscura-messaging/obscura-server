@@ -4,7 +4,6 @@ use crate::api::rate_limit::log_rate_limit_events;
 use crate::config::Config;
 use crate::services::attachment_service::AttachmentService;
 use crate::services::auth_service::AuthService;
-use crate::services::backup_service::BackupService;
 use crate::services::device_service::DeviceService;
 use crate::services::gateway::GatewayService;
 use crate::services::health_service::HealthService;
@@ -18,7 +17,7 @@ use axum::http::{Request, StatusCode};
 use axum::{
     Router,
     middleware::from_fn_with_state,
-    routing::{delete, get, head, post, put},
+    routing::{delete, get, post, put},
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,7 +29,6 @@ use tower_http::trace::TraceLayer;
 
 pub mod attachments;
 pub mod auth;
-pub mod backup;
 pub mod devices;
 pub mod docs;
 pub mod gateway;
@@ -48,7 +46,6 @@ pub(crate) struct AppState {
     pub(crate) config: Config,
     pub(crate) key_service: KeyService,
     pub(crate) attachment_service: AttachmentService,
-    pub(crate) backup_service: BackupService,
     pub(crate) device_service: DeviceService,
     pub(crate) auth_service: AuthService,
     pub(crate) message_service: MessageService,
@@ -67,7 +64,6 @@ impl AppState {
             config: config.clone(),
             key_service: services.key_service,
             attachment_service: services.attachment_service,
-            backup_service: services.backup_service,
             device_service: services.device_service,
             auth_service: services.auth_service,
             message_service: services.message_service,
@@ -134,10 +130,7 @@ fn api_router(
     let standard_routes = Router::new()
         .route("/devices", post(devices::create_device))
         .route("/devices", get(devices::list_devices))
-        .route(
-            "/devices/{deviceId}",
-            delete(devices::delete_device).get(devices::get_device).put(devices::update_device),
-        )
+        .route("/devices/{deviceId}", delete(devices::delete_device))
         .route("/devices/keys", post(keys::upload_keys))
         .route("/link-sessions", post(link_sessions::create_link_session))
         .route("/link-sessions/{id}", put(link_sessions::approve_link_session).get(link_sessions::get_link_session))
@@ -162,23 +155,11 @@ fn storage_router(config: &Config) -> Router<AppState> {
         StatusCode::REQUEST_TIMEOUT,
         Duration::from_secs(config.attachment.request_timeout_secs),
     );
-    let backup_timeout = TimeoutLayer::with_status_code(
-        StatusCode::REQUEST_TIMEOUT,
-        Duration::from_secs(config.backup.request_timeout_secs),
-    );
 
-    let attachment_routes = Router::new()
+    Router::new()
         .route("/attachments", post(attachments::upload_attachment))
         .route("/attachments/{id}", get(attachments::download_attachment))
-        .layer(attachment_timeout);
-
-    let backup_routes = Router::new()
-        .route("/backup", get(backup::download_backup))
-        .route("/backup", post(backup::upload_backup))
-        .route("/backup", head(backup::head_backup))
-        .layer(backup_timeout);
-
-    attachment_routes.merge(backup_routes)
+        .layer(attachment_timeout)
 }
 
 fn apply_middleware(router: Router<AppState>, config: &Config, state: AppState) -> Router {

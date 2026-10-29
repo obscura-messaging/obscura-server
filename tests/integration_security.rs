@@ -33,9 +33,6 @@ async fn test_unauthenticated_access_denied() {
         ("DELETE", format!("{}/v1/sessions", app.server_url)),
         ("POST", format!("{}/v1/attachments", app.server_url)),
         ("GET", format!("{}/v1/attachments/{}", app.server_url, target_resource_id)),
-        ("GET", format!("{}/v1/backup", app.server_url)),
-        ("HEAD", format!("{}/v1/backup", app.server_url)),
-        ("POST", format!("{}/v1/backup", app.server_url)),
         ("PUT", format!("{}/v1/push-tokens", app.server_url)),
         ("POST", format!("{}/v1/gateway/ticket", app.server_url)),
         ("POST", format!("{}/v1/link-sessions", app.server_url)),
@@ -135,16 +132,10 @@ async fn test_user_scoped_token_rejected_on_device_endpoints() {
         ("PUT", format!("{}/v1/push-tokens", app.server_url)),
         // Device management & linking
         ("PUT", format!("{}/v1/link-sessions/some-id", app.server_url)),
-        ("GET", format!("{}/v1/devices/{}", app.server_url, Uuid::new_v4())),
-        ("PUT", format!("{}/v1/devices/{}", app.server_url, Uuid::new_v4())),
         ("DELETE", format!("{}/v1/devices/{}", app.server_url, Uuid::new_v4())),
         // Attachments
         ("POST", format!("{}/v1/attachments", app.server_url)),
         ("GET", format!("{}/v1/attachments/{}", app.server_url, Uuid::new_v4())),
-        // Backup (all three operations)
-        ("POST", format!("{}/v1/backup", app.server_url)),
-        ("GET", format!("{}/v1/backup", app.server_url)),
-        ("HEAD", format!("{}/v1/backup", app.server_url)),
     ];
 
     for (method, url) in &device_scoped_endpoints {
@@ -177,12 +168,8 @@ async fn test_user_scoped_token_rejected_on_device_endpoints() {
                 .body(vec![]);
         } else if url.contains("/push-tokens") {
             req = req.header("Content-Type", "application/json").body(r#"{"token":"test"}"#);
-        } else if url.contains("/backup") && *method == "POST" {
-            req = req.header("If-None-Match", "*").header("Content-Length", "64").body(vec![0u8; 64]);
         } else if url.contains("/attachments") && *method == "POST" {
             req = req.header("Content-Length", "4").body(vec![1u8; 4]);
-        } else if url.contains("/devices/") && *method == "PUT" {
-            req = req.header("Content-Type", "application/json").body(r#"{"name":"Phone"}"#);
         }
 
         let resp = req.send().await.unwrap();

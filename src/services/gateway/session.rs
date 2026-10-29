@@ -213,7 +213,6 @@ impl Session {
                             prekey_pump.notify();
                             true
                         }
-                        Ok(UserEvent::LinkApproved) => true,
                         Ok(UserEvent::Disconnect) | Err(broadcast::error::RecvError::Closed) => false,
                     };
 

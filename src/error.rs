@@ -30,8 +30,6 @@ pub enum AppError {
     PayloadTooLarge,
     #[error("Internal server error")]
     Internal,
-    #[error("Internal error: {0}")]
-    InternalMsg(String),
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;
@@ -48,7 +46,7 @@ impl IntoResponse for AppError {
             Self::Timeout => (StatusCode::REQUEST_TIMEOUT, "Request timeout".to_string()),
             Self::LengthRequired => (StatusCode::LENGTH_REQUIRED, "Length required".to_string()),
             Self::PayloadTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "Payload too large".to_string()),
-            Self::Database(_) | Self::Internal | Self::InternalMsg(_) => {
+            Self::Database(_) | Self::Internal => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
             }
         };
@@ -81,7 +79,6 @@ mod tests {
         assert_eq!(status_of(AppError::LengthRequired), StatusCode::LENGTH_REQUIRED);
         assert_eq!(status_of(AppError::PayloadTooLarge), StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(status_of(AppError::Internal), StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(status_of(AppError::InternalMsg("oops".into())), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]

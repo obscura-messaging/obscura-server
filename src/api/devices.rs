@@ -1,6 +1,6 @@
 use crate::api::AppState;
 use crate::api::middleware::{AuthUser, DeviceAuth, UserAuth};
-use crate::api::schemas::devices::{CreateDeviceRequest, DeviceListResponse, DeviceResponse, UpdateDeviceRequest};
+use crate::api::schemas::devices::{CreateDeviceRequest, DeviceListResponse, DeviceResponse};
 use crate::error::{AppError, Result};
 use crate::services::device_service::NewDevice;
 use axum::{
@@ -54,33 +54,6 @@ pub(crate) async fn list_devices(auth_user: AuthUser, State(state): State<AppSta
     let response = DeviceListResponse { devices: devices.into_iter().map(device_to_response).collect() };
 
     Ok(Json(response))
-}
-
-/// Fetches a single device by ID.
-///
-/// # Errors
-/// Returns `AppError::NotFound` if the device doesn't exist or isn't owned by the user.
-pub(crate) async fn get_device(
-    auth: DeviceAuth,
-    State(state): State<AppState>,
-    Path(device_id): Path<Uuid>,
-) -> Result<impl IntoResponse> {
-    let device = state.device_service.get_device(device_id, auth.user_id).await?;
-    Ok(Json(device_to_response(device)))
-}
-
-/// Updates a device's metadata.
-///
-/// # Errors
-/// Returns `AppError::NotFound` if the device doesn't exist or isn't owned by the user.
-pub(crate) async fn update_device(
-    auth: DeviceAuth,
-    State(state): State<AppState>,
-    Path(device_id): Path<Uuid>,
-    Json(payload): Json<UpdateDeviceRequest>,
-) -> Result<impl IntoResponse> {
-    let device = state.device_service.update_device(device_id, auth.user_id, payload.name).await?;
-    Ok(Json(device_to_response(device)))
 }
 
 /// Deletes a device owned by the authenticated user.

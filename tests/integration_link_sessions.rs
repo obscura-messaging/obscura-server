@@ -19,7 +19,6 @@ use common::{TestApp, TestUser};
 use reqwest::StatusCode;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::time::{Duration, Instant};
 
 fn id_hash(id: &str) -> Vec<u8> {
     Sha256::digest(id.as_bytes()).to_vec()
@@ -34,10 +33,10 @@ async fn create(app: &TestApp, token: &str) -> reqwest::Response {
         .unwrap()
 }
 
-async fn get(app: &TestApp, token: &str, id: &str, wait: u64) -> (StatusCode, Vec<u8>) {
+async fn get(app: &TestApp, token: &str, id: &str) -> (StatusCode, Vec<u8>) {
     let resp = app
         .client
-        .get(format!("{}/v1/link-sessions/{id}?wait={wait}", app.server_url))
+        .get(format!("{}/v1/link-sessions/{id}", app.server_url))
         .header("Authorization", format!("Bearer {token}"))
         .send()
         .await
@@ -144,7 +143,7 @@ async fn test_body_size_cap() {
 
     assert_eq!(app.approve_link_session(&primary.token, &id, &[7; 64 * 1024 + 1]).await, StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(app.approve_link_session(&primary.token, &id, &[7; 64 * 1024]).await, StatusCode::OK);
-    assert_eq!(get(&app, &user_token, &id, 0).await.1.len(), 64 * 1024);
+    assert_eq!(get(&app, &user_token, &id).await.1.len(), 64 * 1024);
 }
 
 #[tokio::test]
@@ -156,47 +155,16 @@ async fn test_read_returns_the_body_without_consuming_it() {
     let user_token = app.login_user_scoped(&primary.username).await;
     let id = app.create_link_session(&user_token).await;
 
-    assert_eq!(get(&app, &user_token, &id, 0).await, (StatusCode::NO_CONTENT, Vec::new()));
+    assert_eq!(get(&app, &user_token, &id).await, (StatusCode::NO_CONTENT, Vec::new()));
     assert_eq!(app.approve_link_session(&primary.token, &id, b"ciphertext").await, StatusCode::OK);
 
-    assert_eq!(get(&app, &user_token, &id, 0).await, (StatusCode::OK, b"ciphertext".to_vec()));
-    assert_eq!(get(&app, &user_token, &id, 0).await, (StatusCode::OK, b"ciphertext".to_vec()));
-    assert_eq!(get(&app, &primary.token, &id, 0).await.0, StatusCode::FORBIDDEN);
-    assert_eq!(get(&app, &stranger_token, &id, 0).await.0, StatusCode::NOT_FOUND);
-    assert_eq!(get(&app, &user_token, "unknown", 0).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(get(&app, &user_token, &id).await, (StatusCode::OK, b"ciphertext".to_vec()));
+    assert_eq!(get(&app, &user_token, &id).await, (StatusCode::OK, b"ciphertext".to_vec()));
+    assert_eq!(get(&app, &primary.token, &id).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(get(&app, &stranger_token, &id).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(get(&app, &user_token, "unknown").await.0, StatusCode::NOT_FOUND);
 
     assert_eq!(register_linked(&app, &primary, &user_token, &id).await, StatusCode::CREATED);
-}
-
-#[tokio::test]
-async fn test_read_waits_for_approval() {
-    let app = TestApp::spawn().await;
-    let primary = app.register_user(&common::generate_username("ls_wait")).await;
-    let user_token = app.login_user_scoped(&primary.username).await;
-    let id = app.create_link_session(&user_token).await;
-
-    let started = Instant::now();
-    assert_eq!(get(&app, &user_token, &id, 1).await.0, StatusCode::NO_CONTENT);
-    assert!(started.elapsed() >= Duration::from_millis(900), "An unanswered wait should last about the requested time");
-
-    let waiter = {
-        let (client, url, token) =
-            (app.client.clone(), format!("{}/v1/link-sessions/{id}?wait=10", app.server_url), user_token.clone());
-        tokio::spawn(async move {
-            let resp = client.get(url).header("Authorization", format!("Bearer {token}")).send().await.unwrap();
-            (resp.status(), resp.bytes().await.unwrap().to_vec(), Instant::now())
-        })
-    };
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let approved_at = Instant::now();
-    assert_eq!(app.approve_link_session(&primary.token, &id, b"late").await, StatusCode::OK);
-
-    let (status, body, received_at) = waiter.await.unwrap();
-    assert_eq!((status, body), (StatusCode::OK, b"late".to_vec()));
-    assert!(
-        received_at.duration_since(approved_at) < Duration::from_secs(5),
-        "The waiting read should return well before its 10 s wait"
-    );
 }
 
 #[tokio::test]
@@ -208,7 +176,7 @@ async fn test_expired_session_is_gone() {
     expire(&app, &approved).await;
     expire(&app, &pending).await;
 
-    assert_eq!(get(&app, &user_token, &approved, 0).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(get(&app, &user_token, &approved).await.0, StatusCode::NOT_FOUND);
     assert_eq!(app.approve_link_session(&primary.token, &pending, b"x").await, StatusCode::NOT_FOUND);
     assert_eq!(register_linked(&app, &primary, &user_token, &approved).await, StatusCode::FORBIDDEN);
 }
@@ -222,7 +190,7 @@ async fn test_registration_consumes_the_session() {
     assert_eq!(register_linked(&app, &primary, &user_token, &id).await, StatusCode::CREATED);
     assert!(!stored(&app, &id).await);
     assert_eq!(register_linked(&app, &primary, &user_token, &id).await, StatusCode::FORBIDDEN);
-    assert_eq!(get(&app, &user_token, &id, 0).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(get(&app, &user_token, &id).await.0, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

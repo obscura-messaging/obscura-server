@@ -41,11 +41,6 @@ impl std::fmt::Display for Jwt {
     }
 }
 
-#[derive(Debug)]
-pub struct Password;
-#[derive(Debug)]
-pub struct OpaqueToken;
-
 #[cfg(test)]
 mod tests {
     use super::*;

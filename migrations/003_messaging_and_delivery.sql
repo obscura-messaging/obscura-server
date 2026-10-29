@@ -30,14 +30,3 @@ CREATE TABLE push_tokens (
 
 CREATE INDEX idx_push_tokens_updated_at ON push_tokens(updated_at);
 CREATE INDEX idx_push_tokens_token ON push_tokens(token);
-
-CREATE TABLE backups (
-    device_id UUID PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
-    current_version INT NOT NULL DEFAULT 0,
-    pending_version INT,
-    state VARCHAR NOT NULL DEFAULT 'ACTIVE', -- 'ACTIVE', 'PENDING', 'FAILED'
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    pending_at TIMESTAMPTZ
-);
-
-CREATE INDEX idx_backups_state_pending_at ON backups(state, pending_at);

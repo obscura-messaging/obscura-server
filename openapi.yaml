@@ -249,8 +249,8 @@ paths:
       operationId: resetAccount
       summary: Reset the account's devices and identity.
       description: |
-        Deletes all of the account's devices, with their keys, queued messages, push tokens,
-        backups and refresh tokens, and the account's link sessions, and clears the account identity key.
+        Deletes all of the account's devices, with their keys, queued messages, push tokens
+        and refresh tokens, and the account's link sessions, and clears the account identity key.
         Live gateway connections of those devices are closed and their access tokens stop working.
         The next `POST /v1/devices` registers a new primary device with a new identity key.
 
@@ -379,85 +379,6 @@ paths:
           $ref: '#/components/responses/InternalServerError'
 
   /v1/devices/{deviceId}:
-    get:
-      operationId: getDevice
-      summary: Get a single device.
-      description: |
-        Returns the details of a specific device owned by the authenticated user.
-        Requires a Device-Scoped JWT.
-      tags: [Devices]
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: deviceId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Device details.
-          headers:
-            x-request-id:
-              $ref: '#/components/headers/x-request-id'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/DeviceResponse'
-        '401':
-          $ref: '#/components/responses/UnauthorizedError'
-        '403':
-          $ref: '#/components/responses/ForbiddenError'
-        '404':
-          $ref: '#/components/responses/NotFoundError'
-        '408':
-          $ref: '#/components/responses/RequestTimeoutError'
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-
-    put:
-      operationId: updateDevice
-      summary: Update a device.
-      description: |
-        Updates the metadata (e.g., name) of a device owned by the authenticated user.
-        Requires a Device-Scoped JWT.
-      tags: [Devices]
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: deviceId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UpdateDeviceRequest'
-      responses:
-        '200':
-          description: Device updated.
-          headers:
-            x-request-id:
-              $ref: '#/components/headers/x-request-id'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/DeviceResponse'
-        '401':
-          $ref: '#/components/responses/UnauthorizedError'
-        '403':
-          $ref: '#/components/responses/ForbiddenError'
-        '404':
-          $ref: '#/components/responses/NotFoundError'
-        '408':
-          $ref: '#/components/responses/RequestTimeoutError'
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-
     delete:
       operationId: deleteDevice
       summary: Delete a device.
@@ -467,8 +388,8 @@ paths:
         - Any other device may delete itself.
         - The primary device cannot be deleted this way; use `POST /v1/account/reset`.
 
-        Cascade delete removes the device's keys, the messages queued for it, its push token,
-        backup and refresh tokens. Messages the device sent that are still
+        Cascade delete removes the device's keys, the messages queued for it, its push token
+        and refresh tokens. Messages the device sent that are still
         queued for other devices are kept. The device's access tokens stop working immediately
         and its live gateway connections are closed.
       tags: [Devices]
@@ -663,23 +584,14 @@ paths:
           $ref: '#/components/responses/InternalServerError'
     get:
       operationId: getLinkSession
-      summary: Wait for a link session's approval.
+      summary: Poll a link session's approval.
       description: |
         Returns the body stored by the primary once the session is approved, or 204 if it is not
-        approved after waiting up to `wait` seconds. Reading does not consume the session.
+        approved yet. Reading does not consume the session.
         Requires a User-Scoped JWT of the account the session is bound to.
       tags: [Link Sessions]
       security:
         - bearerAuth: []
-      parameters:
-        - name: wait
-          in: query
-          required: false
-          schema:
-            type: integer
-            minimum: 0
-            default: 0
-          description: Seconds to wait for the approval before answering 204. Values above 25 are treated as 25.
       responses:
         '200':
           description: The session is approved; the body stored by the primary.
@@ -692,12 +604,10 @@ paths:
                 type: string
                 format: binary
         '204':
-          description: The session was not approved within the wait.
+          description: The session is not approved yet.
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'
-        '400':
-          $ref: '#/components/responses/BadRequestError'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '403':
@@ -949,162 +859,6 @@ paths:
           $ref: '#/components/responses/NotFoundError'
         '408':
           $ref: '#/components/responses/RequestTimeoutError'
-        '429':
-          $ref: '#/components/responses/TooManyRequestsError'
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  # --- Backups (Encrypted Identity Recovery) ---
-  /v1/backup:
-    get:
-      operationId: getBackup
-      summary: Download the latest backup.
-      description: |
-        Streams the latest encrypted backup blob.
-        Supports conditional caching via `If-None-Match`.
-        Returns `ETag` header containing the version number.
-      tags: [Backup]
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: If-None-Match
-          in: header
-          required: false
-          schema:
-            type: string
-          description: The current version held by the client (e.g. from ETag).
-      responses:
-        '200':
-          description: Binary backup stream.
-          headers:
-            x-request-id:
-              $ref: '#/components/headers/x-request-id'
-            ETag:
-              description: Current backup version.
-              schema:
-                type: string
-          content:
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
-        '304':
-          description: Backup not modified (client already has the latest version).
-          headers:
-            x-request-id:
-              $ref: '#/components/headers/x-request-id'
-        '401':
-          $ref: '#/components/responses/UnauthorizedError'
-        '403':
-          $ref: '#/components/responses/ForbiddenError'
-        '404':
-          $ref: '#/components/responses/NotFoundError'
-        '408':
-          $ref: '#/components/responses/RequestTimeoutError'
-        '429':
-          $ref: '#/components/responses/TooManyRequestsError'
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-
-    head:
-      operationId: headBackup
-      summary: Check for backup existence.
-      description: |
-        Returns metadata (Content-Length, ETag) without the body.
-        Useful for checking if a local backup is out of date.
-      tags: [Backup]
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Backup exists.
-          headers:
-            x-request-id:
-              $ref: '#/components/headers/x-request-id'
-            ETag:
-              description: Current backup version.
-              schema:
-                type: string
-            Content-Length:
-              schema:
-                type: integer
-                format: int32
-        '401':
-          $ref: '#/components/responses/UnauthorizedError'
-        '403':
-          $ref: '#/components/responses/ForbiddenError'
-        '404':
-          $ref: '#/components/responses/NotFoundError'
-        '408':
-          $ref: '#/components/responses/RequestTimeoutError'
-        '429':
-          $ref: '#/components/responses/TooManyRequestsError'
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-
-    post:
-      operationId: uploadBackup
-      summary: Upload a new backup.
-      description: |
-        Uploads a new encrypted backup blob.
-        Uses Optimistic Locking via headers to prevent concurrent overwrites.
-
-        **Flow:**
-        1. **Initial Upload:** Client MUST send `If-None-Match: *`.
-        2. **Update:** Client MUST send `If-Match` with the latest version number (as received in a previous `ETag`).
-        3. If the preconditions match and no other upload is in progress, the server accepts the stream.
-        4. If the version does not match or resource already exists when `*` is used, server returns `412 Precondition Failed`.
-        5. If another upload is already in progress, server returns `409 Conflict`.
-      tags: [Backup]
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: If-Match
-          in: header
-          required: false
-          schema:
-            type: string
-          description: Current version held by the client (from ETag). Required for updates.
-        - name: If-None-Match
-          in: header
-          required: false
-          schema:
-            type: string
-          description: Set to "*" for the first upload to ensure no backup exists. Required for initial upload.
-      requestBody:
-        content:
-          application/octet-stream:
-            schema:
-              type: string
-              format: binary
-              minLength: 32
-              maxLength: 2097152
-      responses:
-        '200':
-          description: Upload successful.
-          headers:
-            x-request-id:
-              $ref: '#/components/headers/x-request-id'
-            ETag:
-              description: The new backup version.
-              schema:
-                type: string
-        '400':
-          $ref: '#/components/responses/BadRequestError'
-        '401':
-          $ref: '#/components/responses/UnauthorizedError'
-        '403':
-          $ref: '#/components/responses/ForbiddenError'
-        '408':
-          $ref: '#/components/responses/RequestTimeoutError'
-        '409':
-          $ref: '#/components/responses/ConflictError'
-        '411':
-          $ref: '#/components/responses/LengthRequiredError'
-        '412':
-          $ref: '#/components/responses/PreconditionFailedError'
-        '413':
-          $ref: '#/components/responses/PayloadTooLargeError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         '500':
@@ -1421,14 +1175,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DeviceResponse'
-
-    UpdateDeviceRequest:
-      type: object
-      properties:
-        name:
-          type: string
-          nullable: true
-          description: Optional human-readable label for the device.
 
     PreKeyUploadRequest:
       type: object

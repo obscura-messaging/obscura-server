@@ -9,7 +9,6 @@ use crate::domain::keys::{OneTimePreKey, SignedPreKey};
 use crate::domain::notification::UserEvent;
 use crate::error::{AppError, Result};
 use crate::services::auth_service::AuthService;
-use crate::services::backup_service::BackupService;
 use crate::services::key_service::KeyService;
 use crate::services::notification_service::NotificationService;
 use opentelemetry::{global, metrics::Counter};
@@ -63,7 +62,6 @@ pub struct DeviceService {
     link_session_repo: LinkSessionRepository,
     key_service: KeyService,
     auth_service: AuthService,
-    backup_service: BackupService,
     notifier: NotificationService,
     metrics: Metrics,
     max_devices_per_user: i64,
@@ -79,7 +77,6 @@ impl DeviceService {
         link_session_repo: LinkSessionRepository,
         key_service: KeyService,
         auth_service: AuthService,
-        backup_service: BackupService,
         notifier: NotificationService,
         max_devices_per_user: i64,
     ) -> Self {
@@ -90,7 +87,6 @@ impl DeviceService {
             link_session_repo,
             key_service,
             auth_service,
-            backup_service,
             notifier,
             metrics: Metrics::new(),
             max_devices_per_user,
@@ -200,13 +196,9 @@ impl DeviceService {
                 return Err(AppError::Forbidden("Only the primary device can delete other devices".into()));
             }
         }
-        let backup = self.backup_service.find_for_device(&mut tx, device_id).await?;
         self.device_repo.delete(&mut tx, device_id, user_id).await?;
         tx.commit().await?;
 
-        if let Some(backup) = backup {
-            self.backup_service.delete_device_objects(&[backup]).await;
-        }
         self.notifier.notify(&[device_id], UserEvent::Disconnect).await;
 
         tracing::info!("Device deleted");
@@ -227,13 +219,11 @@ impl DeviceService {
 
         let mut tx = self.pool.begin().await?;
         self.user_repo.lock_identity_key(&mut tx, user_id).await?;
-        let backups = self.backup_service.find_for_user(&mut tx, user_id).await?;
         let deleted = self.device_repo.delete_all_for_user(&mut tx, user_id).await?;
         self.link_session_repo.delete_all_for_user(&mut tx, user_id).await?;
         self.user_repo.set_identity_key(&mut tx, user_id, None).await?;
         tx.commit().await?;
 
-        self.backup_service.delete_device_objects(&backups).await;
         self.notifier.notify(&deleted, UserEvent::Disconnect).await;
 
         tracing::info!(devices = deleted.len(), "Account reset");
@@ -250,32 +240,5 @@ impl DeviceService {
     pub(crate) async fn device_exists(&self, device_id: Uuid) -> Result<bool> {
         let mut conn = self.pool.acquire().await?;
         self.device_repo.exists(&mut conn, device_id).await
-    }
-
-    /// Fetches a single device by ID, verifying ownership.
-    ///
-    /// # Errors
-    /// Returns `AppError::NotFound` if the device doesn't exist or isn't owned by the user.
-    #[tracing::instrument(skip(self), fields(user.id = %user_id, device.id = %device_id), err)]
-    pub(crate) async fn get_device(&self, device_id: Uuid, user_id: Uuid) -> Result<Device> {
-        let mut conn = self.pool.acquire().await?;
-        self.device_repo.find_by_id(&mut conn, device_id, user_id).await?.ok_or(AppError::NotFound)
-    }
-
-    /// Updates a device's name, verifying ownership.
-    ///
-    /// # Errors
-    /// Returns `AppError::NotFound` if the device doesn't exist or isn't owned by the user.
-    #[tracing::instrument(skip(self), fields(user.id = %user_id, device.id = %device_id), err)]
-    pub(crate) async fn update_device(&self, device_id: Uuid, user_id: Uuid, name: Option<String>) -> Result<Device> {
-        let mut conn = self.pool.acquire().await?;
-        let device = self
-            .device_repo
-            .update_name(&mut conn, device_id, user_id, name.as_deref())
-            .await?
-            .ok_or(AppError::NotFound)?;
-
-        tracing::info!("Device updated");
-        Ok(device)
     }
 }

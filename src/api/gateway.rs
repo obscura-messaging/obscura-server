@@ -19,7 +19,7 @@ pub(crate) async fn generate_ticket(
     let ticket = uuid::Uuid::new_v4().to_string();
     state.ws_ticket_cache.set(&ticket, auth.device_id.to_string().as_bytes()).await.map_err(|e| {
         tracing::error!(error = %e, "Failed to cache websocket ticket");
-        crate::error::AppError::InternalMsg("Failed to generate ticket".to_string())
+        crate::error::AppError::Internal
     })?;
 
     Ok((axum::http::StatusCode::CREATED, axum::Json(TicketResponse { ticket })))

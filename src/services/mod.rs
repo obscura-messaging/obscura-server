@@ -1,6 +1,5 @@
 pub mod attachment_service;
 pub mod auth_service;
-pub mod backup_service;
 pub mod crypto_service;
 pub mod device_service;
 pub mod gateway;
