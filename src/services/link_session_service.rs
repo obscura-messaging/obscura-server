@@ -1,17 +1,20 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::device_repo::DeviceRepository;
 use crate::adapters::database::link_session_repo::LinkSessionRepository;
+use crate::domain::notification::{RealtimeNotification, UserEvent};
 use crate::error::{AppError, Result};
 use crate::services::auth_service::AuthService;
+use crate::services::notification_service::NotificationService;
 use std::time::Duration;
 use time::OffsetDateTime;
+use tokio::sync::broadcast;
 use tokio::time::Instant;
 use uuid::Uuid;
 
 pub(crate) const LINK_SESSION_TTL: Duration = Duration::from_secs(600);
 pub(crate) const MAX_LINK_SESSION_BODY_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_LINK_SESSION_WAIT: Duration = Duration::from_secs(25);
-const POLL_INTERVAL: Duration = Duration::from_millis(250);
+const FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
 pub struct NewLinkSession {
@@ -26,15 +29,22 @@ pub struct LinkSessionService {
     pool: DbPool,
     device_repo: DeviceRepository,
     repo: LinkSessionRepository,
+    notifier: NotificationService,
 }
 
 impl LinkSessionService {
     #[must_use]
-    pub const fn new(pool: DbPool, device_repo: DeviceRepository, repo: LinkSessionRepository) -> Self {
-        Self { pool, device_repo, repo }
+    pub const fn new(
+        pool: DbPool,
+        device_repo: DeviceRepository,
+        repo: LinkSessionRepository,
+        notifier: NotificationService,
+    ) -> Self {
+        Self { pool, device_repo, repo, notifier }
     }
 
-    /// Creates a link session bound to the user, purging expired sessions.
+    /// Creates a link session bound to the user, replacing any previous unapproved session of the user
+    /// and purging expired sessions.
     ///
     /// # Errors
     /// Returns `AppError::Database` if any database operation fails.
@@ -44,7 +54,6 @@ impl LinkSessionService {
         let expires_at = OffsetDateTime::now_utc() + LINK_SESSION_TTL;
 
         let mut conn = self.pool.acquire().await?;
-        self.repo.delete_expired(&mut conn).await?;
         self.repo.create(&mut conn, &AuthService::hash_opaque_token(&id), user_id, expires_at).await?;
 
         Ok(NewLinkSession { id, expires_at })
@@ -71,6 +80,9 @@ impl LinkSessionService {
 
         let id_hash = AuthService::hash_opaque_token(id);
         if self.repo.approve(&mut conn, &id_hash, user_id, body).await? {
+            drop(conn);
+            self.notifier.dispatch_event(&RealtimeNotification { device_id: user_id, event: UserEvent::LinkApproved });
+            self.notifier.notify(&[user_id], UserEvent::LinkApproved).await;
             return Ok(());
         }
         match self.repo.find_body(&mut conn, &id_hash, user_id).await? {
@@ -88,6 +100,8 @@ impl LinkSessionService {
     pub(crate) async fn wait_for_approval(&self, user_id: Uuid, id: &str, wait: Duration) -> Result<Option<Vec<u8>>> {
         let id_hash = AuthService::hash_opaque_token(id);
         let deadline = Instant::now() + wait.min(MAX_LINK_SESSION_WAIT);
+        let mut rx = self.notifier.subscribe(user_id).await;
+
         loop {
             let body = {
                 let mut conn = self.pool.acquire().await?;
@@ -97,7 +111,17 @@ impl LinkSessionService {
             if body.is_some() || now >= deadline {
                 return Ok(body);
             }
-            tokio::time::sleep(POLL_INTERVAL.min(deadline - now)).await;
+
+            let sleep_for = FALLBACK_POLL_INTERVAL.min(deadline - now);
+            tokio::select! {
+                () = tokio::time::sleep(sleep_for) => {}
+                res = rx.recv() => match res {
+                    Ok(UserEvent::LinkApproved) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Ok(_) | Err(broadcast::error::RecvError::Closed) => {
+                        tokio::time::sleep(sleep_for).await;
+                    }
+                }
+            }
         }
     }
 }

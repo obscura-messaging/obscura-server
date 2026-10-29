@@ -12,18 +12,23 @@ impl LinkSessionRepository {
         Self {}
     }
 
-    /// Stores a new, unapproved link session by the hash of its id.
+    /// Stores a new, unapproved link session by the hash of its id, replacing any previous unapproved
+    /// session of the user and purging expired sessions.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the insert fails.
+    /// Returns `sqlx::Error` if a query fails.
     #[tracing::instrument(level = "debug", skip(self, conn, id_hash), err)]
     pub(crate) async fn create(
         &self,
         conn: &mut PgConnection,
-        id_hash: &str,
+        id_hash: &[u8],
         user_id: Uuid,
         expires_at: OffsetDateTime,
     ) -> Result<()> {
+        sqlx::query("DELETE FROM link_sessions WHERE expires_at <= NOW() OR (user_id = $1 AND body IS NULL)")
+            .bind(user_id)
+            .execute(&mut *conn)
+            .await?;
         sqlx::query("INSERT INTO link_sessions (id_hash, user_id, expires_at) VALUES ($1, $2, $3)")
             .bind(id_hash)
             .bind(user_id)
@@ -38,9 +43,9 @@ impl LinkSessionRepository {
     /// # Errors
     /// Returns `sqlx::Error` if the deletion fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn delete_expired(&self, conn: &mut PgConnection) -> Result<()> {
-        sqlx::query("DELETE FROM link_sessions WHERE expires_at <= NOW()").execute(conn).await?;
-        Ok(())
+    pub async fn delete_expired(&self, conn: &mut PgConnection) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM link_sessions WHERE expires_at <= NOW()").execute(conn).await?;
+        Ok(result.rows_affected())
     }
 
     /// Stores the body of an unexpired, unapproved session of the user, which approves it.
@@ -52,7 +57,7 @@ impl LinkSessionRepository {
     pub(crate) async fn approve(
         &self,
         conn: &mut PgConnection,
-        id_hash: &str,
+        id_hash: &[u8],
         user_id: Uuid,
         body: &[u8],
     ) -> Result<bool> {
@@ -79,7 +84,7 @@ impl LinkSessionRepository {
     pub(crate) async fn find_body(
         &self,
         conn: &mut PgConnection,
-        id_hash: &str,
+        id_hash: &[u8],
         user_id: Uuid,
     ) -> Result<Option<Option<Vec<u8>>>> {
         let body = sqlx::query_scalar(
@@ -97,7 +102,12 @@ impl LinkSessionRepository {
     /// # Errors
     /// Returns `sqlx::Error` if the deletion fails.
     #[tracing::instrument(level = "debug", skip(self, conn, id_hash), err)]
-    pub(crate) async fn consume_approved(&self, conn: &mut PgConnection, id_hash: &str, user_id: Uuid) -> Result<bool> {
+    pub(crate) async fn consume_approved(
+        &self,
+        conn: &mut PgConnection,
+        id_hash: &[u8],
+        user_id: Uuid,
+    ) -> Result<bool> {
         let result = sqlx::query(
             r#"
             DELETE FROM link_sessions

@@ -106,6 +106,7 @@ impl BackupRepository {
     /// Commits the pending version.
     ///
     /// # Errors
+    /// Returns `AppError::Conflict` if the upload slot was lost concurrently.
     /// Returns `sqlx::Error` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn commit_version(
@@ -114,7 +115,7 @@ impl BackupRepository {
         device_id: Uuid,
         pending_version: i32,
     ) -> Result<()> {
-        sqlx::query(
+        let result = sqlx::query(
             r#"
             UPDATE backups
             SET 
@@ -130,6 +131,9 @@ impl BackupRepository {
         .bind(pending_version)
         .execute(conn)
         .await?;
+        if result.rows_affected() == 0 {
+            return Err(crate::error::AppError::Conflict("Concurrent modification".into()));
+        }
         Ok(())
     }
 
@@ -155,18 +159,42 @@ impl BackupRepository {
         Ok(records.into_iter().map(Into::into).collect())
     }
 
-    /// Resets a stale upload to ACTIVE state.
+    /// Resets a stale upload to ACTIVE state only if it is still stale.
+    /// Returns true if the row was reset.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn reset_stale(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<()> {
-        sqlx::query(
-            "UPDATE backups SET state = 'ACTIVE', pending_version = NULL, pending_at = NULL WHERE device_id = $1",
+    pub(crate) async fn reset_stale(
+        &self,
+        conn: &mut PgConnection,
+        device_id: Uuid,
+        threshold: OffsetDateTime,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE backups SET state = 'ACTIVE', pending_version = NULL, pending_at = NULL \
+             WHERE device_id = $1 AND state = 'UPLOADING' AND pending_at < $2",
         )
         .bind(device_id)
+        .bind(threshold)
         .execute(conn)
         .await?;
-        Ok(())
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Finds all backup records belonging to any device of the user.
+    ///
+    /// # Errors
+    /// Returns `sqlx::Error` if the query fails.
+    #[tracing::instrument(level = "debug", skip(self, conn), err)]
+    pub(crate) async fn find_by_user_id(&self, conn: &mut PgConnection, user_id: Uuid) -> Result<Vec<Backup>> {
+        let records = sqlx::query_as::<_, BackupRecord>(
+            "SELECT b.* FROM backups b JOIN devices d ON d.id = b.device_id WHERE d.user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_all(conn)
+        .await?;
+
+        Ok(records.into_iter().map(Into::into).collect())
     }
 }

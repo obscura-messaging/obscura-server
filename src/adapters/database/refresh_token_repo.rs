@@ -22,7 +22,7 @@ impl RefreshTokenRepository {
         &self,
         conn: &mut PgConnection,
         device_id: Uuid,
-        token_hash: &str,
+        token_hash: &[u8],
         ttl_days: i64,
     ) -> Result<()> {
         let expires_at = OffsetDateTime::now_utc() + time::Duration::days(ttl_days);
@@ -49,8 +49,8 @@ impl RefreshTokenRepository {
     pub(crate) async fn rotate_unexpired(
         &self,
         conn: &mut PgConnection,
-        old_hash: &str,
-        new_hash: &str,
+        old_hash: &[u8],
+        new_hash: &[u8],
         ttl_days: i64,
     ) -> Result<Option<(Uuid, Uuid)>> {
         let expires_at = OffsetDateTime::now_utc() + time::Duration::days(ttl_days);
@@ -85,7 +85,7 @@ impl RefreshTokenRepository {
     /// # Errors
     /// Returns `AppError::Database` if the deletion fails.
     #[tracing::instrument(level = "debug", skip(self, conn, token_hash), err)]
-    pub(crate) async fn delete_owned(&self, conn: &mut PgConnection, token_hash: &str, user_id: Uuid) -> Result<()> {
+    pub(crate) async fn delete_owned(&self, conn: &mut PgConnection, token_hash: &[u8], user_id: Uuid) -> Result<()> {
         sqlx::query(
             "DELETE FROM refresh_tokens r USING devices d WHERE r.token_hash = $1 AND r.device_id = d.id AND d.user_id = $2",
         )

@@ -378,3 +378,24 @@ async fn test_a_listed_recipient_whose_known_devices_are_gone_reports_the_curren
     assert_eq!(failure_codes(&response), vec![(stale.0.as_bytes().to_vec(), ErrorCode::InvalidDevice as i32)]);
     assert_eq!(response.device_mismatches, vec![mismatch(bob.user_id, &[bob.device_id])]);
 }
+
+#[tokio::test]
+async fn test_too_many_recipient_user_ids_is_rejected_with_413() {
+    let mut config = common::get_test_config();
+    config.messaging.send_batch_limit = 2;
+    let app = TestApp::spawn_with_config(config).await;
+    let alice = app.register_user(&common::generate_username("cd_limit")).await;
+
+    let body = request_to(&[Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()], &[]);
+    let resp = app
+        .client
+        .post(format!("{}/v1/messages", app.server_url))
+        .header("Authorization", format!("Bearer {}", alice.token))
+        .header("Idempotency-Key", Uuid::new_v4().to_string())
+        .header("Content-Type", "application/x-protobuf")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 413);
+}

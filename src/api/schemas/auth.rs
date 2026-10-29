@@ -1,9 +1,5 @@
-use regex::Regex;
+use crate::domain::user::Username;
 use serde::{Deserialize, Serialize};
-use std::sync::LazyLock;
-
-static USERNAME_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9_]{3,50}$").expect("Hardcoded username validation regex should compile"));
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,27 +9,18 @@ pub struct RegistrationRequest {
 }
 
 impl RegistrationRequest {
-    /// Validates the registration payload.
+    /// Validates the registration payload and returns the canonical [`Username`].
     ///
     /// # Errors
     /// Returns an error if the password is too short or username is invalid.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.username.trim().is_empty() {
-            return Err("Username cannot be empty".into());
-        }
-
-        if !USERNAME_REGEX.is_match(&self.username) {
-            return Err(
-                "Username must be between 3 and 50 characters and can only contain letters, numbers, and underscores"
-                    .into(),
-            );
-        }
+    pub fn validate(&self) -> Result<Username, String> {
+        let username = Username::parse(&self.username)?;
 
         if self.password.len() < 12 {
             return Err("Password must be at least 12 characters long".into());
         }
 
-        Ok(())
+        Ok(username)
     }
 }
 

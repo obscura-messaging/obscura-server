@@ -169,8 +169,8 @@ async fn test_distributed_fan_out_disconnect() {
 #[tokio::test]
 async fn test_multi_node_link_session() {
     let config = common::get_test_config();
-    let app_a = common::TestApp::spawn_with_config(config.clone()).await;
-    let app_b = common::TestApp::spawn_with_config(config).await;
+    let app_a = common::TestApp::spawn_with_workers(config.clone()).await;
+    let app_b = common::TestApp::spawn_with_workers(config).await;
 
     let primary = app_a.register_user(&common::generate_username("link_nodes")).await;
     let user_token = app_a.login_user_scoped(&primary.username).await;

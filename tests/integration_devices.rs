@@ -214,12 +214,13 @@ async fn test_get_and_put_device() {
 
     let device_json: serde_json::Value = resp_device.json().await.unwrap();
     let device_id = device_json["deviceId"].as_str().unwrap().to_string();
+    let device_token = device_json["token"].as_str().unwrap().to_string();
 
     // 3. GET Device (verify it returns successfully)
     let resp_get = app
         .client
         .get(format!("{}/v1/devices/{}", app.server_url, device_id))
-        .header("Authorization", format!("Bearer {}", user_token))
+        .header("Authorization", format!("Bearer {device_token}"))
         .send()
         .await
         .unwrap();
@@ -237,7 +238,7 @@ async fn test_get_and_put_device() {
     let resp_put = app
         .client
         .put(format!("{}/v1/devices/{}", app.server_url, device_id))
-        .header("Authorization", format!("Bearer {}", user_token))
+        .header("Authorization", format!("Bearer {device_token}"))
         .json(&update_payload)
         .send()
         .await
@@ -252,7 +253,7 @@ async fn test_get_and_put_device() {
     let resp_get_after = app
         .client
         .get(format!("{}/v1/devices/{}", app.server_url, device_id))
-        .header("Authorization", format!("Bearer {}", user_token))
+        .header("Authorization", format!("Bearer {device_token}"))
         .send()
         .await
         .unwrap();
@@ -269,7 +270,7 @@ async fn test_get_and_put_device() {
     let resp_get_unauth = app
         .client
         .get(format!("{}/v1/devices/{}", app.server_url, other_device_id))
-        .header("Authorization", format!("Bearer {}", user_token))
+        .header("Authorization", format!("Bearer {device_token}"))
         .send()
         .await
         .unwrap();
@@ -280,7 +281,7 @@ async fn test_get_and_put_device() {
     let resp_put_unauth = app
         .client
         .put(format!("{}/v1/devices/{}", app.server_url, other_device_id))
-        .header("Authorization", format!("Bearer {}", user_token))
+        .header("Authorization", format!("Bearer {device_token}"))
         .json(&update_payload)
         .send()
         .await

@@ -289,6 +289,12 @@ impl AppBuilder {
             config.messaging.clone(),
             config.ttl_days,
         );
+        let backup_service = BackupService::new(
+            pool.clone(),
+            adapters.backup.clone(),
+            Arc::clone(&adapters.storage),
+            config.backup.clone(),
+        );
         let device_service = DeviceService::new(
             pool.clone(),
             adapters.device.clone(),
@@ -296,11 +302,16 @@ impl AppBuilder {
             adapters.link_session.clone(),
             key_service.clone(),
             auth_service.clone(),
+            backup_service.clone(),
             notifier.clone(),
             config.auth.max_devices_per_user,
         );
-        let link_session_service =
-            LinkSessionService::new(pool.clone(), adapters.device.clone(), adapters.link_session.clone());
+        let link_session_service = LinkSessionService::new(
+            pool.clone(),
+            adapters.device.clone(),
+            adapters.link_session.clone(),
+            notifier.clone(),
+        );
         let gateway_service = GatewayService::new(
             message_service.clone(),
             key_service.clone(),
@@ -314,12 +325,6 @@ impl AppBuilder {
             Arc::clone(&adapters.storage),
             config.attachment.clone(),
             config.ttl_days,
-        );
-        let backup_service = BackupService::new(
-            pool.clone(),
-            adapters.backup.clone(),
-            Arc::clone(&adapters.storage),
-            config.backup.clone(),
         );
         let rate_limit_service = RateLimitService::new(config.server.trusted_proxies.clone());
         let health_service = HealthService::new(
@@ -386,6 +391,7 @@ impl AppBuilder {
             refresh_token_worker: RefreshTokenCleanupWorker::new(
                 pool.clone(),
                 adapters.refresh.clone(),
+                adapters.link_session.clone(),
                 config.auth.refresh_token_cleanup_interval_secs,
             ),
         }

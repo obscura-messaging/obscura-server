@@ -1,4 +1,5 @@
 use crate::adapters::database::DbPool;
+use crate::adapters::database::link_session_repo::LinkSessionRepository;
 use crate::adapters::database::refresh_token_repo::RefreshTokenRepository;
 use crate::error::AppError;
 use std::time::Duration;
@@ -8,13 +9,19 @@ use tracing::Instrument;
 pub struct RefreshTokenCleanupWorker {
     pool: DbPool,
     repo: RefreshTokenRepository,
+    link_session_repo: LinkSessionRepository,
     cleanup_interval_secs: u64,
 }
 
 impl RefreshTokenCleanupWorker {
     #[must_use]
-    pub const fn new(pool: DbPool, repo: RefreshTokenRepository, cleanup_interval_secs: u64) -> Self {
-        Self { pool, repo, cleanup_interval_secs }
+    pub const fn new(
+        pool: DbPool,
+        repo: RefreshTokenRepository,
+        link_session_repo: LinkSessionRepository,
+        cleanup_interval_secs: u64,
+    ) -> Self {
+        Self { pool, repo, link_session_repo, cleanup_interval_secs }
     }
 
     pub async fn run(self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
@@ -41,13 +48,13 @@ impl RefreshTokenCleanupWorker {
         tracing::info!("Refresh token cleanup loop shutting down...");
     }
 
-    /// Periodically cleans up expired refresh tokens.
+    /// Periodically cleans up expired refresh tokens and link sessions.
     ///
     /// # Errors
     /// Returns an error if the database connection or query fails.
-    #[tracing::instrument(skip(self), err, fields(expired_deleted = tracing::field::Empty))]
+    #[tracing::instrument(skip(self), err, fields(expired_deleted = tracing::field::Empty, link_sessions_deleted = tracing::field::Empty))]
     pub async fn perform_cleanup(&self) -> Result<(), AppError> {
-        tracing::debug!("Running refresh token cleanup...");
+        tracing::debug!("Running refresh token and link session cleanup...");
 
         let res = if let Ok(mut conn) = self.pool.acquire().await {
             self.repo.delete_expired(&mut conn).await
@@ -63,6 +70,22 @@ impl RefreshTokenCleanupWorker {
                 }
             }
             Err(e) => tracing::error!(error = ?e, "Cleanup error (refresh tokens)"),
+        }
+
+        let link_res = if let Ok(mut conn) = self.pool.acquire().await {
+            self.link_session_repo.delete_expired(&mut conn).await
+        } else {
+            Err(AppError::Internal)
+        };
+
+        match link_res {
+            Ok(count) => {
+                if count > 0 {
+                    tracing::info!(count = %count, "Deleted expired link sessions");
+                    tracing::Span::current().record("link_sessions_deleted", count);
+                }
+            }
+            Err(e) => tracing::error!(error = ?e, "Cleanup error (link sessions)"),
         }
 
         Ok(())

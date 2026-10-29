@@ -1,5 +1,5 @@
 use crate::api::AppState;
-use crate::api::middleware::AuthUser;
+use crate::api::middleware::DeviceAuth;
 use crate::api::schemas::keys::{PreKeyBundleResponse, PreKeyUploadRequest};
 use crate::error::{AppError, Result};
 use crate::services::key_service::KeyUploadParams;
@@ -18,12 +18,10 @@ use uuid::Uuid;
 /// Returns `AppError::Forbidden` if a device-scoped token is not provided.
 /// Returns `AppError::NotFound` if the user has no registered devices or keys.
 pub(crate) async fn get_pre_key_bundles(
-    auth_user: AuthUser,
+    _auth: DeviceAuth,
     State(state): State<AppState>,
     Path(user_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let _ = auth_user.device_id.ok_or_else(|| AppError::Forbidden("Device-scoped token required".to_string()))?;
-
     let bundles = state.key_service.get_pre_key_bundles(user_id, None).await?;
 
     if bundles.is_empty() {
@@ -40,12 +38,10 @@ pub(crate) async fn get_pre_key_bundles(
 /// Returns `AppError::Forbidden` if a device-scoped token is not provided.
 /// Returns `AppError::NotFound` if the user has no such device.
 pub(crate) async fn get_device_pre_key_bundle(
-    auth_user: AuthUser,
+    _auth: DeviceAuth,
     State(state): State<AppState>,
     Path((user_id, device_id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    let _ = auth_user.device_id.ok_or_else(|| AppError::Forbidden("Device-scoped token required".to_string()))?;
-
     let bundle =
         state.key_service.get_pre_key_bundles(user_id, Some(device_id)).await?.pop().ok_or(AppError::NotFound)?;
 
@@ -58,16 +54,14 @@ pub(crate) async fn get_device_pre_key_bundle(
 /// Returns `AppError::Forbidden` if a device-scoped token is not provided.
 /// Returns `AppError::BadRequest` if the keys are malformed or validation fails.
 pub(crate) async fn upload_keys(
-    auth_user: AuthUser,
+    auth: DeviceAuth,
     State(state): State<AppState>,
     Json(payload): Json<PreKeyUploadRequest>,
 ) -> Result<impl IntoResponse> {
-    let device_id = auth_user.device_id.ok_or(AppError::Forbidden("Device-scoped token required".to_string()))?;
-
     payload.validate().map_err(AppError::BadRequest)?;
 
     let params = KeyUploadParams {
-        device_id,
+        device_id: auth.device_id,
         signed_pre_key: payload.signed_pre_key.try_into().map_err(AppError::BadRequest)?,
         one_time_pre_keys: payload
             .one_time_pre_keys

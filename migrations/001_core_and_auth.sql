@@ -20,7 +20,7 @@ CREATE UNIQUE INDEX idx_devices_one_primary_per_user ON devices(user_id) WHERE i
 
 -- Only device-scoped sessions are refreshable.
 CREATE TABLE refresh_tokens (
-    token_hash VARCHAR NOT NULL PRIMARY KEY,
+    token_hash BYTEA NOT NULL PRIMARY KEY,
     device_id UUID NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -31,7 +31,7 @@ CREATE INDEX idx_refresh_tokens_expires_at ON refresh_tokens(expires_at);
 
 -- A session is approved once the primary has stored its body.
 CREATE TABLE link_sessions (
-    id_hash VARCHAR PRIMARY KEY,
+    id_hash BYTEA PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     body BYTEA,
     expires_at TIMESTAMPTZ NOT NULL

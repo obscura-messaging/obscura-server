@@ -13,15 +13,11 @@ use tower_http::request_id::RequestId;
 /// Returns `AppError::Forbidden` if a device-scoped token is not provided.
 /// Returns `AppError::InternalMsg` if the ticket cannot be cached.
 pub(crate) async fn generate_ticket(
-    auth_user: crate::api::middleware::AuthUser,
+    auth: crate::api::middleware::DeviceAuth,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, crate::error::AppError> {
-    let device_id = auth_user
-        .device_id
-        .ok_or_else(|| crate::error::AppError::Forbidden("Device-scoped token required".to_string()))?;
-
     let ticket = uuid::Uuid::new_v4().to_string();
-    state.ws_ticket_cache.set(&ticket, device_id.to_string().as_bytes()).await.map_err(|e| {
+    state.ws_ticket_cache.set(&ticket, auth.device_id.to_string().as_bytes()).await.map_err(|e| {
         tracing::error!(error = %e, "Failed to cache websocket ticket");
         crate::error::AppError::InternalMsg("Failed to generate ticket".to_string())
     })?;

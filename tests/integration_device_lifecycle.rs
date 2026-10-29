@@ -295,3 +295,44 @@ async fn test_account_reset_is_rate_limited_like_auth() {
     .collect();
     assert_eq!(statuses.iter().filter(|s| **s == StatusCode::TOO_MANY_REQUESTS).count(), 2, "{statuses:?}");
 }
+
+#[tokio::test]
+async fn test_device_deletion_and_account_reset_delete_backup_objects() {
+    let config = common::get_test_config();
+    let app = TestApp::spawn_with_config(config.clone()).await;
+    common::ensure_storage_bucket(&app.s3_client, &config.storage.bucket).await;
+
+    let primary = app.register_user(&common::generate_username("backup_del")).await;
+    let linked = app.link_device(&primary).await;
+
+    for device in [&primary, &linked] {
+        let resp = app
+            .client
+            .post(format!("{}/v1/backup", app.server_url))
+            .header("Authorization", format!("Bearer {}", device.token))
+            .header("If-None-Match", "*")
+            .header("Content-Length", "64")
+            .body(vec![7u8; 64])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    let s3_exists = |device_id: Uuid| {
+        let s3 = app.s3_client.clone();
+        let bucket = config.storage.bucket.clone();
+        let key = format!("{}v1", format!("{}{device_id}/", config.backup.prefix));
+        async move { s3.head_object().bucket(bucket).key(key).send().await.is_ok() }
+    };
+
+    assert!(s3_exists(primary.device_id).await);
+    assert!(s3_exists(linked.device_id).await);
+
+    assert_eq!(delete_device(&app, &primary.token, linked.device_id).await, StatusCode::OK);
+    assert!(!s3_exists(linked.device_id).await, "Deleting a device must remove its S3 backup object");
+    assert!(s3_exists(primary.device_id).await);
+
+    assert_eq!(reset_account(&app, &primary.username, "password12345").await, StatusCode::OK);
+    assert!(!s3_exists(primary.device_id).await, "Resetting an account must remove its devices' S3 backup objects");
+}

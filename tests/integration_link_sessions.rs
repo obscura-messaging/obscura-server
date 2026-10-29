@@ -21,8 +21,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 
-fn id_hash(id: &str) -> String {
-    hex::encode(Sha256::digest(id.as_bytes()))
+fn id_hash(id: &str) -> Vec<u8> {
+    Sha256::digest(id.as_bytes()).to_vec()
 }
 
 async fn create(app: &TestApp, token: &str) -> reqwest::Response {
@@ -89,7 +89,7 @@ async fn test_create_requires_user_scoped_token_and_stores_only_a_hash() {
     assert!((now + 590..=now + 610).contains(&body["expiresAt"].as_i64().unwrap()));
 
     let plain: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM link_sessions WHERE id_hash = $1)")
-        .bind(id)
+        .bind(id.as_bytes())
         .fetch_one(&app.pool)
         .await
         .unwrap();
@@ -98,15 +98,23 @@ async fn test_create_requires_user_scoped_token_and_stores_only_a_hash() {
 }
 
 #[tokio::test]
-async fn test_create_purges_expired_sessions() {
+async fn test_create_replaces_previous_unapproved_session_and_purges_expired() {
     let app = TestApp::spawn().await;
     let primary = app.register_user(&common::generate_username("ls_purge")).await;
+    let other = app.register_user(&common::generate_username("ls_purge_other")).await;
     let user_token = app.login_user_scoped(&primary.username).await;
-    let old = app.create_link_session(&user_token).await;
-    expire(&app, &old).await;
+    let other_token = app.login_user_scoped(&other.username).await;
 
-    app.create_link_session(&user_token).await;
-    assert!(!stored(&app, &old).await);
+    let expired_other = app.create_link_session(&other_token).await;
+    expire(&app, &expired_other).await;
+
+    let first_unapproved = app.create_link_session(&user_token).await;
+    assert!(!stored(&app, &expired_other).await, "Expired sessions must be purged");
+    assert!(stored(&app, &first_unapproved).await);
+
+    let second_unapproved = app.create_link_session(&user_token).await;
+    assert!(!stored(&app, &first_unapproved).await, "Prior unapproved session for the same user must be replaced");
+    assert!(stored(&app, &second_unapproved).await);
 }
 
 #[tokio::test]

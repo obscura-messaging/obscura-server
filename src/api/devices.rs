@@ -1,6 +1,5 @@
 use crate::api::AppState;
-use crate::api::middleware::AuthUser;
-use crate::api::schemas::auth::ResetAccountRequest;
+use crate::api::middleware::{AuthUser, DeviceAuth, UserAuth};
 use crate::api::schemas::devices::{CreateDeviceRequest, DeviceListResponse, DeviceResponse, UpdateDeviceRequest};
 use crate::error::{AppError, Result};
 use crate::services::device_service::NewDevice;
@@ -20,11 +19,10 @@ use uuid::Uuid;
 /// Returns `AppError::Forbidden` if the token is device-scoped, the device limit is reached, or a linked device lacks an approved link
 /// session or the account identity key.
 pub(crate) async fn create_device(
-    auth_user: AuthUser,
+    auth: UserAuth,
     State(state): State<AppState>,
     Json(payload): Json<CreateDeviceRequest>,
 ) -> Result<impl IntoResponse> {
-    auth_user.require_user_scope()?;
     payload.validate().map_err(AppError::BadRequest)?;
 
     let device = NewDevice {
@@ -40,7 +38,7 @@ pub(crate) async fn create_device(
             .map_err(AppError::BadRequest)?,
         link_session_id: payload.link_session_id,
     };
-    let session = state.device_service.create_device(auth_user.user_id, device).await?;
+    let session = state.device_service.create_device(auth.user_id, device).await?;
 
     let auth_response = crate::api::auth::map_session(session);
     Ok((StatusCode::CREATED, Json(auth_response)))
@@ -63,11 +61,11 @@ pub(crate) async fn list_devices(auth_user: AuthUser, State(state): State<AppSta
 /// # Errors
 /// Returns `AppError::NotFound` if the device doesn't exist or isn't owned by the user.
 pub(crate) async fn get_device(
-    auth_user: AuthUser,
+    auth: DeviceAuth,
     State(state): State<AppState>,
     Path(device_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let device = state.device_service.get_device(device_id, auth_user.user_id).await?;
+    let device = state.device_service.get_device(device_id, auth.user_id).await?;
     Ok(Json(device_to_response(device)))
 }
 
@@ -76,12 +74,12 @@ pub(crate) async fn get_device(
 /// # Errors
 /// Returns `AppError::NotFound` if the device doesn't exist or isn't owned by the user.
 pub(crate) async fn update_device(
-    auth_user: AuthUser,
+    auth: DeviceAuth,
     State(state): State<AppState>,
     Path(device_id): Path<Uuid>,
     Json(payload): Json<UpdateDeviceRequest>,
 ) -> Result<impl IntoResponse> {
-    let device = state.device_service.update_device(device_id, auth_user.user_id, payload.name).await?;
+    let device = state.device_service.update_device(device_id, auth.user_id, payload.name).await?;
     Ok(Json(device_to_response(device)))
 }
 
@@ -91,25 +89,11 @@ pub(crate) async fn update_device(
 /// Returns `AppError::NotFound` if the device doesn't exist or isn't owned by the user.
 /// Returns `AppError::Forbidden` if the caller may not delete the device.
 pub(crate) async fn delete_device(
-    auth_user: AuthUser,
+    auth: DeviceAuth,
     State(state): State<AppState>,
     Path(device_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let caller_device_id =
-        auth_user.device_id.ok_or_else(|| AppError::Forbidden("Device-scoped token required".into()))?;
-    state.device_service.delete_device(auth_user.user_id, caller_device_id, device_id).await?;
-    Ok(StatusCode::OK)
-}
-
-/// Deletes all of the account's devices and clears its identity.
-///
-/// # Errors
-/// Returns `AppError::AuthError` if the credentials are invalid.
-pub(crate) async fn reset_account(
-    State(state): State<AppState>,
-    Json(payload): Json<ResetAccountRequest>,
-) -> Result<impl IntoResponse> {
-    state.device_service.reset_account(&payload.username.to_lowercase(), &payload.password).await?;
+    state.device_service.delete_device(auth.user_id, auth.device_id, device_id).await?;
     Ok(StatusCode::OK)
 }
 

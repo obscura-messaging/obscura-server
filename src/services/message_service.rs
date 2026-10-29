@@ -72,7 +72,7 @@ impl MessageService {
         &self,
         sender_id: Uuid,
         sender_device_id: Uuid,
-        recipient_user_ids: &[Uuid],
+        recipient_user_ids: &BTreeSet<Uuid>,
         submissions: Vec<RawSubmission>,
     ) -> Result<SubmissionOutcome> {
         let mut failed_submissions = Vec::new();
@@ -128,9 +128,10 @@ impl MessageService {
         // Pass 2: Business Validation (Device Existence and Complete Delivery)
         let mut tx = self.pool.begin().await?;
         let check_ids: Vec<Uuid> = device_ids_to_check.into_iter().collect();
+        let explicit_user_ids: Vec<Uuid> = recipient_user_ids.iter().copied().collect();
         let mut owner_of = HashMap::new();
         let mut current_devices: BTreeMap<Uuid, BTreeSet<Uuid>> = BTreeMap::new();
-        for (device_id, user_id) in self.repo.lock_device_sets(&mut tx, &check_ids, recipient_user_ids).await? {
+        for (device_id, user_id) in self.repo.lock_device_sets(&mut tx, &check_ids, &explicit_user_ids).await? {
             owner_of.insert(device_id, user_id);
             if device_id != sender_device_id {
                 current_devices.entry(user_id).or_default().insert(device_id);
@@ -149,11 +150,9 @@ impl MessageService {
         let mut device_mismatches = Vec::new();
         for (user_id, targets) in &targeted {
             let current = current_devices.remove(user_id).unwrap_or_default();
-            if *targets != current {
-                device_mismatches.push(DeviceMismatch {
-                    user_id: *user_id,
-                    missing_device_ids: current.difference(targets).copied().collect(),
-                });
+            let missing_device_ids: Vec<Uuid> = current.difference(targets).copied().collect();
+            if !missing_device_ids.is_empty() {
+                device_mismatches.push(DeviceMismatch { user_id: *user_id, missing_device_ids });
             }
         }
         let mismatched: HashSet<Uuid> = device_mismatches.iter().map(|m| m.user_id).collect();
@@ -176,7 +175,9 @@ impl MessageService {
         }
 
         // Pass 3: Bulk Insert
-        if !to_insert.is_empty() {
+        if to_insert.is_empty() {
+            tx.commit().await?;
+        } else {
             let inserted =
                 self.repo.create_batch(&mut tx, sender_id, sender_device_id, to_insert, self.ttl_days).await?;
             tx.commit().await?;

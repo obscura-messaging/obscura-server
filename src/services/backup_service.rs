@@ -219,4 +219,42 @@ impl BackupService {
         let backup = self.repo.find_by_device_id(&mut conn, device_id).await?;
         Ok(backup.map(|b| b.current_version))
     }
+
+    /// Fetches the backup record of a device inside an existing transaction before the device is deleted.
+    ///
+    /// # Errors
+    /// Returns `AppError::Database` if the query fails.
+    pub(crate) async fn find_for_device(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        device_id: Uuid,
+    ) -> Result<Option<crate::domain::backup::Backup>> {
+        self.repo.find_by_device_id(conn, device_id).await
+    }
+
+    /// Fetches all backup records for a user's devices inside an existing transaction before the devices are deleted.
+    ///
+    /// # Errors
+    /// Returns `AppError::Database` if the query fails.
+    pub(crate) async fn find_for_user(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        user_id: Uuid,
+    ) -> Result<Vec<crate::domain::backup::Backup>> {
+        self.repo.find_by_user_id(conn, user_id).await
+    }
+
+    /// Deletes the stored S3 backup objects (active and pending) for deleted devices.
+    pub(crate) async fn delete_device_objects(&self, backups: &[crate::domain::backup::Backup]) {
+        for backup in backups {
+            for version in [Some(backup.current_version), backup.pending_version].into_iter().flatten() {
+                if version > 0 {
+                    let key = format!("{}{}/v{}", self.backup_config.prefix, backup.device_id, version);
+                    if let Err(e) = self.storage.delete(&key).await {
+                        tracing::warn!(error = ?e, key = %key, "Failed to delete backup object of deleted device");
+                    }
+                }
+            }
+        }
+    }
 }

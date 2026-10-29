@@ -1,7 +1,7 @@
 use crate::api::AppState;
-use crate::api::middleware::AuthUser;
+use crate::api::middleware::{DeviceAuth, UserAuth};
 use crate::api::schemas::link_sessions::{LinkSessionResponse, LinkSessionWaitParams};
-use crate::error::{AppError, Result};
+use crate::error::Result;
 use axum::{
     Json,
     body::Bytes,
@@ -15,12 +15,8 @@ use std::time::Duration;
 ///
 /// # Errors
 /// Returns `AppError::Forbidden` if the token is device-scoped.
-pub(crate) async fn create_link_session(
-    auth_user: AuthUser,
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse> {
-    auth_user.require_user_scope()?;
-    let session = state.link_session_service.create(auth_user.user_id).await?;
+pub(crate) async fn create_link_session(auth: UserAuth, State(state): State<AppState>) -> Result<impl IntoResponse> {
+    let session = state.link_session_service.create(auth.user_id).await?;
     Ok((
         StatusCode::CREATED,
         Json(LinkSessionResponse { id: session.id, expires_at: session.expires_at.unix_timestamp() }),
@@ -35,13 +31,12 @@ pub(crate) async fn create_link_session(
 /// Returns `AppError::Conflict` if the session is already approved.
 /// Returns `AppError::PayloadTooLarge` if the body exceeds the size cap.
 pub(crate) async fn approve_link_session(
-    auth_user: AuthUser,
+    auth: DeviceAuth,
     State(state): State<AppState>,
     Path(id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
-    let device_id = auth_user.device_id.ok_or_else(|| AppError::Forbidden("Device-scoped token required".into()))?;
-    state.link_session_service.approve(auth_user.user_id, device_id, &id, &body).await?;
+    state.link_session_service.approve(auth.user_id, auth.device_id, &id, &body).await?;
     Ok(StatusCode::OK)
 }
 
@@ -51,14 +46,13 @@ pub(crate) async fn approve_link_session(
 /// Returns `AppError::Forbidden` if the token is device-scoped.
 /// Returns `AppError::NotFound` if the session is unknown, expired, or another user's.
 pub(crate) async fn get_link_session(
-    auth_user: AuthUser,
+    auth: UserAuth,
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(params): Query<LinkSessionWaitParams>,
 ) -> Result<Response> {
-    auth_user.require_user_scope()?;
     let body =
-        state.link_session_service.wait_for_approval(auth_user.user_id, &id, Duration::from_secs(params.wait)).await?;
+        state.link_session_service.wait_for_approval(auth.user_id, &id, Duration::from_secs(params.wait)).await?;
     Ok(body.map_or_else(
         || StatusCode::NO_CONTENT.into_response(),
         |body| ([(header::CONTENT_TYPE, "application/octet-stream")], body).into_response(),

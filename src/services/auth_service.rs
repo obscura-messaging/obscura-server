@@ -83,10 +83,14 @@ impl AuthService {
         fields(user.id = tracing::field::Empty),
         err(level = "warn")
     )]
-    pub(crate) async fn register(&self, username: String, password: String) -> Result<AuthSession> {
+    pub(crate) async fn register(
+        &self,
+        username: &crate::domain::user::Username,
+        password: String,
+    ) -> Result<AuthSession> {
         let password_hash = self.hash_password(&password).await?;
         let mut tx = self.pool.begin().await?;
-        let user = self.user_repo.create(&mut tx, &username, &password_hash).await?;
+        let user = self.user_repo.create(&mut tx, username, &password_hash).await?;
         tracing::Span::current().record("user_id", tracing::field::display(user.id));
         let session = self.create_session(&mut tx, user.id, None).await?;
         tx.commit().await?;
@@ -105,13 +109,8 @@ impl AuthService {
         fields(user.id = tracing::field::Empty),
         err(level = "warn")
     )]
-    pub(crate) async fn login(
-        &self,
-        username: String,
-        password: String,
-        device_id: Option<Uuid>,
-    ) -> Result<AuthSession> {
-        let user_id = self.verify_credentials(&username, &password).await?;
+    pub(crate) async fn login(&self, username: &str, password: String, device_id: Option<Uuid>) -> Result<AuthSession> {
+        let user_id = self.verify_credentials(username, &password).await?;
 
         let mut conn = self.pool.acquire().await?;
         let validated_device_id = if let Some(did) = device_id {
@@ -135,8 +134,9 @@ impl AuthService {
     /// # Errors
     /// Returns `AppError::AuthError` if credentials are invalid.
     pub(crate) async fn verify_credentials(&self, username: &str, password: &str) -> Result<Uuid> {
+        let username = crate::domain::user::Username::normalize(username);
         let mut conn = self.pool.acquire().await?;
-        let Some(user) = self.user_repo.find_by_username(&mut conn, username).await? else {
+        let Some(user) = self.user_repo.find_by_username(&mut conn, &username).await? else {
             tracing::warn!("Credentials rejected: user not found");
             return Err(AppError::AuthError);
         };
@@ -300,10 +300,8 @@ impl AuthService {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
     }
 
-    pub(crate) fn hash_opaque_token(token: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(token.as_bytes());
-        hex::encode(hasher.finalize())
+    pub(crate) fn hash_opaque_token(token: &str) -> [u8; 32] {
+        Sha256::digest(token.as_bytes()).into()
     }
 }
 

@@ -384,6 +384,7 @@ paths:
       summary: Get a single device.
       description: |
         Returns the details of a specific device owned by the authenticated user.
+        Requires a Device-Scoped JWT.
       tags: [Devices]
       security:
         - bearerAuth: []
@@ -406,6 +407,8 @@ paths:
                 $ref: '#/components/schemas/DeviceResponse'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
         '408':
@@ -418,6 +421,7 @@ paths:
       summary: Update a device.
       description: |
         Updates the metadata (e.g., name) of a device owned by the authenticated user.
+        Requires a Device-Scoped JWT.
       tags: [Devices]
       security:
         - bearerAuth: []
@@ -445,6 +449,8 @@ paths:
                 $ref: '#/components/schemas/DeviceResponse'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
         '408':
@@ -773,7 +779,7 @@ paths:
         '408':
           $ref: '#/components/responses/RequestTimeoutError'
         '413':
-          description: Payload Too Large. The batch contains too many messages (exceeds server max).
+          description: Payload Too Large. The batch contains too many messages or recipient user IDs (exceeds server max).
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         '500':
@@ -855,6 +861,7 @@ paths:
         Uploads an encrypted binary blob to long-term storage.
         Blobs are automatically deleted after a configured period.
         Maximum and minimum size limits are enforced by the server.
+        Requires a Device-Scoped JWT.
       tags: [Attachments]
       security:
         - bearerAuth: []
@@ -879,6 +886,8 @@ paths:
           $ref: '#/components/responses/BadRequestError'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
         '408':
           $ref: '#/components/responses/RequestTimeoutError'
         '411':
@@ -894,6 +903,8 @@ paths:
     get:
       operationId: downloadAttachment
       summary: Download an attachment.
+      description: |
+        Downloads an encrypted binary blob from storage. Requires a Device-Scoped JWT.
       tags: [Attachments]
       security:
         - bearerAuth: []
@@ -932,6 +943,8 @@ paths:
               $ref: '#/components/headers/x-request-id'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
         '408':

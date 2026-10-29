@@ -1,6 +1,8 @@
 use crate::api::AppState;
 use crate::api::middleware::AuthUser;
-use crate::api::schemas::auth::{AuthResponse, LoginRequest, LogoutRequest, RefreshRequest, RegistrationRequest};
+use crate::api::schemas::auth::{
+    AuthResponse, LoginRequest, LogoutRequest, RefreshRequest, RegistrationRequest, ResetAccountRequest,
+};
 use crate::domain::auth_session::AuthSession;
 use crate::error::{AppError, Result};
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
@@ -19,7 +21,7 @@ pub(crate) async fn login(
         .map(|s| uuid::Uuid::parse_str(&s).map_err(|_| AppError::BadRequest("Invalid device_id".to_string())))
         .transpose()?;
 
-    let session = state.auth_service.login(payload.username.to_lowercase(), payload.password, device_id).await?;
+    let session = state.auth_service.login(&payload.username, payload.password, device_id).await?;
     let auth_response = map_session(session);
     Ok(Json(auth_response))
 }
@@ -33,12 +35,24 @@ pub(crate) async fn register(
     State(state): State<AppState>,
     Json(payload): Json<RegistrationRequest>,
 ) -> Result<impl IntoResponse> {
-    payload.validate().map_err(AppError::BadRequest)?;
+    let username = payload.validate().map_err(AppError::BadRequest)?;
 
-    let session = state.auth_service.register(payload.username.to_lowercase(), payload.password).await?;
+    let session = state.auth_service.register(&username, payload.password).await?;
 
     let auth_response = map_session(session);
     Ok((StatusCode::CREATED, Json(auth_response)))
+}
+
+/// Deletes all of the account's devices and clears its identity.
+///
+/// # Errors
+/// Returns `AppError::AuthError` if the credentials are invalid.
+pub(crate) async fn reset_account(
+    State(state): State<AppState>,
+    Json(payload): Json<ResetAccountRequest>,
+) -> Result<impl IntoResponse> {
+    state.device_service.reset_account(&payload.username, &payload.password).await?;
+    Ok(StatusCode::OK)
 }
 
 /// Rotates a session using a refresh token.

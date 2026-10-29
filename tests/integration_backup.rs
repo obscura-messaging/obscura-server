@@ -303,7 +303,7 @@ async fn test_backup_concurrent_upload_conflict() {
 async fn test_backup_cleanup() {
     let mut config = common::get_test_config();
     config.storage.bucket = format!("test-cleanup-{}", &Uuid::new_v4().to_string()[..8]);
-    config.backup.stale_threshold_mins = 1; // 1 minute threshold
+    config.backup.stale_threshold_mins = 10; // 10 minute threshold so it does not sweep other tests' 2-min fixtures
 
     let app = common::TestApp::spawn_with_config(config.clone()).await;
     common::ensure_storage_bucket(&app.s3_client, &config.storage.bucket).await;
@@ -311,10 +311,10 @@ async fn test_backup_cleanup() {
     let user = app.register_user(&common::generate_username("cleanup")).await;
     let user_id = user.device_id;
 
-    // 1. Setup Stale DB State (2 minutes ago)
+    // 1. Setup Stale DB State (20 minutes ago)
     sqlx::query(
         "INSERT INTO backups (device_id, current_version, pending_version, state, pending_at)
-         VALUES ($1, 1, 2, 'UPLOADING', NOW() - INTERVAL '2 minutes')",
+         VALUES ($1, 1, 2, 'UPLOADING', NOW() - INTERVAL '20 minutes')",
     )
     .bind(user_id)
     .execute(&app.pool)

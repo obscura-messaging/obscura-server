@@ -1,5 +1,5 @@
 use crate::api::AppState;
-use crate::api::middleware::AuthUser;
+use crate::api::middleware::DeviceAuth;
 use crate::error::{AppError, Result};
 use axum::{
     body::Body,
@@ -17,13 +17,11 @@ use futures::StreamExt;
 /// Returns `AppError::LengthRequired` if the Content-Length header is missing.
 /// Returns `AppError::Internal` if the upload fails.
 pub(crate) async fn upload_backup(
-    auth_user: AuthUser,
+    auth: DeviceAuth,
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Body,
 ) -> Result<impl IntoResponse> {
-    let device_id = auth_user.device_id.ok_or(AppError::Forbidden("Device-scoped token required".to_string()))?;
-
     // 1. Determine target version using Optimistic Locking headers
     let if_match_version = if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH) {
         if if_none_match == "*" {
@@ -51,7 +49,7 @@ pub(crate) async fn upload_backup(
     let stream = body.into_data_stream().map(|res| res.map_err(|e| std::io::Error::other(e.to_string()))).boxed();
 
     let new_version =
-        state.backup_service.handle_upload(device_id, if_match_version, Some(content_len), stream).await?;
+        state.backup_service.handle_upload(auth.device_id, if_match_version, Some(content_len), stream).await?;
 
     let mut response = Response::new(Body::empty());
     *response.status_mut() = StatusCode::OK;
@@ -69,18 +67,16 @@ pub(crate) async fn upload_backup(
 /// Returns `AppError::NotFound` if the backup does not exist.
 /// Returns `AppError::Internal` if there is an error during download.
 pub(crate) async fn download_backup(
-    auth_user: AuthUser,
+    auth: DeviceAuth,
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    let device_id = auth_user.device_id.ok_or(AppError::Forbidden("Device-scoped token required".to_string()))?;
-
     // 1. Check If-None-Match for caching optimization
     if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) {
         let if_none_match_version = if_none_match.trim_matches('"');
         if let Ok(version) = if_none_match_version.parse::<i32>() {
             // Fast-path: Check DB version before touching S3
-            if let Some(current_version) = state.backup_service.get_current_version(device_id).await?
+            if let Some(current_version) = state.backup_service.get_current_version(auth.device_id).await?
                 && current_version == version
             {
                 return Ok(StatusCode::NOT_MODIFIED.into_response());
@@ -88,7 +84,7 @@ pub(crate) async fn download_backup(
         }
     }
 
-    let (version, len, stream) = state.backup_service.download(device_id).await?;
+    let (version, len, stream) = state.backup_service.download(auth.device_id).await?;
 
     // Bridge StorageStream -> Axum Body
     let body = Body::from_stream(stream);
@@ -112,10 +108,8 @@ pub(crate) async fn download_backup(
 /// Returns `AppError::Forbidden` if a device-scoped token is not provided.
 /// Returns `AppError::NotFound` if the backup does not exist.
 /// Returns `AppError::Internal` if there is an error.
-pub(crate) async fn head_backup(auth_user: AuthUser, State(state): State<AppState>) -> Result<impl IntoResponse> {
-    let device_id = auth_user.device_id.ok_or(AppError::Forbidden("Device-scoped token required".to_string()))?;
-
-    let (version, len) = state.backup_service.head(device_id).await?;
+pub(crate) async fn head_backup(auth: DeviceAuth, State(state): State<AppState>) -> Result<impl IntoResponse> {
+    let (version, len) = state.backup_service.head(auth.device_id).await?;
 
     let mut response = Response::new(Body::empty());
     response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));

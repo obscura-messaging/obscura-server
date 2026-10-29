@@ -112,7 +112,7 @@ fn auth_router(
         .route("/sessions", post(auth::login))
         .route("/sessions", delete(auth::logout))
         .route("/sessions/refresh", post(auth::refresh))
-        .route("/account/reset", post(devices::reset_account))
+        .route("/account/reset", post(auth::reset_account))
         .layer(GovernorLayer::new(auth_conf))
         .layer(standard_timeout)
 }
