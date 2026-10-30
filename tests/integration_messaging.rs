@@ -19,7 +19,6 @@ use common::TestApp;
 use futures::SinkExt;
 use obscura_server::proto::obscura::v1 as proto;
 use prost::Message as ProstMessage;
-use serde_json::json;
 
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
@@ -133,6 +132,7 @@ async fn test_send_message_recipient_not_found() {
 
     let submission_id = Uuid::new_v4();
     let request = proto::SendMessageRequest {
+        recipient_user_ids: Vec::new(),
         messages: vec![proto::send_message_request::Submission {
             submission_id: submission_id.as_bytes().to_vec(),
             device_id: bad_id.as_bytes().to_vec(),
@@ -193,6 +193,7 @@ async fn test_message_idempotency() {
     let content = b"Idempotent Hello".to_vec();
 
     let request = proto::SendMessageRequest {
+        recipient_user_ids: Vec::new(),
         messages: vec![proto::send_message_request::Submission {
             submission_id: Uuid::new_v4().as_bytes().to_vec(),
             device_id: user_b.device_id.as_bytes().to_vec(),
@@ -252,6 +253,7 @@ async fn test_batch_partial_success() {
     let submission_id_c = Uuid::new_v4();
 
     let request = proto::SendMessageRequest {
+        recipient_user_ids: Vec::new(),
         messages: vec![
             // 1. Valid (Bob)
             proto::send_message_request::Submission {
@@ -309,7 +311,7 @@ async fn test_batch_empty() {
     let app = TestApp::spawn().await;
     let user = app.register_user(&common::generate_username("empty")).await;
 
-    let request = proto::SendMessageRequest { messages: vec![] };
+    let request = proto::SendMessageRequest { recipient_user_ids: Vec::new(), messages: vec![] };
     let mut buf = Vec::new();
     request.encode(&mut buf).unwrap();
 
@@ -347,7 +349,7 @@ async fn test_batch_too_large() {
         });
     }
 
-    let request = proto::SendMessageRequest { messages };
+    let request = proto::SendMessageRequest { recipient_user_ids: Vec::new(), messages };
     let mut buf = Vec::new();
     request.encode(&mut buf).unwrap();
 
@@ -461,6 +463,7 @@ async fn test_send_message_invalid_uuid_bytes() {
     let user = app.register_user(&common::generate_username("malformed_bytes")).await;
 
     let request = proto::SendMessageRequest {
+        recipient_user_ids: Vec::new(),
         messages: vec![proto::send_message_request::Submission {
             submission_id: Uuid::new_v4().as_bytes().to_vec(), // Valid
             device_id: vec![4, 5, 6],                          // Invalid length
@@ -525,6 +528,7 @@ async fn test_send_message_malformed_submission_id() {
     let recipient = app.register_user(&common::generate_username("recipient_sub")).await;
 
     let request = proto::SendMessageRequest {
+        recipient_user_ids: Vec::new(),
         messages: vec![proto::send_message_request::Submission {
             submission_id: vec![1, 2, 3], // Invalid length
             device_id: recipient.device_id.as_bytes().to_vec(),
@@ -562,6 +566,7 @@ async fn test_send_message_missing_payload() {
     let recipient = app.register_user(&common::generate_username("recipient_payload")).await;
 
     let request = proto::SendMessageRequest {
+        recipient_user_ids: Vec::new(),
         messages: vec![proto::send_message_request::Submission {
             submission_id: Uuid::new_v4().as_bytes().to_vec(),
             device_id: recipient.device_id.as_bytes().to_vec(),
@@ -599,30 +604,9 @@ async fn test_multi_device_messaging() {
 
     // 1. Register Bob and give him TWO devices
     let bob = app.register_user_with_keys(&username, 111, 5).await;
-
-    // Login to get user token for creating second device
-    let login_payload = json!({
-        "username": username,
-        "password": "password12345"
-    });
-    let login_resp =
-        app.client.post(format!("{}/v1/sessions", app.server_url)).json(&login_payload).send().await.unwrap();
-    let user_token = login_resp.json::<serde_json::Value>().await.unwrap()["token"].as_str().unwrap().to_string();
-
-    // Create device 2
-    let (device2_payload, _) = common::generate_device_payload(222, 5);
-    let device2_resp = app
-        .client
-        .post(format!("{}/v1/devices", app.server_url))
-        .header("Authorization", format!("Bearer {}", user_token))
-        .json(&device2_payload)
-        .send()
-        .await
-        .unwrap();
-
-    let device2_json: serde_json::Value = device2_resp.json().await.unwrap();
-    let device2_token = device2_json["token"].as_str().unwrap().to_string();
-    let device2_id = Uuid::parse_str(device2_json["deviceId"].as_str().unwrap()).unwrap();
+    let bob_device2 = app.link_device(&bob).await;
+    let device2_token = bob_device2.token;
+    let device2_id = bob_device2.device_id;
 
     // 2. Register Alice (sender)
     let alice = app.register_user(&common::generate_username("alice_multi")).await;
@@ -634,14 +618,15 @@ async fn test_multi_device_messaging() {
     let mut ws2 = app.connect_ws(&device2_token).await;
     ws2.ensure_subscribed().await;
 
-    // 4. Alice sends a message ONLY to Bob's Device 2
-    app.send_message(&alice.token, device2_id, b"Targeting Device 2").await;
+    // 4. Alice sends a separately encrypted message to each of Bob's devices
+    app.send_messages(&alice.token, &[(bob.device_id, b"For Device 1"), (device2_id, b"For Device 2")]).await;
 
-    // 5. Verify Device 2 receives the message
-    let env2 = ws2.receive_envelope_timeout(Duration::from_secs(2)).await.expect("Device 2 should receive the message");
-    assert_eq!(env2.message, b"Targeting Device 2");
+    // 5. Each device receives exactly its own message
+    let env1 = ws1.receive_envelope_timeout(Duration::from_secs(2)).await.expect("Device 1 should receive its message");
+    assert_eq!(env1.message, b"For Device 1");
+    let env2 = ws2.receive_envelope_timeout(Duration::from_secs(2)).await.expect("Device 2 should receive its message");
+    assert_eq!(env2.message, b"For Device 2");
 
-    // 6. Verify Device 1 DOES NOT receive the message
-    let env1 = ws1.receive_envelope_timeout(Duration::from_millis(500)).await;
-    assert!(env1.is_none(), "Device 1 should NOT receive the message meant for Device 2");
+    assert!(ws1.receive_envelope_timeout(Duration::from_millis(500)).await.is_none());
+    assert!(ws2.receive_envelope_timeout(Duration::from_millis(500)).await.is_none());
 }

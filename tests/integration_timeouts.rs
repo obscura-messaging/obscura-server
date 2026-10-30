@@ -56,41 +56,6 @@ async fn test_standard_request_timeout() {
 }
 
 #[tokio::test]
-async fn test_backup_upload_timeout() {
-    let mut config = common::get_test_config();
-    config.backup.request_timeout_secs = 2; // 2 second limit
-
-    let app = common::TestApp::spawn_with_config(config.clone()).await;
-    common::ensure_storage_bucket(&app.s3_client, &config.storage.bucket).await;
-
-    let username = common::generate_username("timeout_up_backup");
-    let user = app.register_user(&username).await;
-
-    // Create a stream that waits 3 seconds before sending data
-    let delayed_stream = stream::unfold(0, |state| async move {
-        if state == 0 {
-            tokio::time::sleep(Duration::from_millis(3000)).await;
-            Some((Ok::<_, std::io::Error>(bytes::Bytes::from(vec![0u8; 40])), 1))
-        } else {
-            None
-        }
-    });
-
-    let resp = app
-        .client
-        .post(format!("{}/v1/backup", app.server_url))
-        .header("Authorization", format!("Bearer {}", user.token))
-        .header("If-None-Match", "*")
-        .header("Content-Length", "40")
-        .body(reqwest::Body::wrap_stream(delayed_stream))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::REQUEST_TIMEOUT);
-}
-
-#[tokio::test]
 async fn test_attachment_upload_timeout() {
     let mut config = common::get_test_config();
     config.attachment.request_timeout_secs = 2; // 2 second limit
@@ -162,10 +127,9 @@ async fn test_global_safety_timeout() {
 async fn test_attachment_timeout_independence() {
     let mut config = common::get_test_config();
 
-    // CRITICAL: Set Attachment Timeout LONGER than Backup Timeout
-    // If the bug exists, the shorter Backup timeout (1s) will kill the Attachment request
+    // Set Attachment Timeout LONGER than Standard Request Timeout (1s)
     config.attachment.request_timeout_secs = 5;
-    config.backup.request_timeout_secs = 1;
+    config.server.request_timeout_secs = 1;
 
     let app = common::TestApp::spawn_with_config(config.clone()).await;
     common::ensure_storage_bucket(&app.s3_client, &config.storage.bucket).await;
@@ -173,7 +137,7 @@ async fn test_attachment_timeout_independence() {
     let username = common::generate_username("timeout_indep");
     let user = app.register_user(&username).await;
 
-    // Create a stream that takes 2 seconds (Longer than Backup's 1s, shorter than Attachment's 5s)
+    // Create a stream that takes 2 seconds (Longer than standard 1s, shorter than Attachment's 5s)
     let delayed_stream = stream::unfold(0, |state| async move {
         if state == 0 {
             tokio::time::sleep(Duration::from_millis(2000)).await;
@@ -193,11 +157,9 @@ async fn test_attachment_timeout_independence() {
         .await
         .unwrap();
 
-    // If bug exists: 408 Request Timeout (killed by 1s backup layer)
-    // If fixed: 201 Created (allowed by 5s attachment layer)
     assert_eq!(
         resp.status(),
         StatusCode::CREATED,
-        "Attachment upload should have succeeded with 5s timeout, but likely failed due to 1s backup timeout wrapping it."
+        "Attachment upload should have succeeded with 5s attachment timeout despite 1s standard timeout."
     );
 }

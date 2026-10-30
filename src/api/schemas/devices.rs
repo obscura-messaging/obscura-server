@@ -1,10 +1,11 @@
 use crate::api::schemas::crypto::PublicKey;
 use crate::api::schemas::keys::{OneTimePreKey, SignedPreKey};
+use crate::services::device_service::NewDeviceKeys;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateDeviceRequest {
+pub struct DeviceKeyPayload {
     pub name: Option<String>,
     pub identity_key: PublicKey,
     pub registration_id: i32,
@@ -12,8 +13,8 @@ pub struct CreateDeviceRequest {
     pub one_time_pre_keys: Vec<OneTimePreKey>,
 }
 
-impl CreateDeviceRequest {
-    /// Validates the device creation payload.
+impl DeviceKeyPayload {
+    /// Validates the device key payload.
     ///
     /// # Errors
     /// Returns an error if there are duplicate pre-key IDs.
@@ -28,11 +29,39 @@ impl CreateDeviceRequest {
     }
 }
 
+impl TryFrom<DeviceKeyPayload> for NewDeviceKeys {
+    type Error = String;
+
+    fn try_from(payload: DeviceKeyPayload) -> Result<Self, Self::Error> {
+        payload.validate()?;
+        Ok(Self {
+            name: payload.name,
+            identity_key: payload.identity_key.try_into()?,
+            registration_id: payload.registration_id,
+            signed_pre_key: payload.signed_pre_key.try_into()?,
+            one_time_pre_keys: payload
+                .one_time_pre_keys
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateDeviceRequest {
+    pub link_session_id: String,
+    #[serde(flatten)]
+    pub device: DeviceKeyPayload,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceResponse {
     pub device_id: String,
     pub name: Option<String>,
+    pub is_primary: bool,
     pub created_at: String,
 }
 
@@ -42,19 +71,13 @@ pub struct DeviceListResponse {
     pub devices: Vec<DeviceResponse>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateDeviceRequest {
-    pub name: Option<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::api::schemas::crypto::Signature;
 
-    fn mock_device_request(key_ids: Vec<i32>) -> CreateDeviceRequest {
-        CreateDeviceRequest {
+    fn mock_device_request(key_ids: Vec<i32>) -> DeviceKeyPayload {
+        DeviceKeyPayload {
             name: Some("test-device".to_string()),
             identity_key: PublicKey("A".repeat(44)),
             registration_id: 1,

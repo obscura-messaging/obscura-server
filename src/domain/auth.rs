@@ -4,13 +4,12 @@ use uuid::Uuid;
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct Claims {
     pub sub: Uuid,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_id: Option<Uuid>,
+    pub device_id: Uuid,
     pub exp: usize,
 }
 impl Claims {
     #[must_use]
-    pub(crate) const fn new(user_id: Uuid, device_id: Option<Uuid>, exp: usize) -> Self {
+    pub(crate) const fn new(user_id: Uuid, device_id: Uuid, exp: usize) -> Self {
         Self { sub: user_id, device_id, exp }
     }
 }
@@ -40,11 +39,6 @@ impl std::fmt::Display for Jwt {
         write!(f, "***")
     }
 }
-
-#[derive(Debug)]
-pub struct Password;
-#[derive(Debug)]
-pub struct OpaqueToken;
 
 #[cfg(test)]
 mod tests {
@@ -77,18 +71,9 @@ mod tests {
     fn test_claims_new_with_device_id() {
         let user_id = Uuid::new_v4();
         let device_id = Uuid::new_v4();
-        let claims = Claims::new(user_id, Some(device_id), 3600);
+        let claims = Claims::new(user_id, device_id, 3600);
         assert_eq!(claims.sub, user_id);
-        assert_eq!(claims.device_id, Some(device_id));
+        assert_eq!(claims.device_id, device_id);
         assert_eq!(claims.exp, 3600);
-    }
-
-    #[test]
-    fn test_claims_new_without_device_id() {
-        let user_id = Uuid::new_v4();
-        let claims = Claims::new(user_id, None, 7200);
-        assert_eq!(claims.sub, user_id);
-        assert_eq!(claims.device_id, None);
-        assert_eq!(claims.exp, 7200);
     }
 }

@@ -1,4 +1,4 @@
-use crate::adapters::database::records::{ConsumedPreKeyRecord, IdentityKeyRecord, SignedPreKeyRecord};
+use crate::adapters::database::records::{ConsumedPreKeyRecord, SignedPreKeyRecord};
 use crate::domain::crypto::{PublicKey, Signature};
 use crate::domain::keys::{OneTimePreKey, PreKeyBundle, SignedPreKey};
 use crate::error::{AppError, Result};
@@ -14,32 +14,26 @@ impl KeyRepository {
         Self {}
     }
 
-    /// Upserts an identity key for a device.
+    /// Locks the device row and returns the account identity key of its owner.
+    /// Returns `None` if the device does not exist.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the database operation fails.
-    #[tracing::instrument(level = "debug", skip(self, conn, identity_key), err)]
-    pub(crate) async fn upsert_identity_key(
+    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Internal` if stored data is corrupt.
+    #[tracing::instrument(level = "debug", skip(self, conn), err)]
+    pub(crate) async fn lock_device_identity_key(
         &self,
         conn: &mut PgConnection,
         device_id: Uuid,
-        identity_key: &PublicKey,
-        registration_id: i32,
-    ) -> Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO identity_keys (device_id, identity_key, registration_id)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (device_id) DO UPDATE
-            SET identity_key = $2, registration_id = $3
-            "#,
+    ) -> Result<Option<PublicKey>> {
+        let row: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT u.identity_key FROM devices d JOIN users u ON u.id = d.user_id WHERE d.id = $1 FOR UPDATE OF d",
         )
         .bind(device_id)
-        .bind(identity_key.as_bytes())
-        .bind(registration_id)
-        .execute(conn)
+        .fetch_optional(conn)
         .await?;
-        Ok(())
+
+        row.as_deref().map(decode_identity_key).transpose()
     }
 
     /// Upserts a signed pre-key for a device.
@@ -114,35 +108,19 @@ impl KeyRepository {
     }
 
     /// Fetches a pre-key bundle for a single device and consumes one one-time pre-key.
+    /// Returns `None` if the device has no signed pre-key.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the database operation fails.
     /// Returns `AppError::Internal` if stored data is corrupt.
-    #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn fetch_pre_key_bundle(
+    #[tracing::instrument(level = "debug", skip(self, conn, identity_key), err)]
+    async fn fetch_pre_key_bundle(
         &self,
         conn: &mut PgConnection,
         device_id: Uuid,
+        registration_id: i32,
+        identity_key: PublicKey,
     ) -> Result<Option<PreKeyBundle>> {
-        // Fetch identity
-        let identity_rec = sqlx::query_as::<_, IdentityKeyRecord>(
-            "SELECT identity_key, registration_id FROM identity_keys WHERE device_id = $1",
-        )
-        .bind(device_id)
-        .fetch_optional(&mut *conn)
-        .await?;
-
-        let Some(identity_rec) = identity_rec else {
-            return Ok(None);
-        };
-
-        let registration_id = identity_rec.registration_id;
-        let identity_key = PublicKey::try_from(identity_rec).map_err(|e| {
-            tracing::error!(error = %e, "Database data corruption: Invalid identity key format");
-            AppError::Internal
-        })?;
-
-        // Fetch latest signed pre key
         let signed_rec = sqlx::query_as::<_, SignedPreKeyRecord>(
             r#"
             SELECT id, public_key, signature
@@ -163,7 +141,6 @@ impl KeyRepository {
             AppError::Internal
         })?;
 
-        // Fetch one one-time pre key and delete it
         let otpk_rec = sqlx::query_as::<_, ConsumedPreKeyRecord>(
             r#"
             WITH target AS (
@@ -189,114 +166,47 @@ impl KeyRepository {
         Ok(Some(PreKeyBundle { device_id, registration_id, identity_key, signed_pre_key, one_time_pre_key }))
     }
 
-    /// Fetches exactly one pre-key bundle for every device owned by a specific user.
-    /// Mutates the database to consume one one-time pre-key per device.
+    /// Fetches one pre-key bundle for each of a user's devices, or for `device_id` only, each carrying the
+    /// account identity key. Consumes one one-time pre-key per returned device.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the database operation fails.
     /// Returns `AppError::Internal` if stored data is corrupt.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn get_all_bundles_for_user(
+    pub(crate) async fn get_bundles(
         &self,
         conn: &mut PgConnection,
         user_id: Uuid,
+        device_id: Option<Uuid>,
     ) -> Result<Vec<PreKeyBundle>> {
-        let device_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM devices WHERE user_id = $1").bind(user_id).fetch_all(&mut *conn).await?;
+        let identity: Option<Vec<u8>> = sqlx::query_scalar("SELECT identity_key FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(&mut *conn)
+            .await?;
 
-        tracing::info!(user.id = %user_id, count = %device_ids.len(), "Found devices for user");
+        let Some(identity) = identity else {
+            return Ok(Vec::new());
+        };
+        let identity_key = decode_identity_key(&identity)?;
 
-        let mut bundles = Vec::new();
+        let devices: Vec<(Uuid, i32)> = sqlx::query_as(
+            "SELECT id, registration_id FROM devices WHERE user_id = $1 AND ($2::uuid IS NULL OR id = $2) ORDER BY created_at ASC",
+        )
+        .bind(user_id)
+        .bind(device_id)
+        .fetch_all(&mut *conn)
+        .await?;
 
-        for id in device_ids {
-            if let Some(bundle_result) = self.fetch_pre_key_bundle(&mut *conn, id).await? {
-                bundles.push(bundle_result);
-            } else {
-                tracing::info!(device.id = %id, "fetch_pre_key_bundle returned None");
+        let mut bundles = Vec::with_capacity(devices.len());
+        for (device_id, registration_id) in devices {
+            if let Some(bundle) =
+                self.fetch_pre_key_bundle(&mut *conn, device_id, registration_id, identity_key.clone()).await?
+            {
+                bundles.push(bundle);
             }
         }
 
         Ok(bundles)
-    }
-
-    /// Fetches the identity key for a device.
-    ///
-    /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
-    /// Returns `AppError::Internal` if stored data is corrupt.
-    #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn fetch_identity_key(
-        &self,
-        conn: &mut PgConnection,
-        device_id: Uuid,
-    ) -> Result<Option<PublicKey>> {
-        let rec = sqlx::query_as::<_, IdentityKeyRecord>(
-            "SELECT identity_key, registration_id FROM identity_keys WHERE device_id = $1",
-        )
-        .bind(device_id)
-        .fetch_optional(conn)
-        .await?;
-
-        match rec {
-            Some(r) => {
-                let pk = PublicKey::try_from(r).map_err(|e| {
-                    tracing::error!(error = %e, "Database data corruption: Invalid identity key format");
-                    AppError::Internal
-                })?;
-                Ok(Some(pk))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Fetches the identity key for update (with LOCK).
-    ///
-    /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
-    /// Returns `AppError::Internal` if stored data is corrupt.
-    #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn fetch_identity_key_for_update(
-        &self,
-        conn: &mut PgConnection,
-        device_id: Uuid,
-    ) -> Result<Option<PublicKey>> {
-        let rec = sqlx::query_as::<_, IdentityKeyRecord>(
-            "SELECT identity_key, registration_id FROM identity_keys WHERE device_id = $1 FOR UPDATE",
-        )
-        .bind(device_id)
-        .fetch_optional(conn)
-        .await?;
-
-        match rec {
-            Some(r) => {
-                let pk = PublicKey::try_from(r).map_err(|e| {
-                    tracing::error!(error = %e, "Database data corruption: Invalid identity key format");
-                    AppError::Internal
-                })?;
-                Ok(Some(pk))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Deletes all signed pre-keys for a device.
-    ///
-    /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
-    #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn delete_all_signed_pre_keys(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<()> {
-        sqlx::query("DELETE FROM signed_pre_keys WHERE device_id = $1").bind(device_id).execute(conn).await?;
-        Ok(())
-    }
-
-    /// Deletes all one-time pre-keys for a device.
-    ///
-    /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
-    #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn delete_all_one_time_pre_keys(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<()> {
-        sqlx::query("DELETE FROM one_time_pre_keys WHERE device_id = $1").bind(device_id).execute(conn).await?;
-        Ok(())
     }
 
     /// Counts the remaining one-time pre-keys for a device.
@@ -376,4 +286,11 @@ impl KeyRepository {
         .await?;
         Ok(())
     }
+}
+
+fn decode_identity_key(bytes: &[u8]) -> Result<PublicKey> {
+    PublicKey::try_from_bytes(bytes).map_err(|e| {
+        tracing::error!(error = %e, "Database data corruption: Invalid identity key format");
+        AppError::Internal
+    })
 }

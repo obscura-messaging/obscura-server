@@ -167,27 +167,43 @@ async fn test_request_id_propagation() {
 }
 
 #[tokio::test]
-async fn test_login_with_device_id() {
+async fn test_login_requires_matching_device_id() {
     let app = common::TestApp::spawn().await;
     let username = common::generate_username("login_device_id");
 
     // 1. Register and create a device (which gives us a valid device ID)
     let user = app.register_user_with_keys(&username, 123, 5).await;
 
-    // 2. Login WITHOUT deviceId (should return user-scoped token)
-    let login_payload_user = json!({
+    // 2. Login WITHOUT deviceId (should fail schema validation with 422)
+    let login_payload_missing = json!({
         "username": username,
         "password": "password12345"
     });
+    let resp_missing =
+        app.client.post(format!("{}/v1/sessions", app.server_url)).json(&login_payload_missing).send().await.unwrap();
+    assert_eq!(resp_missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-    let resp_user =
-        app.client.post(format!("{}/v1/sessions", app.server_url)).json(&login_payload_user).send().await.unwrap();
+    // 3. Login with a deviceId that does not belong to the user (should return 409 Conflict)
+    let login_payload_mismatch = json!({
+        "username": username,
+        "password": "password12345",
+        "deviceId": uuid::Uuid::new_v4().to_string()
+    });
+    let resp_mismatch =
+        app.client.post(format!("{}/v1/sessions", app.server_url)).json(&login_payload_mismatch).send().await.unwrap();
+    assert_eq!(resp_mismatch.status(), StatusCode::CONFLICT);
 
-    assert_eq!(resp_user.status(), StatusCode::OK);
-    let json_user: serde_json::Value = resp_user.json().await.unwrap();
-    assert!(json_user.get("deviceId").is_none(), "User login should not return deviceId");
+    // 4. Login with a wrong password and a mismatched deviceId must return 401 (not 409)
+    let login_payload_wrong_pw = json!({
+        "username": username,
+        "password": "wrongpassword123",
+        "deviceId": uuid::Uuid::new_v4().to_string()
+    });
+    let resp_wrong_pw =
+        app.client.post(format!("{}/v1/sessions", app.server_url)).json(&login_payload_wrong_pw).send().await.unwrap();
+    assert_eq!(resp_wrong_pw.status(), StatusCode::UNAUTHORIZED);
 
-    // 3. Login WITH deviceId (should return device-scoped token)
+    // 5. Login WITH matching deviceId (should return device session)
     let login_payload_device = json!({
         "username": username,
         "password": "password12345",
@@ -204,10 +220,11 @@ async fn test_login_with_device_id() {
         user.device_id.to_string(),
         "Device login should return the correct deviceId"
     );
+    assert!(json_device["refreshToken"].as_str().is_some());
 
     let device_token = json_device["token"].as_str().unwrap().to_string();
 
-    // 4. Verify we can fetch keys (which requires a device-scoped token)
+    // 6. Verify we can fetch keys
     let resp_keys = app
         .client
         .get(format!("{}/v1/users/{}", app.server_url, user.user_id))
@@ -216,5 +233,5 @@ async fn test_login_with_device_id() {
         .await
         .unwrap();
 
-    assert_eq!(resp_keys.status(), StatusCode::OK, "Should be able to use device-scoped token on /keys");
+    assert_eq!(resp_keys.status(), StatusCode::OK, "Should be able to use token on /keys");
 }

@@ -40,14 +40,14 @@ async fn test_scheduled_push_delivery() {
 
     {
         let mut conn = app.pool.acquire().await.unwrap();
-        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, $2, 'hash')")
+        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
             .bind(user_id)
             .bind(format!("u_{}", &user_id.to_string()[..8]))
             .execute(&mut *conn)
             .await
             .unwrap();
 
-        sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)")
+        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
             .bind(user_id)
             .execute(&mut *conn)
             .await
@@ -84,9 +84,10 @@ async fn test_push_cancellation_on_ack() {
     let app = TestApp::spawn_with_workers(config).await;
     let username = common::generate_username("u_ack");
     let user = app.register_user(&username).await;
+    let sender = app.register_user(&common::generate_username("u_ack_sender")).await;
 
     // 1. Schedule a push
-    app.send_message(&user.token, user.device_id, b"msg").await;
+    app.send_message(&sender.token, user.device_id, b"msg").await;
 
     // 2. Connect via WebSocket
     let mut ws = app.connect_ws(&user.token).await;
@@ -131,9 +132,10 @@ async fn test_push_cancellation_on_websocket_connect() {
     let app = TestApp::spawn_with_workers(config).await;
     let username = common::generate_username("u_ws");
     let user = app.register_user(&username).await;
+    let sender = app.register_user(&common::generate_username("u_ws_sender")).await;
 
     // 1. Schedule push
-    app.send_message(&user.token, user.device_id, b"msg").await;
+    app.send_message(&sender.token, user.device_id, b"msg").await;
 
     // 2. Connect WS
     let _ws = app.connect_ws(&user.token).await;
@@ -176,14 +178,14 @@ async fn test_delivery_exactly_once_under_competition() {
 
     {
         let mut conn = app.pool.acquire().await.unwrap();
-        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, $2, 'hash')")
+        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
             .bind(user_id)
             .bind(format!("u_comp_{}", &user_id.to_string()[..8]))
             .execute(&mut *conn)
             .await
             .unwrap();
 
-        sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)")
+        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
             .bind(user_id)
             .execute(&mut *conn)
             .await
@@ -245,14 +247,14 @@ async fn test_push_coalescing() {
 
     {
         let mut conn = app.pool.acquire().await.unwrap();
-        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, $2, 'hash')")
+        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
             .bind(user_id)
             .bind(format!("u_coal_{}", &user_id.to_string()[..8]))
             .execute(&mut *conn)
             .await
             .unwrap();
 
-        sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)")
+        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
             .bind(user_id)
             .execute(&mut *conn)
             .await
@@ -331,14 +333,16 @@ async fn test_notification_worker_concurrency_limit() {
         {
             let mut conn = app.pool.acquire().await.unwrap();
             let username = common::generate_username(&format!("conc_{i}"));
-            sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, $2, 'hash')")
-                .bind(user_id)
-                .bind(username)
-                .execute(&mut *conn)
-                .await
-                .unwrap();
+            sqlx::query(
+                "INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')",
+            )
+            .bind(user_id)
+            .bind(username)
+            .execute(&mut *conn)
+            .await
+            .unwrap();
 
-            sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)")
+            sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
                 .bind(user_id)
                 .execute(&mut *conn)
                 .await

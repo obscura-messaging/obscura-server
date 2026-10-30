@@ -7,18 +7,15 @@ use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 /// Registers or updates a push token for the authenticated device.
 ///
 /// # Errors
-/// Returns `AppError::Forbidden` if a device-scoped token is not provided.
-/// Returns `AppError::BadRequest` if the token format is invalid or no `device_id` in token.
+/// Returns `AppError::BadRequest` if the token format is invalid.
 /// Returns `AppError::Database` if the database operation fails.
 pub(crate) async fn register_token(
-    auth_user: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Json(payload): Json<RegisterPushTokenRequest>,
 ) -> Result<impl IntoResponse> {
-    let device_id = auth_user.device_id.ok_or(AppError::Forbidden("Device-scoped token required".to_string()))?;
-
     payload.validate().map_err(AppError::BadRequest)?;
 
-    state.push_token_service.register_token(device_id, payload.token).await?;
+    state.push_token_service.register_token(auth.device_id, payload.token).await?;
     Ok(StatusCode::OK)
 }

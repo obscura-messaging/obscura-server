@@ -12,7 +12,7 @@ use uuid::Uuid;
 #[derive(Debug)]
 pub struct AuthUser {
     pub(crate) user_id: Uuid,
-    pub(crate) device_id: Option<Uuid>,
+    pub(crate) device_id: Uuid,
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -31,12 +31,10 @@ impl FromRequestParts<AppState> for AuthUser {
         let token = &auth_str[7..];
         let jwt = Jwt::new(token.to_string());
 
-        let (user_id, device_id) = state.auth_service.verify_token(&jwt).map_err(|_| AppError::AuthError)?;
+        let (user_id, device_id) = state.auth_service.authenticate(&jwt).await?;
 
         tracing::Span::current().record("user.id", tracing::field::display(user_id));
-        if let Some(did) = device_id {
-            tracing::Span::current().record("device.id", tracing::field::display(did));
-        }
+        tracing::Span::current().record("device.id", tracing::field::display(device_id));
 
         Ok(Self { user_id, device_id })
     }

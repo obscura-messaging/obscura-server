@@ -18,16 +18,25 @@ impl DeviceRepository {
     /// # Errors
     /// Returns `sqlx::Error` if the insert fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn create(&self, conn: &mut PgConnection, user_id: Uuid, name: Option<&str>) -> Result<Device> {
+    pub(crate) async fn create(
+        &self,
+        conn: &mut PgConnection,
+        user_id: Uuid,
+        name: Option<&str>,
+        registration_id: i32,
+        is_primary: bool,
+    ) -> Result<Device> {
         let record = sqlx::query_as::<_, DeviceRecord>(
             r#"
-            INSERT INTO devices (user_id, name)
-            VALUES ($1, $2)
-            RETURNING id, user_id, name, created_at
+            INSERT INTO devices (user_id, name, registration_id, is_primary)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, user_id, name, is_primary, created_at
             "#,
         )
         .bind(user_id)
         .bind(name)
+        .bind(registration_id)
+        .bind(is_primary)
         .fetch_one(conn)
         .await?;
 
@@ -41,7 +50,7 @@ impl DeviceRepository {
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn find_by_user(&self, conn: &mut PgConnection, user_id: Uuid) -> Result<Vec<Device>> {
         let records = sqlx::query_as::<_, DeviceRecord>(
-            "SELECT id, user_id, name, created_at FROM devices WHERE user_id = $1 ORDER BY created_at ASC",
+            "SELECT id, user_id, name, is_primary, created_at FROM devices WHERE user_id = $1 ORDER BY created_at ASC",
         )
         .bind(user_id)
         .fetch_all(conn)
@@ -51,19 +60,31 @@ impl DeviceRepository {
     }
 
     /// Deletes a device owned by a specific user.
-    /// Returns true if the device was found and deleted.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the deletion fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn delete(&self, conn: &mut PgConnection, device_id: Uuid, user_id: Uuid) -> Result<bool> {
-        let result = sqlx::query("DELETE FROM devices WHERE id = $1 AND user_id = $2")
+    pub(crate) async fn delete(&self, conn: &mut PgConnection, device_id: Uuid, user_id: Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM devices WHERE id = $1 AND user_id = $2")
             .bind(device_id)
             .bind(user_id)
             .execute(conn)
             .await?;
+        Ok(())
+    }
 
-        Ok(result.rows_affected() > 0)
+    /// Deletes every device of a user and returns their ids.
+    ///
+    /// # Errors
+    /// Returns `sqlx::Error` if the deletion fails.
+    #[tracing::instrument(level = "debug", skip(self, conn), err)]
+    pub(crate) async fn delete_all_for_user(&self, conn: &mut PgConnection, user_id: Uuid) -> Result<Vec<Uuid>> {
+        let ids = sqlx::query_scalar("DELETE FROM devices WHERE user_id = $1 RETURNING id")
+            .bind(user_id)
+            .fetch_all(conn)
+            .await?;
+
+        Ok(ids)
     }
 
     /// Fetches a single device owned by a specific user.
@@ -78,37 +99,8 @@ impl DeviceRepository {
         user_id: Uuid,
     ) -> Result<Option<Device>> {
         let record = sqlx::query_as::<_, DeviceRecord>(
-            "SELECT id, user_id, name, created_at FROM devices WHERE id = $1 AND user_id = $2",
+            "SELECT id, user_id, name, is_primary, created_at FROM devices WHERE id = $1 AND user_id = $2",
         )
-        .bind(device_id)
-        .bind(user_id)
-        .fetch_optional(conn)
-        .await?;
-
-        Ok(record.map(Into::into))
-    }
-
-    /// Updates the name of a device owned by a specific user.
-    /// Returns the updated device, or `None` if not found or not owned.
-    ///
-    /// # Errors
-    /// Returns `sqlx::Error` if the update fails.
-    #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn update_name(
-        &self,
-        conn: &mut PgConnection,
-        device_id: Uuid,
-        user_id: Uuid,
-        name: Option<&str>,
-    ) -> Result<Option<Device>> {
-        let record = sqlx::query_as::<_, DeviceRecord>(
-            r#"
-            UPDATE devices SET name = $1
-            WHERE id = $2 AND user_id = $3
-            RETURNING id, user_id, name, created_at
-            "#,
-        )
-        .bind(name)
         .bind(device_id)
         .bind(user_id)
         .fetch_optional(conn)
@@ -131,6 +123,20 @@ impl DeviceRepository {
         let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM devices WHERE id = $1 AND user_id = $2)")
             .bind(device_id)
             .bind(user_id)
+            .fetch_one(conn)
+            .await?;
+
+        Ok(exists)
+    }
+
+    /// Checks if a device exists.
+    ///
+    /// # Errors
+    /// Returns `sqlx::Error` if the query fails.
+    #[tracing::instrument(level = "debug", skip(self, conn), err)]
+    pub(crate) async fn exists(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<bool> {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM devices WHERE id = $1)")
+            .bind(device_id)
             .fetch_one(conn)
             .await?;
 

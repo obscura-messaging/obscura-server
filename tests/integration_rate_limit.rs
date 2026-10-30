@@ -134,7 +134,7 @@ async fn test_rate_limit_concurrency() {
 async fn test_rate_limit_fallback_to_peer_ip() {
     let mut config = common::get_test_config();
     config.rate_limit.per_second = 1;
-    config.rate_limit.burst = 3;
+    config.rate_limit.burst = 2;
     let app = common::TestApp::spawn_with_config(config).await;
     let user = app.register_user(&common::generate_username("rate_user_fall")).await;
 

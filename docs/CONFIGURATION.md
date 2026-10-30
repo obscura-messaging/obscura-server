@@ -7,7 +7,7 @@ For production, set at least the JWT secret and the database, Valkey and storage
 | Flag | Environment variable | Default | Description |
 |---|---|---|---|
 | **General** | | | |
-| `--ttl-days` | `OBSCURA_TTL_DAYS` | `30` | Lifetime of queued messages and attachments, in days. Backups do not expire. |
+| `--ttl-days` | `OBSCURA_TTL_DAYS` | `30` | Lifetime of queued messages and attachments, in days. |
 | **Server** | | | |
 | `--server-host` | `OBSCURA_SERVER_HOST` | `0.0.0.0` | Bind address for both ports. |
 | `--server-port` | `OBSCURA_SERVER_PORT` | `3000` | API and WebSocket port. |
@@ -34,7 +34,7 @@ For production, set at least the JWT secret and the database, Valkey and storage
 | `--auth-refresh-token-ttl-days` | `OBSCURA_AUTH_REFRESH_TOKEN_TTL_DAYS` | `30` | Refresh token lifetime. |
 | `--auth-refresh-token-cleanup-interval-secs` | `OBSCURA_AUTH_REFRESH_TOKEN_CLEANUP_INTERVAL_SECS` | `86400` | Expired refresh token sweep; `0` disables it. |
 | `--auth-max-devices-per-user` | `OBSCURA_AUTH_MAX_DEVICES_PER_USER` | `10` | Devices per user. |
-| **Rate limits** (per client IP; attachment and backup routes are not limited) | | | |
+| **Rate limits** (per client IP; attachment routes are not limited) | | | |
 | `--rate-limit-per-second` | `OBSCURA_RATE_LIMIT_PER_SECOND` | `10` | Standard API routes. |
 | `--rate-limit-burst` | `OBSCURA_RATE_LIMIT_BURST` | `20` | Standard API burst. |
 | `--auth-rate-limit-per-second` | `OBSCURA_RATE_LIMIT_AUTH_PER_SECOND` | `1` | `/v1/users` (register) and `/v1/sessions*`. |
@@ -66,13 +66,6 @@ For production, set at least the JWT secret and the database, Valkey and storage
 | `--attachment-timeout-secs` | `OBSCURA_ATTACHMENT_TIMEOUT_SECS` | `120` | Upload/download request timeout. |
 | `--attachment-cleanup-interval-secs` | `OBSCURA_ATTACHMENT_CLEANUP_INTERVAL_SECS` | `3600` | Expired attachment sweep. |
 | `--attachment-cleanup-batch-size` | `OBSCURA_ATTACHMENT_CLEANUP_BATCH_SIZE` | `100` | Attachments deleted per batch. |
-| **Backups** | | | |
-| `--backup-prefix` | `OBSCURA_BACKUP_PREFIX` | `backups/` | S3 key prefix. |
-| `--backup-max-size-bytes` | `OBSCURA_BACKUP_MAX_SIZE_BYTES` | `2097152` | 2 MiB. |
-| `--backup-min-size-bytes` | `OBSCURA_BACKUP_MIN_SIZE_BYTES` | `32` | Guards against accidental wipes. |
-| `--backup-timeout-secs` | `OBSCURA_BACKUP_TIMEOUT_SECS` | `60` | Upload/download request timeout. |
-| `--backup-stale-threshold-mins` | `OBSCURA_BACKUP_STALE_THRESHOLD_MINS` | `30` | An upload older than this can be taken over or cleaned up; a newer one blocks others with 409. |
-| `--backup-cleanup-interval-secs` | `OBSCURA_BACKUP_CLEANUP_INTERVAL_SECS` | `300` | Stale upload sweep. |
 | **S3 storage** | | | |
 | `--storage-bucket` | `OBSCURA_STORAGE_BUCKET` | `obscura-storage` | Bucket; must already exist. |
 | `--storage-region` | `OBSCURA_STORAGE_REGION` | `us-east-1` | Region. |

@@ -36,9 +36,6 @@ pub struct Config {
     pub websocket: WsConfig,
 
     #[command(flatten)]
-    pub backup: BackupConfig,
-
-    #[command(flatten)]
     pub attachment: AttachmentConfig,
 
     #[command(flatten)]
@@ -64,7 +61,6 @@ impl Default for Config {
             notifications: NotificationConfig::default(),
             pubsub: PubSubConfig::default(),
             websocket: WsConfig::default(),
-            backup: BackupConfig::default(),
             attachment: AttachmentConfig::default(),
             storage: StorageConfig::default(),
             telemetry: TelemetryConfig::default(),
@@ -590,76 +586,6 @@ impl Default for WsConfig {
             max_batch_bytes: 8 * 1024 * 1024, // 8 MiB
             fetch_retry_budget_ms: 10_000,
             ticket_ttl_secs: 30,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Args)]
-pub struct BackupConfig {
-    /// S3 prefix for logical namespacing of backups.
-    #[arg(
-        long = "backup-prefix",
-        id = "BACKUP_PREFIX",
-        env = "OBSCURA_BACKUP_PREFIX",
-        default_value_t = BackupConfig::default().prefix
-    )]
-    pub prefix: String,
-
-    /// Max backup size in bytes (Default: 2MB)
-    #[arg(
-        long = "backup-max-size-bytes",
-        id = "BACKUP_MAX_SIZE_BYTES",
-        env = "OBSCURA_BACKUP_MAX_SIZE_BYTES",
-        default_value_t = BackupConfig::default().max_size_bytes
-    )]
-    pub max_size_bytes: usize,
-
-    /// Min backup size in bytes (Default: 32 bytes)
-    #[arg(
-        long = "backup-min-size-bytes",
-        id = "BACKUP_MIN_SIZE_BYTES",
-        env = "OBSCURA_BACKUP_MIN_SIZE_BYTES",
-        default_value_t = BackupConfig::default().min_size_bytes
-    )]
-    pub min_size_bytes: usize,
-
-    /// S3 streaming timeout in seconds
-    #[arg(
-        long = "backup-timeout-secs",
-        id = "BACKUP_TIMEOUT_SECS",
-        env = "OBSCURA_BACKUP_TIMEOUT_SECS",
-        default_value_t = BackupConfig::default().request_timeout_secs
-    )]
-    pub request_timeout_secs: u64,
-
-    /// Grace period for "UPLOADING" state before cleanup in minutes
-    #[arg(
-        long = "backup-stale-threshold-mins",
-        id = "BACKUP_STALE_THRESHOLD_MINS",
-        env = "OBSCURA_BACKUP_STALE_THRESHOLD_MINS",
-        default_value_t = BackupConfig::default().stale_threshold_mins
-    )]
-    pub stale_threshold_mins: i64,
-
-    /// Frequency of background cleanup worker cycles in seconds
-    #[arg(
-        long = "backup-cleanup-interval-secs",
-        id = "BACKUP_CLEANUP_INTERVAL_SECS",
-        env = "OBSCURA_BACKUP_CLEANUP_INTERVAL_SECS",
-        default_value_t = BackupConfig::default().cleanup_interval_secs
-    )]
-    pub cleanup_interval_secs: u64,
-}
-
-impl Default for BackupConfig {
-    fn default() -> Self {
-        Self {
-            prefix: "backups/".to_string(),
-            max_size_bytes: 2_097_152,
-            min_size_bytes: 32,
-            request_timeout_secs: 60,
-            stale_threshold_mins: 30,
-            cleanup_interval_secs: 300,
         }
     }
 }

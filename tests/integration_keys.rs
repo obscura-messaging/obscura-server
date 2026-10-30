@@ -26,16 +26,6 @@ async fn test_format_typescript_standard() {
     let app = TestApp::spawn().await;
     let username = common::generate_username("ts_std");
 
-    // Step 1: Register user (auth-only)
-    let reg_payload = json!({
-        "username": username,
-        "password": "password12345",
-    });
-    let resp = app.client.post(format!("{}/v1/users", app.server_url)).json(&reg_payload).send().await.unwrap();
-    assert_eq!(resp.status(), 201);
-    let user_token = resp.json::<serde_json::Value>().await.unwrap()["token"].as_str().unwrap().to_string();
-
-    // Step 2: Create device with 33-byte key format
     let identity_key = common::generate_signing_key();
     let ik_priv = PrivateKey(identity_key);
     let (_, ik_pub_ed) = ik_priv.calculate_key_pair(0);
@@ -57,7 +47,9 @@ async fn test_format_typescript_standard() {
     let mut rng = rand::rng();
     let signature: [u8; 64] = ik_priv.sign(&spk_pub_wire, &mut rng);
 
-    let device_payload = json!({
+    let reg_payload = json!({
+        "username": username,
+        "password": "password12345",
         "registrationId": 123,
         "identityKey": STANDARD.encode(ik_pub_wire),
         "signedPreKey": {
@@ -68,14 +60,7 @@ async fn test_format_typescript_standard() {
         "oneTimePreKeys": []
     });
 
-    let resp = app
-        .client
-        .post(format!("{}/v1/devices", app.server_url))
-        .header("Authorization", format!("Bearer {user_token}"))
-        .json(&device_payload)
-        .send()
-        .await
-        .unwrap();
+    let resp = app.client.post(format!("{}/v1/users", app.server_url)).json(&reg_payload).send().await.unwrap();
     assert_eq!(resp.status(), 201, "Should accept 33-byte signed message");
 }
 
@@ -84,16 +69,6 @@ async fn test_format_pure_math_32_byte() {
     let app = TestApp::spawn().await;
     let username = common::generate_username("pure_math");
 
-    // Step 1: Register
-    let reg_payload = json!({
-        "username": username,
-        "password": "password12345",
-    });
-    let resp = app.client.post(format!("{}/v1/users", app.server_url)).json(&reg_payload).send().await.unwrap();
-    assert_eq!(resp.status(), 201);
-    let user_token = resp.json::<serde_json::Value>().await.unwrap()["token"].as_str().unwrap().to_string();
-
-    // Step 2: Create device with 32-byte signed message (Robust path)
     let identity_key = common::generate_signing_key();
     let ik_priv = PrivateKey(identity_key);
     let (_, ik_pub_ed) = ik_priv.calculate_key_pair(0);
@@ -115,7 +90,9 @@ async fn test_format_pure_math_32_byte() {
     let mut rng = rand::rng();
     let signature: [u8; 64] = ik_priv.sign(&spk_pub_mont, &mut rng);
 
-    let device_payload = json!({
+    let reg_payload = json!({
+        "username": username,
+        "password": "password12345",
         "registrationId": 123,
         "identityKey": STANDARD.encode(ik_pub_wire),
         "signedPreKey": {
@@ -126,14 +103,7 @@ async fn test_format_pure_math_32_byte() {
         "oneTimePreKeys": []
     });
 
-    let resp = app
-        .client
-        .post(format!("{}/v1/devices", app.server_url))
-        .header("Authorization", format!("Bearer {user_token}"))
-        .json(&device_payload)
-        .send()
-        .await
-        .unwrap();
+    let resp = app.client.post(format!("{}/v1/users", app.server_url)).json(&reg_payload).send().await.unwrap();
     assert_eq!(resp.status(), 201, "Should accept 32-byte signed message (Robust path)");
 }
 
@@ -257,37 +227,37 @@ async fn test_prekey_status_low_keys() {
 }
 
 #[tokio::test]
-async fn test_device_takeover_success() {
+async fn test_upload_keys_verified_against_account_identity() {
     let app = TestApp::spawn().await;
-    let username = common::generate_username("takeover");
-    let user = app.register_user_with_keys(&username, 111, 1).await;
-
-    app.send_message(&user.token, user.device_id, b"hello").await;
-
-    let new_identity_key = common::generate_signing_key();
-    let (new_spk_pub, new_spk_sig) = common::generate_signed_pre_key(&new_identity_key);
-    let (_, ik_pub_ed) = PrivateKey(new_identity_key).calculate_key_pair(0);
-    let mut new_ik_wire = curve25519_dalek::edwards::CompressedEdwardsY(ik_pub_ed)
-        .decompress()
-        .unwrap()
-        .to_montgomery()
-        .to_bytes()
-        .to_vec();
-    new_ik_wire.insert(0, 0x05);
-
-    let resp = app.client.post(format!("{}/v1/devices/keys", app.server_url))
-        .header("Authorization", format!("Bearer {}", user.token))
-        .json(&json!({
-            "identityKey": STANDARD.encode(&new_ik_wire),
-            "registrationId": 456,
-            "signedPreKey": { "keyId": 2, "publicKey": STANDARD.encode(&new_spk_pub), "signature": STANDARD.encode(&new_spk_sig) },
+    let user = app.register_user_with_keys(&common::generate_username("ik_upload"), 111, 1).await;
+    let upload = |identity_key: &[u8; 32], key_id: i32| {
+        let (spk_pub, spk_sig) = common::generate_signed_pre_key(identity_key);
+        json!({
+            "signedPreKey": { "keyId": key_id, "publicKey": STANDARD.encode(&spk_pub), "signature": STANDARD.encode(&spk_sig) },
             "oneTimePreKeys": []
-        })).send().await.unwrap();
+        })
+    };
 
+    let other_identity = common::generate_signing_key();
+    let resp = app
+        .client
+        .post(format!("{}/v1/devices/keys", app.server_url))
+        .header("Authorization", format!("Bearer {}", user.token))
+        .json(&upload(&other_identity, 2))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "A signed pre-key from another identity must not verify");
+
+    let resp = app
+        .client
+        .post(format!("{}/v1/devices/keys", app.server_url))
+        .header("Authorization", format!("Bearer {}", user.token))
+        .json(&upload(&user.identity_key, 2))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
-
-    // Verify inbox is WIPED on takeover
-    app.assert_message_count(user.device_id, 0).await;
 }
 
 #[tokio::test]
@@ -324,41 +294,11 @@ async fn test_fetch_keys_multiple_devices() {
     // 1. Register user and create first device
     let user = app.register_user_with_keys(&username, 111, 10).await;
 
-    // 2. Login to get a user-scoped token (no device_id)
-    let login_payload = json!({
-        "username": username,
-        "password": "password12345"
-    });
-    let login_resp =
-        app.client.post(format!("{}/v1/sessions", app.server_url)).json(&login_payload).send().await.unwrap();
-    assert_eq!(login_resp.status(), 200);
-    let user_token = login_resp.json::<serde_json::Value>().await.unwrap()["token"].as_str().unwrap().to_string();
+    // 2. Link a second device
+    let device2 = app.link_device(&user).await;
+    let device2_id = device2.device_id.to_string();
 
-    // 3. Create a second device using the user-scoped token
-    let (device2_payload, _) = common::generate_device_payload(222, 10);
-    let device2_resp = app
-        .client
-        .post(format!("{}/v1/devices", app.server_url))
-        .header("Authorization", format!("Bearer {}", user_token))
-        .json(&device2_payload)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(device2_resp.status(), 201);
-
-    let device2_id = device2_resp.json::<serde_json::Value>().await.unwrap()["deviceId"].as_str().unwrap().to_string();
-
-    // 4. Verify that fetching keys with a user-scoped token fails (requires device-scoped)
-    let failed_fetch_resp = app
-        .client
-        .get(format!("{}/v1/users/{}", app.server_url, user.user_id))
-        .header("Authorization", format!("Bearer {}", user_token))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(failed_fetch_resp.status(), 403, "Should reject user-scoped token");
-
-    // 5. Fetch keys with the first device's device-scoped token
+    // 3. Fetch keys with the first device's token
     let fetch_resp = app
         .client
         .get(format!("{}/v1/users/{}", app.server_url, user.user_id))
@@ -377,4 +317,46 @@ async fn test_fetch_keys_multiple_devices() {
     assert!(d1_bundle.is_some(), "Bundle for device 1 not found");
     let d2_bundle = bundles.iter().find(|b| b["deviceId"] == device2_id);
     assert!(d2_bundle.is_some(), "Bundle for device 2 not found");
+
+    // Every bundle carries the account identity key; registration ids stay per device
+    let account_identity = common::identity_public_key(&user.identity_key);
+    assert!(bundles.iter().all(|b| b["identityKey"] == account_identity.as_str()));
+    assert_eq!(d1_bundle.unwrap()["registrationId"], 111);
+    assert_eq!(d2_bundle.unwrap()["registrationId"], 456);
+}
+
+#[tokio::test]
+async fn test_fetch_one_device_bundle_consumes_only_that_device() {
+    let app = TestApp::spawn().await;
+    let user = app.register_user_with_keys(&common::generate_username("one_dev"), 111, 10).await;
+    let linked = app.link_device(&user).await;
+    let other = app.register_user(&common::generate_username("one_dev_other")).await;
+    let remaining = |device_id: uuid::Uuid| {
+        let pool = app.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM one_time_pre_keys WHERE device_id = $1")
+                .bind(device_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    let fetch = |owner: uuid::Uuid, device: uuid::Uuid, token: String| {
+        app.client
+            .get(format!("{}/v1/users/{owner}/devices/{device}", app.server_url))
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+    };
+    let before_primary = remaining(user.device_id).await;
+
+    let resp = fetch(user.user_id, linked.device_id, other.token.clone()).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let bundle: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(bundle["deviceId"], linked.device_id.to_string());
+    assert!(bundle["oneTimePreKey"].is_object(), "the linked device's one-time prekey is returned");
+    assert_eq!(remaining(linked.device_id).await, 0);
+    assert_eq!(remaining(user.device_id).await, before_primary, "other devices keep their one-time prekeys");
+
+    let resp = fetch(other.user_id, linked.device_id, other.token.clone()).await.unwrap();
+    assert_eq!(resp.status(), 404, "a device of another user is not found");
 }

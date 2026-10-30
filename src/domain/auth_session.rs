@@ -5,5 +5,5 @@ pub struct AuthSession {
     pub token: String,
     pub refresh_token: String,
     pub expires_at: i64,
-    pub device_id: Option<Uuid>,
+    pub device_id: Uuid,
 }
