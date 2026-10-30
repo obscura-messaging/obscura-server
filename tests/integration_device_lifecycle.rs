@@ -22,14 +22,8 @@ use reqwest::StatusCode;
 use serde_json::json;
 use uuid::Uuid;
 
-async fn post_device(app: &TestApp, token: &str, payload: &serde_json::Value) -> reqwest::Response {
-    app.client
-        .post(format!("{}/v1/devices", app.server_url))
-        .header("Authorization", format!("Bearer {token}"))
-        .json(payload)
-        .send()
-        .await
-        .unwrap()
+async fn post_device(app: &TestApp, payload: &serde_json::Value) -> reqwest::Response {
+    app.client.post(format!("{}/v1/devices", app.server_url)).json(payload).send().await.unwrap()
 }
 
 async fn delete_device(app: &TestApp, token: &str, device_id: Uuid) -> StatusCode {
@@ -42,14 +36,8 @@ async fn delete_device(app: &TestApp, token: &str, device_id: Uuid) -> StatusCod
         .status()
 }
 
-async fn reset_account(app: &TestApp, username: &str, password: &str) -> StatusCode {
-    app.client
-        .post(format!("{}/v1/account/reset", app.server_url))
-        .json(&json!({ "username": username, "password": password }))
-        .send()
-        .await
-        .unwrap()
-        .status()
+async fn reset_account(app: &TestApp, payload: &serde_json::Value) -> reqwest::Response {
+    app.client.post(format!("{}/v1/account/reset", app.server_url)).json(payload).send().await.unwrap()
 }
 
 async fn list_devices(app: &TestApp, token: &str) -> Vec<serde_json::Value> {
@@ -64,13 +52,13 @@ async fn list_devices(app: &TestApp, token: &str) -> Vec<serde_json::Value> {
     resp.json::<serde_json::Value>().await.unwrap()["devices"].as_array().unwrap().clone()
 }
 
-async fn account_identity(app: &TestApp, user_id: Uuid) -> Option<String> {
-    let key: Option<Vec<u8>> = sqlx::query_scalar("SELECT identity_key FROM users WHERE id = $1")
+async fn account_identity(app: &TestApp, user_id: Uuid) -> String {
+    let key: Vec<u8> = sqlx::query_scalar("SELECT identity_key FROM users WHERE id = $1")
         .bind(user_id)
         .fetch_one(&app.pool)
         .await
         .unwrap();
-    key.map(|k| STANDARD.encode(k))
+    STANDARD.encode(key)
 }
 
 async fn error_of(resp: reqwest::Response) -> String {
@@ -87,29 +75,27 @@ async fn test_first_device_is_primary_and_sets_account_identity() {
     assert_eq!(devices[0]["deviceId"], user.device_id.to_string());
     assert_eq!(devices[0]["isPrimary"], json!(true));
 
-    assert_eq!(account_identity(&app, user.user_id).await, Some(common::identity_public_key(&user.identity_key)));
+    assert_eq!(account_identity(&app, user.user_id).await, common::identity_public_key(&user.identity_key));
 }
 
 #[tokio::test]
 async fn test_linked_device_requires_approved_link_session() {
     let app = TestApp::spawn().await;
     let primary = app.register_user(&common::generate_username("link_session")).await;
-    let user_token = app.login_user_scoped(&primary.username).await;
 
     let payload = common::generate_device_payload_for(&primary.identity_key, 2, 1);
-    let resp = post_device(&app, &user_token, &payload).await;
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "Missing link session must be rejected");
-    assert_eq!(error_of(resp).await, "Invalid link session");
+    let resp = post_device(&app, &payload).await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY, "Missing linkSessionId must fail deserialization");
 
     let mut unknown = payload.clone();
     unknown["linkSessionId"] = json!("not-a-real-session");
-    let resp = post_device(&app, &user_token, &unknown).await;
+    let resp = post_device(&app, &unknown).await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN, "Unknown link session must be rejected");
     assert_eq!(error_of(resp).await, "Invalid link session");
 
     let mut unapproved = payload.clone();
-    unapproved["linkSessionId"] = json!(app.create_link_session(&user_token).await);
-    let resp = post_device(&app, &user_token, &unapproved).await;
+    unapproved["linkSessionId"] = json!(app.create_link_session(&primary.username).await);
+    let resp = post_device(&app, &unapproved).await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN, "Unapproved link session must be rejected");
     assert_eq!(error_of(resp).await, "Invalid link session");
 
@@ -124,11 +110,11 @@ async fn test_linked_device_requires_approved_link_session() {
 async fn test_linked_device_identity_must_match_account() {
     let app = TestApp::spawn().await;
     let primary = app.register_user(&common::generate_username("link_ik")).await;
-    let (user_token, link_session_id) = app.approved_link_session(&primary).await;
+    let link_session_id = app.approved_link_session(&primary).await;
 
     let (mut foreign, _) = common::generate_device_payload(2, 1);
     foreign["linkSessionId"] = json!(link_session_id);
-    let resp = post_device(&app, &user_token, &foreign).await;
+    let resp = post_device(&app, &foreign).await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     assert_eq!(error_of(resp).await, "Identity key does not match the account identity");
 
@@ -138,13 +124,13 @@ async fn test_linked_device_identity_must_match_account() {
     forged["signedPreKey"] =
         json!({ "keyId": 1, "publicKey": STANDARD.encode(spk_pub), "signature": STANDARD.encode(spk_sig) });
     forged["linkSessionId"] = json!(link_session_id);
-    let resp = post_device(&app, &user_token, &forged).await;
+    let resp = post_device(&app, &forged).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
     // Neither failure consumed the link session.
     let mut valid = common::generate_device_payload_for(&primary.identity_key, 2, 1);
     valid["linkSessionId"] = json!(link_session_id);
-    assert_eq!(post_device(&app, &user_token, &valid).await.status(), StatusCode::CREATED);
+    assert_eq!(post_device(&app, &valid).await.status(), StatusCode::CREATED);
 }
 
 #[tokio::test]
@@ -154,9 +140,7 @@ async fn test_delete_device_permissions() {
     let linked_a = app.link_device(&primary).await;
     let linked_b = app.link_device(&primary).await;
     let stranger = app.register_user(&common::generate_username("del_stranger")).await;
-    let user_token = app.login_user_scoped(&primary.username).await;
 
-    assert_eq!(delete_device(&app, &user_token, linked_a.device_id).await, StatusCode::FORBIDDEN);
     assert_eq!(delete_device(&app, &primary.token, primary.device_id).await, StatusCode::FORBIDDEN);
     assert_eq!(delete_device(&app, &linked_a.token, primary.device_id).await, StatusCode::FORBIDDEN);
     assert_eq!(delete_device(&app, &linked_a.token, linked_b.device_id).await, StatusCode::FORBIDDEN);
@@ -235,19 +219,23 @@ async fn test_account_reset() {
     let primary = app.register_user(&common::generate_username("reset")).await;
     let linked = app.link_device(&primary).await;
 
-    assert_eq!(reset_account(&app, &primary.username, "wrong-password").await, StatusCode::UNAUTHORIZED);
-    assert_eq!(reset_account(&app, "no_such_user", "password12345").await, StatusCode::UNAUTHORIZED);
+    let (wrong_pw_payload, _) = common::generate_registration_payload(&primary.username, "wrong-password", 9, 1);
+    assert_eq!(reset_account(&app, &wrong_pw_payload).await.status(), StatusCode::UNAUTHORIZED);
+    let (unknown_user_payload, _) = common::generate_registration_payload("no_such_user", "password12345", 9, 1);
+    assert_eq!(reset_account(&app, &unknown_user_payload).await.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(list_devices(&app, &primary.token).await.len(), 2, "Rejected resets must not delete devices");
 
     let mut ws = app.connect_ws(&linked.token).await;
     ws.ensure_subscribed().await;
 
-    assert_eq!(reset_account(&app, &primary.username.to_uppercase(), "password12345").await, StatusCode::OK);
-    let user_token = app.login_user_scoped(&primary.username).await;
+    let (reset_payload, new_identity) =
+        common::generate_registration_payload(&primary.username.to_uppercase(), "password12345", 9, 1);
+    let resp = reset_account(&app, &reset_payload).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let new_primary: serde_json::Value = resp.json().await.unwrap();
+    let new_token = new_primary["token"].as_str().unwrap();
 
     ws.assert_closed().await;
-    assert!(list_devices(&app, &user_token).await.is_empty());
-    assert_eq!(account_identity(&app, primary.user_id).await, None);
     for old in [&primary, &linked] {
         let resp = app
             .client
@@ -259,16 +247,11 @@ async fn test_account_reset() {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
-    // The next device registers as a new primary with a new identity, without a link session.
-    let (payload, new_identity) = common::generate_device_payload(9, 1);
-    let resp = post_device(&app, &user_token, &payload).await;
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let new_primary: serde_json::Value = resp.json().await.unwrap();
-    let devices = list_devices(&app, &user_token).await;
+    let devices = list_devices(&app, new_token).await;
     assert_eq!(devices.len(), 1);
     assert_eq!(devices[0]["deviceId"], new_primary["deviceId"]);
     assert_eq!(devices[0]["isPrimary"], json!(true));
-    assert_eq!(account_identity(&app, primary.user_id).await, Some(common::identity_public_key(&new_identity)));
+    assert_eq!(account_identity(&app, primary.user_id).await, common::identity_public_key(&new_identity));
 }
 
 #[tokio::test]
@@ -279,13 +262,14 @@ async fn test_account_reset_is_rate_limited_like_auth() {
     let app = TestApp::spawn_with_config(config).await;
     let user: TestUser = app.register_user(&common::generate_username("reset_rl")).await;
     let ip = format!("10.9.{}.{}", rand::random::<u8>(), rand::random::<u8>());
+    let (reset_payload, _) = common::generate_registration_payload(&user.username, "wrong-password", 9, 1);
 
     // Concurrent, because the limiter runs before the password check: sequential requests could be
     // spaced past the refill interval by a slow hash.
     let statuses: Vec<StatusCode> = join_all((0..3).map(|_| {
         app.client
             .post(format!("{}/v1/account/reset", app.server_url))
-            .json(&json!({ "username": user.username, "password": "wrong-password" }))
+            .json(&reset_payload)
             .header("X-Forwarded-For", &ip)
             .send()
     }))

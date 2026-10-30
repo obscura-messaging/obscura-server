@@ -26,16 +26,6 @@ async fn test_format_typescript_standard() {
     let app = TestApp::spawn().await;
     let username = common::generate_username("ts_std");
 
-    // Step 1: Register user (auth-only)
-    let reg_payload = json!({
-        "username": username,
-        "password": "password12345",
-    });
-    let resp = app.client.post(format!("{}/v1/users", app.server_url)).json(&reg_payload).send().await.unwrap();
-    assert_eq!(resp.status(), 201);
-    let user_token = resp.json::<serde_json::Value>().await.unwrap()["token"].as_str().unwrap().to_string();
-
-    // Step 2: Create device with 33-byte key format
     let identity_key = common::generate_signing_key();
     let ik_priv = PrivateKey(identity_key);
     let (_, ik_pub_ed) = ik_priv.calculate_key_pair(0);
@@ -57,7 +47,9 @@ async fn test_format_typescript_standard() {
     let mut rng = rand::rng();
     let signature: [u8; 64] = ik_priv.sign(&spk_pub_wire, &mut rng);
 
-    let device_payload = json!({
+    let reg_payload = json!({
+        "username": username,
+        "password": "password12345",
         "registrationId": 123,
         "identityKey": STANDARD.encode(ik_pub_wire),
         "signedPreKey": {
@@ -68,14 +60,7 @@ async fn test_format_typescript_standard() {
         "oneTimePreKeys": []
     });
 
-    let resp = app
-        .client
-        .post(format!("{}/v1/devices", app.server_url))
-        .header("Authorization", format!("Bearer {user_token}"))
-        .json(&device_payload)
-        .send()
-        .await
-        .unwrap();
+    let resp = app.client.post(format!("{}/v1/users", app.server_url)).json(&reg_payload).send().await.unwrap();
     assert_eq!(resp.status(), 201, "Should accept 33-byte signed message");
 }
 
@@ -84,16 +69,6 @@ async fn test_format_pure_math_32_byte() {
     let app = TestApp::spawn().await;
     let username = common::generate_username("pure_math");
 
-    // Step 1: Register
-    let reg_payload = json!({
-        "username": username,
-        "password": "password12345",
-    });
-    let resp = app.client.post(format!("{}/v1/users", app.server_url)).json(&reg_payload).send().await.unwrap();
-    assert_eq!(resp.status(), 201);
-    let user_token = resp.json::<serde_json::Value>().await.unwrap()["token"].as_str().unwrap().to_string();
-
-    // Step 2: Create device with 32-byte signed message (Robust path)
     let identity_key = common::generate_signing_key();
     let ik_priv = PrivateKey(identity_key);
     let (_, ik_pub_ed) = ik_priv.calculate_key_pair(0);
@@ -115,7 +90,9 @@ async fn test_format_pure_math_32_byte() {
     let mut rng = rand::rng();
     let signature: [u8; 64] = ik_priv.sign(&spk_pub_mont, &mut rng);
 
-    let device_payload = json!({
+    let reg_payload = json!({
+        "username": username,
+        "password": "password12345",
         "registrationId": 123,
         "identityKey": STANDARD.encode(ik_pub_wire),
         "signedPreKey": {
@@ -126,14 +103,7 @@ async fn test_format_pure_math_32_byte() {
         "oneTimePreKeys": []
     });
 
-    let resp = app
-        .client
-        .post(format!("{}/v1/devices", app.server_url))
-        .header("Authorization", format!("Bearer {user_token}"))
-        .json(&device_payload)
-        .send()
-        .await
-        .unwrap();
+    let resp = app.client.post(format!("{}/v1/users", app.server_url)).json(&reg_payload).send().await.unwrap();
     assert_eq!(resp.status(), 201, "Should accept 32-byte signed message (Robust path)");
 }
 
@@ -324,22 +294,11 @@ async fn test_fetch_keys_multiple_devices() {
     // 1. Register user and create first device
     let user = app.register_user_with_keys(&username, 111, 10).await;
 
-    // 2. Link a second device; keep a user-scoped token (no device_id)
+    // 2. Link a second device
     let device2 = app.link_device(&user).await;
     let device2_id = device2.device_id.to_string();
-    let user_token = app.login_user_scoped(&username).await;
 
-    // 4. Verify that fetching keys with a user-scoped token fails (requires device-scoped)
-    let failed_fetch_resp = app
-        .client
-        .get(format!("{}/v1/users/{}", app.server_url, user.user_id))
-        .header("Authorization", format!("Bearer {}", user_token))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(failed_fetch_resp.status(), 403, "Should reject user-scoped token");
-
-    // 5. Fetch keys with the first device's device-scoped token
+    // 3. Fetch keys with the first device's token
     let fetch_resp = app
         .client
         .get(format!("{}/v1/users/{}", app.server_url, user.user_id))
@@ -400,8 +359,4 @@ async fn test_fetch_one_device_bundle_consumes_only_that_device() {
 
     let resp = fetch(other.user_id, linked.device_id, other.token.clone()).await.unwrap();
     assert_eq!(resp.status(), 404, "a device of another user is not found");
-
-    let user_token = app.login_user_scoped(&user.username).await;
-    let resp = fetch(user.user_id, linked.device_id, user_token).await.unwrap();
-    assert_eq!(resp.status(), 403, "a user-scoped token is rejected");
 }

@@ -10,10 +10,9 @@ use tower_http::request_id::RequestId;
 /// Generates a connection ticket for the WebSocket gateway.
 ///
 /// # Errors
-/// Returns `AppError::Forbidden` if a device-scoped token is not provided.
-/// Returns `AppError::InternalMsg` if the ticket cannot be cached.
+/// Returns `AppError::Internal` if the ticket cannot be cached.
 pub(crate) async fn generate_ticket(
-    auth: crate::api::middleware::DeviceAuth,
+    auth: crate::api::middleware::AuthUser,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, crate::error::AppError> {
     let ticket = uuid::Uuid::new_v4().to_string();

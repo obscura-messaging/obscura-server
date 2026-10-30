@@ -194,7 +194,7 @@ async fn test_device_added_during_send_is_not_silently_skipped() {
     let app = TestApp::spawn().await;
     let alice = app.register_user(&common::generate_username("cd_alice")).await;
     let bob = app.register_user(&common::generate_username("cd_bob")).await;
-    let (user_token, link_session_id) = app.approved_link_session(&bob).await;
+    let link_session_id = app.approved_link_session(&bob).await;
 
     // Hold the link session row so the registration stops after locking bob's user row.
     let mut holder = app.pool.begin().await.unwrap();
@@ -211,8 +211,7 @@ async fn test_device_added_during_send_is_not_silently_skipped() {
         let mut payload = common::generate_device_payload_for(&bob.identity_key, 2, 1);
         payload["linkSessionId"] = json!(link_session_id);
         async move {
-            let resp =
-                client.post(url).header("Authorization", format!("Bearer {user_token}")).json(&payload).send().await;
+            let resp = client.post(url).json(&payload).send().await;
             resp.unwrap().json::<serde_json::Value>().await.unwrap()
         }
     });

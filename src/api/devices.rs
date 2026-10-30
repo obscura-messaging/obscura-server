@@ -1,44 +1,31 @@
 use crate::api::AppState;
-use crate::api::middleware::{AuthUser, DeviceAuth, UserAuth};
+use crate::api::middleware::AuthUser;
 use crate::api::schemas::devices::{CreateDeviceRequest, DeviceListResponse, DeviceResponse};
 use crate::error::{AppError, Result};
-use crate::services::device_service::NewDevice;
+use crate::services::device_service::NewLinkedDevice;
 use axum::{
     Json,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
 };
-use std::convert::TryInto;
 use uuid::Uuid;
 
-/// Creates a new device for the authenticated user and returns a full JWT.
+/// Provisions a linked device authorized by an approved link session and returns a session.
 ///
 /// # Errors
 /// Returns `AppError::BadRequest` if validation fails or keys are malformed.
-/// Returns `AppError::Forbidden` if the token is device-scoped, the device limit is reached, or a linked device lacks an approved link
-/// session or the account identity key.
+/// Returns `AppError::Forbidden` if the link session is invalid, the device limit is reached, or the
+/// identity key does not match the account identity.
 pub(crate) async fn create_device(
-    auth: UserAuth,
     State(state): State<AppState>,
     Json(payload): Json<CreateDeviceRequest>,
 ) -> Result<impl IntoResponse> {
-    payload.validate().map_err(AppError::BadRequest)?;
-
-    let device = NewDevice {
-        name: payload.name,
-        identity_key: payload.identity_key.try_into().map_err(AppError::BadRequest)?,
-        registration_id: payload.registration_id,
-        signed_pre_key: payload.signed_pre_key.try_into().map_err(AppError::BadRequest)?,
-        one_time_pre_keys: payload
-            .one_time_pre_keys
-            .into_iter()
-            .map(TryInto::try_into)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(AppError::BadRequest)?,
+    let device = NewLinkedDevice {
         link_session_id: payload.link_session_id,
+        keys: payload.device.try_into().map_err(AppError::BadRequest)?,
     };
-    let session = state.device_service.create_device(auth.user_id, device).await?;
+    let session = state.device_service.create_linked_device(device).await?;
 
     let auth_response = crate::api::auth::map_session(session);
     Ok((StatusCode::CREATED, Json(auth_response)))
@@ -62,7 +49,7 @@ pub(crate) async fn list_devices(auth_user: AuthUser, State(state): State<AppSta
 /// Returns `AppError::NotFound` if the device doesn't exist or isn't owned by the user.
 /// Returns `AppError::Forbidden` if the caller may not delete the device.
 pub(crate) async fn delete_device(
-    auth: DeviceAuth,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(device_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {

@@ -12,19 +12,6 @@ use uuid::Uuid;
 #[derive(Debug)]
 pub struct AuthUser {
     pub(crate) user_id: Uuid,
-    pub(crate) device_id: Option<Uuid>,
-}
-
-/// Authenticated caller with a user-scoped token (no `device_id` claim).
-#[derive(Debug)]
-pub struct UserAuth {
-    pub(crate) user_id: Uuid,
-}
-
-/// Authenticated caller with a device-scoped token.
-#[derive(Debug)]
-pub struct DeviceAuth {
-    pub(crate) user_id: Uuid,
     pub(crate) device_id: Uuid,
 }
 
@@ -47,33 +34,9 @@ impl FromRequestParts<AppState> for AuthUser {
         let (user_id, device_id) = state.auth_service.authenticate(&jwt).await?;
 
         tracing::Span::current().record("user.id", tracing::field::display(user_id));
-        if let Some(did) = device_id {
-            tracing::Span::current().record("device.id", tracing::field::display(did));
-        }
+        tracing::Span::current().record("device.id", tracing::field::display(device_id));
 
         Ok(Self { user_id, device_id })
-    }
-}
-
-impl FromRequestParts<AppState> for UserAuth {
-    type Rejection = AppError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        let auth = AuthUser::from_request_parts(parts, state).await?;
-        if auth.device_id.is_some() {
-            return Err(AppError::Forbidden("User-scoped token required".into()));
-        }
-        Ok(Self { user_id: auth.user_id })
-    }
-}
-
-impl FromRequestParts<AppState> for DeviceAuth {
-    type Rejection = AppError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        let auth = AuthUser::from_request_parts(parts, state).await?;
-        let device_id = auth.device_id.ok_or_else(|| AppError::Forbidden("Device-scoped token required".into()))?;
-        Ok(Self { user_id: auth.user_id, device_id })
     }
 }
 

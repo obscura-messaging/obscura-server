@@ -45,13 +45,18 @@ impl Metrics {
 }
 
 #[derive(Debug)]
-pub struct NewDevice {
+pub struct NewDeviceKeys {
     pub name: Option<String>,
     pub identity_key: PublicKey,
     pub registration_id: i32,
     pub signed_pre_key: SignedPreKey,
     pub one_time_pre_keys: Vec<OneTimePreKey>,
-    pub link_session_id: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct NewLinkedDevice {
+    pub link_session_id: String,
+    pub keys: NewDeviceKeys,
 }
 
 #[derive(Clone, Debug)]
@@ -93,24 +98,68 @@ impl DeviceService {
         }
     }
 
-    /// Creates a device with its keys and returns a device-scoped session.
-    /// The first device of an account becomes the primary and sets the account identity; any later device
-    /// must present the account identity and an approved link session, which is consumed.
+    /// Creates a new user account and provisions its primary device in one transaction.
     ///
     /// # Errors
-    /// Returns `AppError::Forbidden` if the device limit is reached, the link session is invalid, or the
+    /// Returns `AppError::Conflict` if the username is already taken.
+    /// Returns `AppError::BadRequest` if the keys do not verify.
+    /// Returns `AppError::Database` if any database operation fails.
+    #[tracing::instrument(
+        skip(self, username, password, keys),
+        fields(user.id = tracing::field::Empty, device.id = tracing::field::Empty),
+        err(level = "warn")
+    )]
+    pub(crate) async fn register_account(
+        &self,
+        username: &crate::domain::user::Username,
+        password: String,
+        keys: NewDeviceKeys,
+    ) -> Result<AuthSession> {
+        let password_hash = self.auth_service.hash_password(&password).await?;
+
+        let mut tx = self.pool.begin().await?;
+        let user = self.user_repo.create(&mut tx, username, &password_hash, &keys.identity_key).await?;
+        tracing::Span::current().record("user.id", tracing::field::display(user.id));
+
+        let session = self.provision_device(&mut tx, user.id, keys, true).await?;
+        tx.commit().await?;
+
+        tracing::info!("Account registered and primary device provisioned");
+        self.auth_service.record_registration();
+        self.metrics.devices_created.add(1, &[]);
+
+        Ok(session)
+    }
+
+    /// Provisions a linked device authorized by an approved link session and returns its session.
+    ///
+    /// # Errors
+    /// Returns `AppError::Forbidden` if the link session is invalid, the device limit is reached, or the
     /// identity key is not the account identity.
     /// Returns `AppError::BadRequest` if the keys do not verify.
     /// Returns `AppError::Database` if any database operation fails.
     #[tracing::instrument(
         skip(self, device),
-        fields(user.id = %user_id, device.id = tracing::field::Empty),
+        fields(user.id = tracing::field::Empty, device.id = tracing::field::Empty),
         err(level = "warn")
     )]
-    pub(crate) async fn create_device(&self, user_id: Uuid, device: NewDevice) -> Result<AuthSession> {
+    pub(crate) async fn create_linked_device(&self, device: NewLinkedDevice) -> Result<AuthSession> {
+        let id_hash = AuthService::hash_opaque_token(&device.link_session_id);
         let mut tx = self.pool.begin().await?;
 
+        let user_id = self
+            .link_session_repo
+            .find_approved_user_id(&mut tx, &id_hash)
+            .await?
+            .ok_or_else(|| AppError::Forbidden(INVALID_LINK_SESSION.into()))?;
+        tracing::Span::current().record("user.id", tracing::field::display(user_id));
+
+        // Lock the user row FOR UPDATE before touching link_sessions or devices (see MessageRepository::lock_device_sets).
         let account_identity = self.user_repo.lock_identity_key(&mut tx, user_id).await?;
+        if !self.link_session_repo.consume_approved(&mut tx, &id_hash, user_id).await? {
+            return Err(AppError::Forbidden(INVALID_LINK_SESSION.into()));
+        }
+
         let device_count = self.device_repo.count_by_user(&mut tx, user_id).await?;
         if device_count >= self.max_devices_per_user {
             return Err(AppError::Forbidden(format!(
@@ -118,51 +167,41 @@ impl DeviceService {
                 self.max_devices_per_user
             )));
         }
-
-        let is_primary = device_count == 0;
-        if is_primary {
-            self.user_repo.set_identity_key(&mut tx, user_id, Some(&device.identity_key)).await?;
-        } else {
-            if account_identity.as_ref() != Some(&device.identity_key) {
-                return Err(AppError::Forbidden(IDENTITY_KEY_MISMATCH.into()));
-            }
-            let consumed = match device.link_session_id.as_deref() {
-                Some(id) => {
-                    self.link_session_repo
-                        .consume_approved(&mut tx, &AuthService::hash_opaque_token(id), user_id)
-                        .await?
-                }
-                None => false,
-            };
-            if !consumed {
-                return Err(AppError::Forbidden(INVALID_LINK_SESSION.into()));
-            }
+        if account_identity != device.keys.identity_key {
+            return Err(AppError::Forbidden(IDENTITY_KEY_MISMATCH.into()));
         }
 
-        let created = self
-            .device_repo
-            .create(&mut tx, user_id, device.name.as_deref(), device.registration_id, is_primary)
-            .await?;
+        let session = self.provision_device(&mut tx, user_id, device.keys, false).await?;
+        tx.commit().await?;
+
+        tracing::info!("Linked device provisioned successfully");
+        self.metrics.devices_created.add(1, &[]);
+
+        Ok(session)
+    }
+
+    async fn provision_device(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        user_id: Uuid,
+        keys: NewDeviceKeys,
+        is_primary: bool,
+    ) -> Result<AuthSession> {
+        let created =
+            self.device_repo.create(&mut *tx, user_id, keys.name.as_deref(), keys.registration_id, is_primary).await?;
         tracing::Span::current().record("device.id", tracing::field::display(created.id));
 
         self.key_service
             .store_new_device_keys(
-                &mut tx,
+                &mut *tx,
                 created.id,
-                &device.identity_key,
-                &device.signed_pre_key,
-                &device.one_time_pre_keys,
+                &keys.identity_key,
+                &keys.signed_pre_key,
+                &keys.one_time_pre_keys,
             )
             .await?;
 
-        let session = self.auth_service.create_session(&mut tx, user_id, Some(created.id)).await?;
-
-        tx.commit().await?;
-
-        tracing::info!(is_primary, "Device provisioned successfully");
-        self.metrics.devices_created.add(1, &[]);
-
-        Ok(session)
+        self.auth_service.create_session(&mut *tx, user_id, created.id).await
     }
 
     /// Lists all devices for a user.
@@ -207,30 +246,42 @@ impl DeviceService {
         Ok(())
     }
 
-    /// Deletes every device and link session of the account and clears the account identity, so the next
-    /// registered device becomes a new primary. Authorized by the account password.
+    /// Deletes every device and link session of the account, replaces the account identity, and provisions
+    /// a new primary device in one transaction. Authorized by the account password.
     ///
     /// # Errors
     /// Returns `AppError::AuthError` if the credentials are invalid.
+    /// Returns `AppError::BadRequest` if the keys do not verify.
     /// Returns `AppError::Database` if any database operation fails.
-    #[tracing::instrument(skip(self, username, password), fields(user.id = tracing::field::Empty), err(level = "warn"))]
-    pub(crate) async fn reset_account(&self, username: &str, password: &str) -> Result<()> {
+    #[tracing::instrument(
+        skip(self, username, password, keys),
+        fields(user.id = tracing::field::Empty, device.id = tracing::field::Empty),
+        err(level = "warn")
+    )]
+    pub(crate) async fn reset_account(
+        &self,
+        username: &str,
+        password: &str,
+        keys: NewDeviceKeys,
+    ) -> Result<AuthSession> {
         let user_id = self.auth_service.verify_credentials(username, password).await?;
 
         let mut tx = self.pool.begin().await?;
         self.user_repo.lock_identity_key(&mut tx, user_id).await?;
         let deleted = self.device_repo.delete_all_for_user(&mut tx, user_id).await?;
         self.link_session_repo.delete_all_for_user(&mut tx, user_id).await?;
-        self.user_repo.set_identity_key(&mut tx, user_id, None).await?;
+        self.user_repo.set_identity_key(&mut tx, user_id, &keys.identity_key).await?;
+        let session = self.provision_device(&mut tx, user_id, keys, true).await?;
         tx.commit().await?;
 
         self.notifier.notify(&deleted, UserEvent::Disconnect).await;
 
-        tracing::info!(devices = deleted.len(), "Account reset");
+        tracing::info!(devices = deleted.len(), "Account reset and new primary provisioned");
         self.metrics.account_resets.add(1, &[]);
         self.metrics.devices_deleted.add(deleted.len() as u64, &[]);
+        self.metrics.devices_created.add(1, &[]);
 
-        Ok(())
+        Ok(session)
     }
 
     /// Checks if a device exists.

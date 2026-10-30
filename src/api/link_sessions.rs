@@ -1,6 +1,6 @@
 use crate::api::AppState;
-use crate::api::middleware::{DeviceAuth, UserAuth};
-use crate::api::schemas::link_sessions::LinkSessionResponse;
+use crate::api::middleware::AuthUser;
+use crate::api::schemas::link_sessions::{CreateLinkSessionRequest, LinkSessionResponse};
 use crate::error::Result;
 use axum::{
     Json,
@@ -10,15 +10,22 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-/// Creates a link session bound to the caller's account.
+/// Verifies credentials and creates a link session bound to the account.
 ///
 /// # Errors
-/// Returns `AppError::Forbidden` if the token is device-scoped.
-pub(crate) async fn create_link_session(auth: UserAuth, State(state): State<AppState>) -> Result<impl IntoResponse> {
-    let session = state.link_session_service.create(auth.user_id).await?;
+/// Returns `AppError::AuthError` if the credentials are invalid.
+pub(crate) async fn create_link_session(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateLinkSessionRequest>,
+) -> Result<impl IntoResponse> {
+    let session = state.link_session_service.create(&payload.username, &payload.password).await?;
     Ok((
         StatusCode::CREATED,
-        Json(LinkSessionResponse { id: session.id, expires_at: session.expires_at.unix_timestamp() }),
+        Json(LinkSessionResponse {
+            id: session.id,
+            user_id: session.user_id.to_string(),
+            expires_at: session.expires_at.unix_timestamp(),
+        }),
     ))
 }
 
@@ -30,7 +37,7 @@ pub(crate) async fn create_link_session(auth: UserAuth, State(state): State<AppS
 /// Returns `AppError::Conflict` if the session is already approved.
 /// Returns `AppError::PayloadTooLarge` if the body exceeds the size cap.
 pub(crate) async fn approve_link_session(
-    auth: DeviceAuth,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(id): Path<String>,
     body: Bytes,
@@ -42,14 +49,9 @@ pub(crate) async fn approve_link_session(
 /// Returns the provisioning message of an approved link session, or 204 if it is not approved yet.
 ///
 /// # Errors
-/// Returns `AppError::Forbidden` if the token is device-scoped.
-/// Returns `AppError::NotFound` if the session is unknown, expired, or another user's.
-pub(crate) async fn get_link_session(
-    auth: UserAuth,
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Response> {
-    let body = state.link_session_service.get_body(auth.user_id, &id).await?;
+/// Returns `AppError::NotFound` if the session is unknown, expired, or consumed.
+pub(crate) async fn get_link_session(State(state): State<AppState>, Path(id): Path<String>) -> Result<Response> {
+    let body = state.link_session_service.get_body(&id).await?;
     Ok(body.map_or_else(
         || StatusCode::NO_CONTENT.into_response(),
         |body| ([(header::CONTENT_TYPE, "application/octet-stream")], body).into_response(),

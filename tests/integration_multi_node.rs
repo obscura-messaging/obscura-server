@@ -173,39 +173,19 @@ async fn test_multi_node_link_session() {
     let app_b = common::TestApp::spawn_with_config(config).await;
 
     let primary = app_a.register_user(&common::generate_username("link_nodes")).await;
-    let user_token = app_a.login_user_scoped(&primary.username).await;
-    let id = app_a.create_link_session(&user_token).await;
+    let id = app_a.create_link_session(&primary.username).await;
 
-    let resp = app_a
-        .client
-        .get(format!("{}/v1/link-sessions/{id}", app_a.server_url))
-        .header("Authorization", format!("Bearer {user_token}"))
-        .send()
-        .await
-        .unwrap();
+    let resp = app_a.client.get(format!("{}/v1/link-sessions/{id}", app_a.server_url)).send().await.unwrap();
     assert_eq!(resp.status(), 204);
 
     assert_eq!(app_b.approve_link_session(&primary.token, &id, b"cross-node").await, 200);
 
-    let resp = app_a
-        .client
-        .get(format!("{}/v1/link-sessions/{id}", app_a.server_url))
-        .header("Authorization", format!("Bearer {user_token}"))
-        .send()
-        .await
-        .unwrap();
+    let resp = app_a.client.get(format!("{}/v1/link-sessions/{id}", app_a.server_url)).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.bytes().await.unwrap().as_ref(), b"cross-node");
 
     let mut payload = common::generate_device_payload_for(&primary.identity_key, 7, 1);
     payload["linkSessionId"] = serde_json::json!(id);
-    let resp = app_b
-        .client
-        .post(format!("{}/v1/devices", app_b.server_url))
-        .header("Authorization", format!("Bearer {user_token}"))
-        .json(&payload)
-        .send()
-        .await
-        .unwrap();
+    let resp = app_b.client.post(format!("{}/v1/devices", app_b.server_url)).json(&payload).send().await.unwrap();
     assert_eq!(resp.status(), 201);
 }

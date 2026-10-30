@@ -13,38 +13,47 @@ pub(crate) const MAX_LINK_SESSION_BODY_BYTES: usize = 64 * 1024;
 #[derive(Debug)]
 pub struct NewLinkSession {
     pub id: String,
+    pub user_id: Uuid,
     pub expires_at: OffsetDateTime,
 }
 
-/// Link sessions: the new device creates one, the primary approves it by storing the encrypted provisioning
-/// message for the new device, and registering the new device consumes it.
+/// Link sessions: created with account credentials, approved by the primary with the encrypted
+/// provisioning message, and consumed when registering the linked device.
 #[derive(Clone, Debug)]
 pub struct LinkSessionService {
     pool: DbPool,
+    auth_service: AuthService,
     device_repo: DeviceRepository,
     repo: LinkSessionRepository,
 }
 
 impl LinkSessionService {
     #[must_use]
-    pub const fn new(pool: DbPool, device_repo: DeviceRepository, repo: LinkSessionRepository) -> Self {
-        Self { pool, device_repo, repo }
+    pub const fn new(
+        pool: DbPool,
+        auth_service: AuthService,
+        device_repo: DeviceRepository,
+        repo: LinkSessionRepository,
+    ) -> Self {
+        Self { pool, auth_service, device_repo, repo }
     }
 
-    /// Creates a link session bound to the user, replacing any previous unapproved session of the user
-    /// and purging expired sessions.
+    /// Verifies the account credentials and creates a link session bound to the user, replacing any
+    /// previous unapproved session of the user and purging expired sessions.
     ///
     /// # Errors
+    /// Returns `AppError::AuthError` if the credentials are invalid.
     /// Returns `AppError::Database` if any database operation fails.
-    #[tracing::instrument(skip(self), fields(user.id = %user_id), err(level = "warn"))]
-    pub(crate) async fn create(&self, user_id: Uuid) -> Result<NewLinkSession> {
+    #[tracing::instrument(skip(self, username, password), fields(user.id = tracing::field::Empty), err(level = "warn"))]
+    pub(crate) async fn create(&self, username: &str, password: &str) -> Result<NewLinkSession> {
+        let user_id = self.auth_service.verify_credentials(username, password).await?;
         let id = AuthService::generate_opaque_token();
         let expires_at = OffsetDateTime::now_utc() + LINK_SESSION_TTL;
 
         let mut conn = self.pool.acquire().await?;
         self.repo.create(&mut conn, &AuthService::hash_opaque_token(&id), user_id, expires_at).await?;
 
-        Ok(NewLinkSession { id, expires_at })
+        Ok(NewLinkSession { id, user_id, expires_at })
     }
 
     /// Approves a link session of the user by storing its body. Only the primary device may approve, and a
@@ -70,20 +79,20 @@ impl LinkSessionService {
         if self.repo.approve(&mut conn, &id_hash, user_id, body).await? {
             return Ok(());
         }
-        match self.repo.find_body(&mut conn, &id_hash, user_id).await? {
+        match self.repo.find_body_for_user(&mut conn, &id_hash, user_id).await? {
             Some(_) => Err(AppError::Conflict("Link session already approved".into())),
             None => Err(AppError::NotFound),
         }
     }
 
-    /// Returns the body of an approved link session of the user, or `None` if it is not approved yet.
+    /// Returns the body of an approved link session, or `None` if it is not approved yet.
     ///
     /// # Errors
-    /// Returns `AppError::NotFound` if the session is unknown, expired, or another user's.
-    #[tracing::instrument(skip(self, id), fields(user.id = %user_id), err(level = "warn"))]
-    pub(crate) async fn get_body(&self, user_id: Uuid, id: &str) -> Result<Option<Vec<u8>>> {
+    /// Returns `AppError::NotFound` if the session is unknown, expired, or consumed.
+    #[tracing::instrument(skip(self, id), err(level = "warn"))]
+    pub(crate) async fn get_body(&self, id: &str) -> Result<Option<Vec<u8>>> {
         let id_hash = AuthService::hash_opaque_token(id);
         let mut conn = self.pool.acquire().await?;
-        self.repo.find_body(&mut conn, &id_hash, user_id).await?.ok_or(AppError::NotFound)
+        self.repo.find_body(&mut conn, &id_hash).await?.ok_or(AppError::NotFound)
     }
 }

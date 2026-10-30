@@ -401,63 +401,30 @@ impl TestApp {
     }
 
     pub(crate) async fn register_user_with_keys(&self, username: &str, reg_id: u32, otpk_count: usize) -> TestUser {
-        // Step 1: Register user (auth-only, no keys)
-        let reg_payload = json!({
-            "username": username,
-            "password": "password12345"
-        });
+        let (reg_payload, identity_key) = generate_registration_payload(username, "password12345", reg_id, otpk_count);
 
         let resp = self.client.post(format!("{}/v1/users", self.server_url)).json(&reg_payload).send().await.unwrap();
 
         assert_eq!(resp.status(), 201, "User registration failed: {}", resp.text().await.unwrap());
         let body = resp.json::<serde_json::Value>().await.unwrap();
-        let user_token = body["token"].as_str().unwrap().to_string();
-
-        let parts: Vec<&str> = user_token.split('.').collect();
-        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
-        let claims: serde_json::Value = serde_json::from_slice(&decoded).unwrap();
-        let user_id = Uuid::parse_str(claims["sub"].as_str().unwrap()).unwrap();
-
-        // Step 2: Create device (with keys) to get device-scoped JWT
-        let (device_payload, identity_key) = generate_device_payload(reg_id, otpk_count);
-
-        let resp = self
-            .client
-            .post(format!("{}/v1/devices", self.server_url))
-            .header("Authorization", format!("Bearer {user_token}"))
-            .json(&device_payload)
-            .send()
-            .await
-            .unwrap();
-
-        assert_eq!(resp.status(), 201, "Device creation failed: {}", resp.text().await.unwrap());
-        let body = resp.json::<serde_json::Value>().await.unwrap();
         let token = body["token"].as_str().unwrap().to_string();
         let refresh_token = body["refreshToken"].as_str().unwrap().to_string();
         let device_id = Uuid::parse_str(body["deviceId"].as_str().unwrap()).unwrap();
 
+        let parts: Vec<&str> = token.split('.').collect();
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&decoded).unwrap();
+        let user_id = Uuid::parse_str(claims["sub"].as_str().unwrap()).unwrap();
+
         TestUser { username: username.to_string(), user_id, device_id, token, refresh_token, identity_key }
     }
 
-    /// Logs in with the test password and returns a user-scoped token.
-    pub(crate) async fn login_user_scoped(&self, username: &str) -> String {
-        let resp = self
-            .client
-            .post(format!("{}/v1/sessions", self.server_url))
-            .json(&json!({ "username": username, "password": "password12345" }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 200, "Login failed: {}", resp.text().await.unwrap());
-        resp.json::<serde_json::Value>().await.unwrap()["token"].as_str().unwrap().to_string()
-    }
-
-    /// Creates a link session with the given user-scoped token and returns its id.
-    pub(crate) async fn create_link_session(&self, user_token: &str) -> String {
+    /// Creates a link session with the account's username and test password, and returns its id.
+    pub(crate) async fn create_link_session(&self, username: &str) -> String {
         let resp = self
             .client
             .post(format!("{}/v1/link-sessions", self.server_url))
-            .header("Authorization", format!("Bearer {user_token}"))
+            .json(&json!({ "username": username, "password": "password12345" }))
             .send()
             .await
             .unwrap();
@@ -478,29 +445,21 @@ impl TestApp {
             .status()
     }
 
-    /// Returns a fresh user-scoped token of the primary's account and a link session the primary approved.
-    pub(crate) async fn approved_link_session(&self, primary: &TestUser) -> (String, String) {
-        let user_token = self.login_user_scoped(&primary.username).await;
-        let id = self.create_link_session(&user_token).await;
+    /// Returns a link session for the primary's account that the primary approved.
+    pub(crate) async fn approved_link_session(&self, primary: &TestUser) -> String {
+        let id = self.create_link_session(&primary.username).await;
         assert_eq!(self.approve_link_session(&primary.token, &id, b"provisioning message").await, 200);
-        (user_token, id)
+        id
     }
 
     /// Registers a device linked to the primary's account, sharing its identity key.
     pub(crate) async fn link_device(&self, primary: &TestUser) -> TestUser {
-        let (user_token, link_session_id) = self.approved_link_session(primary).await;
+        let link_session_id = self.approved_link_session(primary).await;
 
         let mut payload = generate_device_payload_for(&primary.identity_key, 456, 1);
         payload["linkSessionId"] = json!(link_session_id);
 
-        let resp = self
-            .client
-            .post(format!("{}/v1/devices", self.server_url))
-            .header("Authorization", format!("Bearer {user_token}"))
-            .json(&payload)
-            .send()
-            .await
-            .unwrap();
+        let resp = self.client.post(format!("{}/v1/devices", self.server_url)).json(&payload).send().await.unwrap();
         assert_eq!(resp.status(), 201, "Linking device failed: {}", resp.text().await.unwrap());
         let body = resp.json::<serde_json::Value>().await.unwrap();
 

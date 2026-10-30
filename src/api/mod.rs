@@ -109,6 +109,7 @@ fn auth_router(
         .route("/sessions", delete(auth::logout))
         .route("/sessions/refresh", post(auth::refresh))
         .route("/account/reset", post(auth::reset_account))
+        .route("/link-sessions", post(link_sessions::create_link_session))
         .layer(GovernorLayer::new(auth_conf))
         .layer(standard_timeout)
 }
@@ -132,7 +133,6 @@ fn api_router(
         .route("/devices", get(devices::list_devices))
         .route("/devices/{deviceId}", delete(devices::delete_device))
         .route("/devices/keys", post(keys::upload_keys))
-        .route("/link-sessions", post(link_sessions::create_link_session))
         .route("/link-sessions/{id}", put(link_sessions::approve_link_session).get(link_sessions::get_link_session))
         .route("/users/{userId}", get(keys::get_pre_key_bundles))
         .route("/users/{userId}/devices/{deviceId}", get(keys::get_device_pre_key_bundle))

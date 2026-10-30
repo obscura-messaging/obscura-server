@@ -75,13 +75,26 @@ impl LinkSessionRepository {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Returns the body of an unexpired session of the user: `None` if there is no such session, `Some(None)`
-    /// if it is not approved yet.
+    /// Returns the body of an unexpired session: `None` if there is no such session, `Some(None)` if it
+    /// is not approved yet.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn, id_hash), err)]
-    pub(crate) async fn find_body(
+    pub(crate) async fn find_body(&self, conn: &mut PgConnection, id_hash: &[u8]) -> Result<Option<Option<Vec<u8>>>> {
+        let body = sqlx::query_scalar("SELECT body FROM link_sessions WHERE id_hash = $1 AND expires_at > NOW()")
+            .bind(id_hash)
+            .fetch_optional(conn)
+            .await?;
+        Ok(body)
+    }
+
+    /// Returns the body of an unexpired session owned by `user_id`.
+    ///
+    /// # Errors
+    /// Returns `sqlx::Error` if the query fails.
+    #[tracing::instrument(level = "debug", skip(self, conn, id_hash), err)]
+    pub(crate) async fn find_body_for_user(
         &self,
         conn: &mut PgConnection,
         id_hash: &[u8],
@@ -95,6 +108,21 @@ impl LinkSessionRepository {
         .fetch_optional(conn)
         .await?;
         Ok(body)
+    }
+
+    /// Returns the owner of an unexpired, approved session, or `None` if no such session exists.
+    ///
+    /// # Errors
+    /// Returns `sqlx::Error` if the query fails.
+    #[tracing::instrument(level = "debug", skip(self, conn, id_hash), err)]
+    pub(crate) async fn find_approved_user_id(&self, conn: &mut PgConnection, id_hash: &[u8]) -> Result<Option<Uuid>> {
+        let user_id = sqlx::query_scalar(
+            "SELECT user_id FROM link_sessions WHERE id_hash = $1 AND expires_at > NOW() AND body IS NOT NULL",
+        )
+        .bind(id_hash)
+        .fetch_optional(conn)
+        .await?;
+        Ok(user_id)
     }
 
     /// Deletes an unexpired, approved session of the user. Returns true if there was one.

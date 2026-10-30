@@ -2,7 +2,7 @@ CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT uuidv7(),
     username VARCHAR(50) NOT NULL UNIQUE CHECK (username ~ '^[a-z0-9_]{3,50}$'),
     password_hash VARCHAR(255) NOT NULL,
-    identity_key BYTEA,
+    identity_key BYTEA NOT NULL,
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -18,7 +18,6 @@ CREATE TABLE devices (
 CREATE INDEX idx_devices_user_id ON devices(user_id);
 CREATE UNIQUE INDEX idx_devices_one_primary_per_user ON devices(user_id) WHERE is_primary;
 
--- Only device-scoped sessions are refreshable.
 CREATE TABLE refresh_tokens (
     token_hash BYTEA NOT NULL PRIMARY KEY,
     device_id UUID NOT NULL REFERENCES devices(id) ON DELETE CASCADE,

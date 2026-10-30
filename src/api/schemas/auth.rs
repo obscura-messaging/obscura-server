@@ -1,3 +1,4 @@
+use crate::api::schemas::devices::DeviceKeyPayload;
 use crate::domain::user::Username;
 use serde::{Deserialize, Serialize};
 
@@ -6,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct RegistrationRequest {
     pub username: String,
     pub password: String,
+    #[serde(flatten)]
+    pub device: DeviceKeyPayload,
 }
 
 impl RegistrationRequest {
@@ -20,6 +23,8 @@ impl RegistrationRequest {
             return Err("Password must be at least 12 characters long".into());
         }
 
+        self.device.validate()?;
+
         Ok(username)
     }
 }
@@ -27,9 +32,25 @@ impl RegistrationRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::schemas::crypto::{PublicKey, Signature};
+    use crate::api::schemas::keys::SignedPreKey;
 
     fn mock_registration(password: &str) -> RegistrationRequest {
-        RegistrationRequest { username: "testuser".into(), password: password.into() }
+        RegistrationRequest {
+            username: "testuser".into(),
+            password: password.into(),
+            device: DeviceKeyPayload {
+                name: None,
+                identity_key: PublicKey("A".repeat(44)),
+                registration_id: 1,
+                signed_pre_key: SignedPreKey {
+                    key_id: 1,
+                    public_key: PublicKey("B".repeat(44)),
+                    signature: Signature("C".repeat(88)),
+                },
+                one_time_pre_keys: Vec::new(),
+            },
+        }
     }
 
     #[test]
@@ -82,7 +103,7 @@ mod tests {
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
-    pub device_id: Option<String>,
+    pub device_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,6 +111,8 @@ pub struct LoginRequest {
 pub struct ResetAccountRequest {
     pub username: String,
     pub password: String,
+    #[serde(flatten)]
+    pub device: DeviceKeyPayload,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,9 +131,7 @@ pub struct LogoutRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AuthResponse {
     pub token: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub refresh_token: Option<String>,
+    pub refresh_token: String,
     pub expires_at: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_id: Option<String>,
+    pub device_id: String,
 }

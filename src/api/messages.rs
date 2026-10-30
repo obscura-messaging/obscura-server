@@ -1,5 +1,5 @@
 use crate::api::AppState;
-use crate::api::middleware::DeviceAuth;
+use crate::api::middleware::AuthUser;
 use crate::domain::message::RawSubmission;
 use crate::error::{AppError, Result};
 use crate::proto::obscura::v1 as proto;
@@ -11,11 +11,10 @@ use uuid::Uuid;
 /// Sends a batch of encrypted messages.
 ///
 /// # Errors
-/// Returns `AppError::Forbidden` if a device-scoped token is not provided.
 /// Returns `AppError::BadRequest` if the request protobuf is malformed or missing the idempotency key.
 /// Returns `AppError::PayloadTooLarge` if the batch size exceeds the limit.
 pub(crate) async fn send_messages(
-    auth: DeviceAuth,
+    auth: AuthUser,
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Bytes,

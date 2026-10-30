@@ -24,73 +24,33 @@ async fn test_device_crud_lifecycle() {
     let app = common::TestApp::spawn().await;
     let username = common::generate_username("crud_device_user");
 
-    // 1. Register User directly (no devices yet)
-    let payload = json!({
-        "username": username,
-        "password": "password12345",
-    });
-
-    let resp_user = app.client.post(format!("{}/v1/users", app.server_url)).json(&payload).send().await.unwrap();
-    assert_eq!(resp_user.status(), StatusCode::CREATED);
-
-    let json_user: serde_json::Value = resp_user.json().await.unwrap();
-    let user_token = json_user["token"].as_str().unwrap().to_string();
-
-    // 2. List devices (should be empty initially)
-    let resp_list_empty = app
-        .client
-        .get(format!("{}/v1/devices", app.server_url))
-        .header("Authorization", format!("Bearer {}", user_token))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp_list_empty.status(), StatusCode::OK);
-    let list_empty_res: serde_json::Value = resp_list_empty.json().await.unwrap();
-    let list_empty = list_empty_res["devices"].as_array().unwrap();
-    assert!(list_empty.is_empty(), "User should have no devices initially");
-
-    // 3. Create the primary device
-    let (device1_payload, identity_key) = common::generate_device_payload(111, 5);
-    let resp_device1 = app
-        .client
-        .post(format!("{}/v1/devices", app.server_url))
-        .header("Authorization", format!("Bearer {}", user_token))
-        .json(&device1_payload)
-        .send()
-        .await
-        .unwrap();
-
+    // 1. Register user and primary device atomically
+    let (reg_payload, identity_key) = common::generate_registration_payload(&username, "password12345", 111, 5);
+    let resp_device1 = app.client.post(format!("{}/v1/users", app.server_url)).json(&reg_payload).send().await.unwrap();
     assert_eq!(resp_device1.status(), StatusCode::CREATED);
+
     let device1_json: serde_json::Value = resp_device1.json().await.unwrap();
     let device1_id = device1_json["deviceId"].as_str().unwrap().to_string();
     let device1_token = device1_json["token"].as_str().unwrap().to_string();
 
-    // 4. Link Device 2 (with a name) through a link session the primary approved
-    let link_session_id = app.create_link_session(&user_token).await;
+    // 2. Link Device 2 (with a name) through a link session the primary approved
+    let link_session_id = app.create_link_session(&username).await;
     assert_eq!(app.approve_link_session(&device1_token, &link_session_id, b"message").await, StatusCode::OK);
     let mut dev2 = common::generate_device_payload_for(&identity_key, 222, 5);
     dev2["name"] = json!("My Phone");
     dev2["linkSessionId"] = json!(link_session_id);
 
-    let resp_device2 = app
-        .client
-        .post(format!("{}/v1/devices", app.server_url))
-        .header("Authorization", format!("Bearer {}", user_token))
-        .json(&dev2)
-        .send()
-        .await
-        .unwrap();
+    let resp_device2 = app.client.post(format!("{}/v1/devices", app.server_url)).json(&dev2).send().await.unwrap();
 
     assert_eq!(resp_device2.status(), StatusCode::CREATED);
     let device2_json: serde_json::Value = resp_device2.json().await.unwrap();
     let device2_id = device2_json["deviceId"].as_str().unwrap().to_string();
 
-    // 5. List Devices (should show both, with only Device 1 primary)
+    // 3. List Devices (should show both, with only Device 1 primary)
     let resp_list = app
         .client
         .get(format!("{}/v1/devices", app.server_url))
-        .header("Authorization", format!("Bearer {}", user_token))
+        .header("Authorization", format!("Bearer {}", device1_token))
         .send()
         .await
         .unwrap();
@@ -108,14 +68,14 @@ async fn test_device_crud_lifecycle() {
     assert_eq!(d2["name"].as_str().unwrap(), "My Phone", "Device 2 should have the specified name");
     assert_eq!(d2["isPrimary"], json!(false));
 
-    // 6. Send a message to Device 2 to verify cascade delete
+    // 4. Send a message to Device 2 to verify cascade delete
     let device2_uuid = Uuid::parse_str(&device2_id).unwrap();
     let sender = app.register_user(&common::generate_username("crud_sender")).await;
     app.send_messages(&sender.token, &[(Uuid::parse_str(&device1_id).unwrap(), b"Ping"), (device2_uuid, b"Ping")])
         .await;
     app.assert_message_count(device2_uuid, 1).await;
 
-    // 7. The primary deletes Device 2
+    // 5. The primary deletes Device 2
     let resp_delete = app
         .client
         .delete(format!("{}/v1/devices/{}", app.server_url, device2_id))
@@ -126,11 +86,11 @@ async fn test_device_crud_lifecycle() {
 
     assert_eq!(resp_delete.status(), StatusCode::OK);
 
-    // 8. List devices again (should only have Device 1)
+    // 6. List devices again (should only have Device 1)
     let resp_list_after = app
         .client
         .get(format!("{}/v1/devices", app.server_url))
-        .header("Authorization", format!("Bearer {}", user_token))
+        .header("Authorization", format!("Bearer {}", device1_token))
         .send()
         .await
         .unwrap();
@@ -141,7 +101,7 @@ async fn test_device_crud_lifecycle() {
     assert_eq!(list_devices_after.len(), 1, "User should have 1 device remaining");
     assert_eq!(list_devices_after[0]["deviceId"].as_str().unwrap(), device1_id);
 
-    // 9. Verify cascade delete (keys and messages for Device 2 should be gone)
+    // 7. Verify cascade delete (keys and messages for Device 2 should be gone)
     let key_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM signed_pre_keys WHERE device_id = $1")
         .bind(device2_uuid)
         .fetch_one(&app.pool)
@@ -164,17 +124,11 @@ async fn test_device_limit_enforced() {
     app.link_device(&primary).await;
 
     // 2. A 4th device is rejected even with an approved link session and the account identity
-    let (user_token, link_session_id) = app.approved_link_session(&primary).await;
+    let link_session_id = app.approved_link_session(&primary).await;
     let mut device4_payload = common::generate_device_payload_for(&primary.identity_key, 4, 5);
     device4_payload["linkSessionId"] = json!(link_session_id);
-    let resp_device4 = app
-        .client
-        .post(format!("{}/v1/devices", app.server_url))
-        .header("Authorization", format!("Bearer {}", user_token))
-        .json(&device4_payload)
-        .send()
-        .await
-        .unwrap();
+    let resp_device4 =
+        app.client.post(format!("{}/v1/devices", app.server_url)).json(&device4_payload).send().await.unwrap();
 
     assert_eq!(resp_device4.status(), StatusCode::FORBIDDEN, "4th device should be rejected");
 

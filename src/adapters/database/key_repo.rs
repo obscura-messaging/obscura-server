@@ -26,14 +26,14 @@ impl KeyRepository {
         conn: &mut PgConnection,
         device_id: Uuid,
     ) -> Result<Option<PublicKey>> {
-        let row: Option<Option<Vec<u8>>> = sqlx::query_scalar(
+        let row: Option<Vec<u8>> = sqlx::query_scalar(
             "SELECT u.identity_key FROM devices d JOIN users u ON u.id = d.user_id WHERE d.id = $1 FOR UPDATE OF d",
         )
         .bind(device_id)
         .fetch_optional(conn)
         .await?;
 
-        row.map(|bytes| decode_identity_key(bytes.as_deref())).transpose()
+        row.as_deref().map(decode_identity_key).transpose()
     }
 
     /// Upserts a signed pre-key for a device.
@@ -179,15 +179,15 @@ impl KeyRepository {
         user_id: Uuid,
         device_id: Option<Uuid>,
     ) -> Result<Vec<PreKeyBundle>> {
-        let identity: Option<Option<Vec<u8>>> = sqlx::query_scalar("SELECT identity_key FROM users WHERE id = $1")
+        let identity: Option<Vec<u8>> = sqlx::query_scalar("SELECT identity_key FROM users WHERE id = $1")
             .bind(user_id)
             .fetch_optional(&mut *conn)
             .await?;
 
-        let Some(Some(identity)) = identity else {
+        let Some(identity) = identity else {
             return Ok(Vec::new());
         };
-        let identity_key = decode_identity_key(Some(&identity))?;
+        let identity_key = decode_identity_key(&identity)?;
 
         let devices: Vec<(Uuid, i32)> = sqlx::query_as(
             "SELECT id, registration_id FROM devices WHERE user_id = $1 AND ($2::uuid IS NULL OR id = $2) ORDER BY created_at ASC",
@@ -288,11 +288,7 @@ impl KeyRepository {
     }
 }
 
-fn decode_identity_key(bytes: Option<&[u8]>) -> Result<PublicKey> {
-    let bytes = bytes.ok_or_else(|| {
-        tracing::error!("Database data corruption: account with devices has no identity key");
-        AppError::Internal
-    })?;
+fn decode_identity_key(bytes: &[u8]) -> Result<PublicKey> {
     PublicKey::try_from_bytes(bytes).map_err(|e| {
         tracing::error!(error = %e, "Database data corruption: Invalid identity key format");
         AppError::Internal

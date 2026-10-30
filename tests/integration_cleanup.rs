@@ -34,7 +34,7 @@ async fn test_message_cleanup_worker_full_orchestration() {
 
     // --- Part 1: Overflow Pruning ---
     let user_a = Uuid::new_v4();
-    sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, $2, 'hash')")
+    sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
         .bind(user_a)
         .bind(format!("worker_a_{}", &user_a.to_string()[..8]))
         .execute(&pool)
@@ -64,7 +64,7 @@ async fn test_message_cleanup_worker_full_orchestration() {
 
     // --- Part 2: Expiry Deletion ---
     let user_b = Uuid::new_v4();
-    sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, $2, 'hash')")
+    sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
         .bind(user_b)
         .bind(format!("worker_b_{}", &user_b.to_string()[..8]))
         .execute(&pool)

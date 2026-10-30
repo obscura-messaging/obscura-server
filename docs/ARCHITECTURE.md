@@ -10,7 +10,7 @@ sequenceDiagram
     participant S as Server
     participant B as Bob's device
 
-    A->>S: POST /v1/users (user-scoped JWT), then POST /v1/devices with keys (primary, device-scoped JWT)
+    A->>S: POST /v1/users with keys (creates account + primary device, returns JWT)
     B->>S: same (additional devices link via /v1/link-sessions approved by the primary)
     A->>S: GET /v1/users/{bob} (or /devices/{id}): bundle(s) with shared account identity, consumes a one-time prekey
     A->>A: X3DH, encrypt once per device

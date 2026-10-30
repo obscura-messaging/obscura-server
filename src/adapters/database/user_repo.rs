@@ -14,27 +14,29 @@ impl UserRepository {
         Self {}
     }
 
-    /// Creates a new user record.
+    /// Creates a new user record with its initial account identity key.
     ///
     /// # Errors
     /// Returns `AppError::Conflict` if the username already exists.
     /// Returns `AppError::Database` for other database failures.
-    #[tracing::instrument(level = "debug", skip(self, conn, password_hash), err)]
+    #[tracing::instrument(level = "debug", skip(self, conn, password_hash, identity_key), err)]
     pub(crate) async fn create(
         &self,
         conn: &mut PgConnection,
         username: &Username,
         password_hash: &str,
+        identity_key: &PublicKey,
     ) -> Result<User> {
         let user = sqlx::query_as::<_, UserRecord>(
             r#"
-            INSERT INTO users (username, password_hash)
-            VALUES ($1, $2)
+            INSERT INTO users (username, password_hash, identity_key)
+            VALUES ($1, $2, $3)
             RETURNING id, username, password_hash, created_at
             "#,
         )
         .bind(username.as_str())
         .bind(password_hash)
+        .bind(identity_key.as_bytes())
         .fetch_one(conn)
         .await
         .map_err(|e| {
@@ -69,7 +71,7 @@ impl UserRepository {
         Ok(user.map(Into::into))
     }
 
-    /// Locks the user row `FOR UPDATE` and returns the account identity key, if one is set.
+    /// Locks the user row `FOR UPDATE` and returns the account identity key.
     /// Holding the lock serializes changes to the user's devices. Every device insert must hold it; see
     /// `MessageRepository::lock_device_sets`.
     ///
@@ -77,23 +79,19 @@ impl UserRepository {
     /// Returns `sqlx::Error` if the query fails.
     /// Returns `AppError::Internal` if stored data is corrupt.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn lock_identity_key(&self, conn: &mut PgConnection, user_id: Uuid) -> Result<Option<PublicKey>> {
-        let bytes: Option<Vec<u8>> = sqlx::query_scalar("SELECT identity_key FROM users WHERE id = $1 FOR UPDATE")
+    pub(crate) async fn lock_identity_key(&self, conn: &mut PgConnection, user_id: Uuid) -> Result<PublicKey> {
+        let bytes: Vec<u8> = sqlx::query_scalar("SELECT identity_key FROM users WHERE id = $1 FOR UPDATE")
             .bind(user_id)
             .fetch_one(conn)
             .await?;
 
-        bytes
-            .map(|b| {
-                PublicKey::try_from_bytes(&b).map_err(|e| {
-                    tracing::error!(error = %e, "Database data corruption: Invalid identity key format");
-                    AppError::Internal
-                })
-            })
-            .transpose()
+        PublicKey::try_from_bytes(&bytes).map_err(|e| {
+            tracing::error!(error = %e, "Database data corruption: Invalid identity key format");
+            AppError::Internal
+        })
     }
 
-    /// Sets or clears the account identity key.
+    /// Replaces the account identity key.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the update fails.
@@ -102,11 +100,11 @@ impl UserRepository {
         &self,
         conn: &mut PgConnection,
         user_id: Uuid,
-        identity_key: Option<&PublicKey>,
+        identity_key: &PublicKey,
     ) -> Result<()> {
         sqlx::query("UPDATE users SET identity_key = $2 WHERE id = $1")
             .bind(user_id)
-            .bind(identity_key.map(PublicKey::as_bytes))
+            .bind(identity_key.as_bytes())
             .execute(conn)
             .await?;
         Ok(())

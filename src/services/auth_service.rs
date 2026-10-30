@@ -73,60 +73,32 @@ impl AuthService {
         Self { config, pool, user_repo, refresh_repo, device_repo, metrics: Metrics::new() }
     }
 
-    /// Registers a new user account. Returns a user-scoped session (no `device_id`).
-    ///
-    /// # Errors
-    /// Returns `AppError::Conflict` if the username already exists.
-    /// Returns `AppError::Database` if any of the underlying operations fail.
-    #[tracing::instrument(
-        skip(self, username, password),
-        fields(user.id = tracing::field::Empty),
-        err(level = "warn")
-    )]
-    pub(crate) async fn register(
-        &self,
-        username: &crate::domain::user::Username,
-        password: String,
-    ) -> Result<AuthSession> {
-        let password_hash = self.hash_password(&password).await?;
-        let mut tx = self.pool.begin().await?;
-        let user = self.user_repo.create(&mut tx, username, &password_hash).await?;
-        tracing::Span::current().record("user_id", tracing::field::display(user.id));
-        let session = self.create_session(&mut tx, user.id, None).await?;
-        tx.commit().await?;
-        tracing::info!("User registered successfully");
-        self.metrics.registered_total.add(1, &[]);
-        Ok(session)
-    }
-
-    /// Authenticates a user. If `device_id` is provided and belongs to user, returns a device-scoped session.
-    /// Otherwise returns a user-scoped session.
+    /// Authenticates an existing device of a user and returns a device-scoped session.
     ///
     /// # Errors
     /// Returns `AppError::AuthError` if credentials are invalid.
+    /// Returns `AppError::Conflict` if `device_id` does not belong to the user.
     #[tracing::instrument(
         skip(self, username, password),
-        fields(user.id = tracing::field::Empty),
+        fields(user.id = tracing::field::Empty, device.id = %device_id),
         err(level = "warn")
     )]
-    pub(crate) async fn login(&self, username: &str, password: String, device_id: Option<Uuid>) -> Result<AuthSession> {
+    pub(crate) async fn login(&self, username: &str, password: String, device_id: Uuid) -> Result<AuthSession> {
         let user_id = self.verify_credentials(username, &password).await?;
 
         let mut conn = self.pool.acquire().await?;
-        let validated_device_id = if let Some(did) = device_id {
-            if self.device_repo.belongs_to_user(&mut conn, did, user_id).await? {
-                Some(did)
-            } else {
-                tracing::warn!(device_id = %did, "Login with unknown device_id, issuing user-scoped session");
-                None
-            }
-        } else {
-            None
-        };
+        if !self.device_repo.belongs_to_user(&mut conn, device_id, user_id).await? {
+            tracing::warn!(device_id = %device_id, "Login rejected: device does not belong to user");
+            return Err(AppError::Conflict("Device does not belong to this account".into()));
+        }
 
-        let session = self.create_session(&mut conn, user_id, validated_device_id).await?;
+        let session = self.create_session(&mut conn, user_id, device_id).await?;
         self.metrics.login.add(1, &[]);
         Ok(session)
+    }
+
+    pub(crate) fn record_registration(&self) {
+        self.metrics.registered_total.add(1, &[]);
     }
 
     /// Verifies a username and password and returns the user's id.
@@ -182,29 +154,21 @@ impl AuthService {
         .map_err(|_| AppError::Internal)?
     }
 
-    /// Creates a session. A device-scoped session gets a refresh token; a user-scoped session (no `device_id`)
-    /// is short-lived and cannot be refreshed.
+    /// Creates a device-scoped session with a refresh token.
     ///
     /// # Errors
     /// Returns `AppError::Database` if the session cannot be saved.
-    #[tracing::instrument(err, skip(self, conn), fields(user.id = %user_id))]
+    #[tracing::instrument(err, skip(self, conn), fields(user.id = %user_id, device.id = %device_id))]
     pub(crate) async fn create_session(
         &self,
         conn: &mut PgConnection,
         user_id: Uuid,
-        device_id: Option<Uuid>,
+        device_id: Uuid,
     ) -> Result<AuthSession> {
         let (token, expires_at) = self.issue_access_token(user_id, device_id)?;
-
-        let refresh_token = match device_id {
-            Some(device_id) => {
-                let refresh_token = Self::generate_opaque_token();
-                let refresh_hash = Self::hash_opaque_token(&refresh_token);
-                self.refresh_repo.create(conn, device_id, &refresh_hash, self.config.refresh_token_ttl_days).await?;
-                Some(refresh_token)
-            }
-            None => None,
-        };
+        let refresh_token = Self::generate_opaque_token();
+        let refresh_hash = Self::hash_opaque_token(&refresh_token);
+        self.refresh_repo.create(conn, device_id, &refresh_hash, self.config.refresh_token_ttl_days).await?;
 
         Ok(AuthSession { token, refresh_token, expires_at, device_id })
     }
@@ -228,15 +192,15 @@ impl AuthService {
 
         tracing::Span::current().record("user_id", tracing::field::display(user_id));
 
-        let (token, expires_at) = self.issue_access_token(user_id, Some(device_id))?;
+        let (token, expires_at) = self.issue_access_token(user_id, device_id)?;
 
         tracing::info!("Tokens rotated successfully");
         self.metrics.refresh.add(1, &[]);
 
-        Ok(AuthSession { token, refresh_token: Some(new_refresh_token), expires_at, device_id: Some(device_id) })
+        Ok(AuthSession { token, refresh_token: new_refresh_token, expires_at, device_id })
     }
 
-    fn issue_access_token(&self, user_id: Uuid, device_id: Option<Uuid>) -> Result<(String, i64)> {
+    fn issue_access_token(&self, user_id: Uuid, device_id: Uuid) -> Result<(String, i64)> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0)).as_secs();
         let exp = now.checked_add(self.config.access_token_ttl_secs).ok_or(AppError::Internal)?;
         let claims = Claims::new(user_id, device_id, usize::try_from(exp).map_err(|_| AppError::Internal)?);
@@ -257,18 +221,16 @@ impl AuthService {
         Ok(())
     }
 
-    /// Verifies a JWT access token and that its device, if any, still exists. Returns (`user_id`, `device_id`).
+    /// Verifies a JWT access token and that its device still exists. Returns (`user_id`, `device_id`).
     ///
     /// # Errors
     /// Returns `AppError::AuthError` if the token is invalid, expired, or names a deleted device.
     /// Returns `AppError::Database` if the device lookup fails.
-    pub(crate) async fn authenticate(&self, jwt: &Jwt) -> Result<(Uuid, Option<Uuid>)> {
+    pub(crate) async fn authenticate(&self, jwt: &Jwt) -> Result<(Uuid, Uuid)> {
         let (user_id, device_id) = self.verify_token(jwt)?;
-        if let Some(device_id) = device_id {
-            let mut conn = self.pool.acquire().await?;
-            if !self.device_repo.belongs_to_user(&mut conn, device_id, user_id).await? {
-                return Err(AppError::AuthError);
-            }
+        let mut conn = self.pool.acquire().await?;
+        if !self.device_repo.belongs_to_user(&mut conn, device_id, user_id).await? {
+            return Err(AppError::AuthError);
         }
         Ok((user_id, device_id))
     }
@@ -277,7 +239,7 @@ impl AuthService {
     ///
     /// # Errors
     /// Returns `AppError::AuthError` if the token is invalid or expired.
-    fn verify_token(&self, jwt: &Jwt) -> Result<(Uuid, Option<Uuid>)> {
+    fn verify_token(&self, jwt: &Jwt) -> Result<(Uuid, Uuid)> {
         let token_data = decode::<Claims>(
             jwt.as_str(),
             &DecodingKey::from_secret(self.config.jwt_secret.as_bytes()),
@@ -328,7 +290,7 @@ mod tests {
     async fn test_jwt_roundtrip() {
         let service = setup_service();
         let user_id = Uuid::new_v4();
-        let device_id = Some(Uuid::new_v4());
+        let device_id = Uuid::new_v4();
         let exp = 10_000_000_000;
         let claims = Claims::new(user_id, device_id, exp);
 
@@ -337,20 +299,6 @@ mod tests {
 
         assert_eq!(user_id, decoded_user);
         assert_eq!(device_id, decoded_device);
-    }
-
-    #[tokio::test]
-    async fn test_jwt_roundtrip_no_device() {
-        let service = setup_service();
-        let user_id = Uuid::new_v4();
-        let exp = 10_000_000_000;
-        let claims = Claims::new(user_id, None, exp);
-
-        let jwt = service.encode_jwt(&claims).expect("Failed to encode JWT");
-        let (decoded_user, decoded_device) = service.verify_token(&jwt).expect("Failed to verify valid token");
-
-        assert_eq!(user_id, decoded_user);
-        assert_eq!(decoded_device, None);
     }
 
     #[tokio::test]

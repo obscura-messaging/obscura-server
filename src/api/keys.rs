@@ -1,5 +1,5 @@
 use crate::api::AppState;
-use crate::api::middleware::DeviceAuth;
+use crate::api::middleware::AuthUser;
 use crate::api::schemas::keys::{PreKeyBundleResponse, PreKeyUploadRequest};
 use crate::error::{AppError, Result};
 use crate::services::key_service::KeyUploadParams;
@@ -15,10 +15,9 @@ use uuid::Uuid;
 /// Fetches all pre-key bundles for a user (one per device).
 ///
 /// # Errors
-/// Returns `AppError::Forbidden` if a device-scoped token is not provided.
 /// Returns `AppError::NotFound` if the user has no registered devices or keys.
 pub(crate) async fn get_pre_key_bundles(
-    _auth: DeviceAuth,
+    _auth: AuthUser,
     State(state): State<AppState>,
     Path(user_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
@@ -35,10 +34,9 @@ pub(crate) async fn get_pre_key_bundles(
 /// Fetches the pre-key bundle of one device of a user, consuming a one-time pre-key on that device only.
 ///
 /// # Errors
-/// Returns `AppError::Forbidden` if a device-scoped token is not provided.
 /// Returns `AppError::NotFound` if the user has no such device.
 pub(crate) async fn get_device_pre_key_bundle(
-    _auth: DeviceAuth,
+    _auth: AuthUser,
     State(state): State<AppState>,
     Path((user_id, device_id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
@@ -51,10 +49,9 @@ pub(crate) async fn get_device_pre_key_bundle(
 /// Uploads new pre-keys for the authenticated device.
 ///
 /// # Errors
-/// Returns `AppError::Forbidden` if a device-scoped token is not provided.
 /// Returns `AppError::BadRequest` if the keys are malformed or validation fails.
 pub(crate) async fn upload_keys(
-    auth: DeviceAuth,
+    auth: AuthUser,
     State(state): State<AppState>,
     Json(payload): Json<PreKeyUploadRequest>,
 ) -> Result<impl IntoResponse> {

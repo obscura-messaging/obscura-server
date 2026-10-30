@@ -285,8 +285,12 @@ impl AppBuilder {
             notifier.clone(),
             config.auth.max_devices_per_user,
         );
-        let link_session_service =
-            LinkSessionService::new(pool.clone(), adapters.device.clone(), adapters.link_session.clone());
+        let link_session_service = LinkSessionService::new(
+            pool.clone(),
+            auth_service.clone(),
+            adapters.device.clone(),
+            adapters.link_session.clone(),
+        );
         let gateway_service = GatewayService::new(
             message_service.clone(),
             key_service.clone(),
