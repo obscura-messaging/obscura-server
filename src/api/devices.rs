@@ -1,8 +1,9 @@
 use crate::api::AppState;
 use crate::api::middleware::AuthUser;
 use crate::api::schemas::auth::{AuthResponse, RegistrationRequest, ResetAccountRequest};
-use crate::api::schemas::devices::{CreateDeviceRequest, DeviceListResponse, DeviceResponse};
-use crate::api::schemas::link_sessions::{CreateLinkSessionRequest, LinkSessionResponse};
+use crate::api::schemas::devices::{
+    CreateDeviceRequest, CreateLinkSessionRequest, DeviceListResponse, DeviceResponse, LinkSessionResponse,
+};
 use crate::error::{AppError, Result};
 use crate::services::device_service::NewLinkedDevice;
 use axum::{

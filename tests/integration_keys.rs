@@ -127,7 +127,6 @@ async fn test_key_limit_enforced() {
 
     let (new_spk_pub, new_spk_sig) = common::generate_signed_pre_key(&user.identity_key);
     let refill_payload = json!({
-        "registrationId": 123,
         "signedPreKey": {
             "keyId": 2,
             "publicKey": STANDARD.encode(&new_spk_pub),
@@ -166,7 +165,6 @@ async fn test_key_rotation_monotonic_check() {
     let resp_11 = app.client.post(format!("{}/v1/keys", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
         .json(&json!({
-            "registrationId": 123,
             "signedPreKey": { "keyId": 11, "publicKey": STANDARD.encode(&spk_pub_11), "signature": STANDARD.encode(&spk_sig_11) },
             "oneTimePreKeys": []
         })).send().await.unwrap();
@@ -177,7 +175,6 @@ async fn test_key_rotation_monotonic_check() {
     let resp_10 = app.client.post(format!("{}/v1/keys", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
         .json(&json!({
-            "registrationId": 123,
             "signedPreKey": { "keyId": 10, "publicKey": STANDARD.encode(&spk_pub_10), "signature": STANDARD.encode(&spk_sig_10) },
             "oneTimePreKeys": []
         })).send().await.unwrap();
@@ -195,7 +192,6 @@ async fn test_key_rotation_cleanup() {
     app.client.post(format!("{}/v1/keys", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
         .json(&json!({
-            "registrationId": 123,
             "signedPreKey": { "keyId": 10, "publicKey": STANDARD.encode(&spk_pub), "signature": STANDARD.encode(&spk_sig) },
             "oneTimePreKeys": []
         })).send().await.unwrap();
