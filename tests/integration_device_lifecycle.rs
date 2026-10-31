@@ -37,7 +37,7 @@ async fn delete_device(app: &TestApp, token: &str, device_id: Uuid) -> StatusCod
 }
 
 async fn reset_account(app: &TestApp, payload: &serde_json::Value) -> reqwest::Response {
-    app.client.post(format!("{}/v1/account/reset", app.server_url)).json(payload).send().await.unwrap()
+    app.client.post(format!("{}/v1/users/reset", app.server_url)).json(payload).send().await.unwrap()
 }
 
 async fn list_devices(app: &TestApp, token: &str) -> Vec<serde_json::Value> {
@@ -146,8 +146,8 @@ async fn test_delete_device_permissions() {
     assert_eq!(delete_device(&app, &linked_a.token, linked_b.device_id).await, StatusCode::FORBIDDEN);
     assert_eq!(delete_device(&app, &primary.token, stranger.device_id).await, StatusCode::NOT_FOUND);
 
-    assert_eq!(delete_device(&app, &linked_a.token, linked_a.device_id).await, StatusCode::OK);
-    assert_eq!(delete_device(&app, &primary.token, linked_b.device_id).await, StatusCode::OK);
+    assert_eq!(delete_device(&app, &linked_a.token, linked_a.device_id).await, StatusCode::NO_CONTENT);
+    assert_eq!(delete_device(&app, &primary.token, linked_b.device_id).await, StatusCode::NO_CONTENT);
 
     let devices = list_devices(&app, &primary.token).await;
     assert_eq!(devices.len(), 1);
@@ -163,7 +163,7 @@ async fn test_deleted_device_tokens_rejected_and_gateway_closed() {
     let mut ws = app.connect_ws(&linked.token).await;
     ws.ensure_subscribed().await;
 
-    assert_eq!(delete_device(&app, &primary.token, linked.device_id).await, StatusCode::OK);
+    assert_eq!(delete_device(&app, &primary.token, linked.device_id).await, StatusCode::NO_CONTENT);
 
     ws.assert_closed().await;
 
@@ -187,7 +187,7 @@ async fn test_deleted_device_tokens_rejected_and_gateway_closed() {
 
     let resp = app
         .client
-        .post(format!("{}/v1/sessions/refresh", app.server_url))
+        .post(format!("{}/v1/session/refresh", app.server_url))
         .json(&json!({ "refreshToken": linked.refresh_token }))
         .send()
         .await
@@ -203,7 +203,7 @@ async fn test_queued_messages_survive_sender_device_deletion() {
     let bob = app.register_user(&common::generate_username("del_recipient")).await;
 
     app.send_message(&alice_linked.token, bob.device_id, b"sent before unlink").await;
-    assert_eq!(delete_device(&app, &alice_linked.token, alice_linked.device_id).await, StatusCode::OK);
+    assert_eq!(delete_device(&app, &alice_linked.token, alice_linked.device_id).await, StatusCode::NO_CONTENT);
 
     app.assert_message_count(bob.device_id, 1).await;
 
@@ -268,7 +268,7 @@ async fn test_account_reset_is_rate_limited_like_auth() {
     // spaced past the refill interval by a slow hash.
     let statuses: Vec<StatusCode> = join_all((0..3).map(|_| {
         app.client
-            .post(format!("{}/v1/account/reset", app.server_url))
+            .post(format!("{}/v1/users/reset", app.server_url))
             .json(&reset_payload)
             .header("X-Forwarded-For", &ip)
             .send()

@@ -12,7 +12,7 @@ impl RefreshTokenRepository {
         Self {}
     }
 
-    /// Creates a new refresh token record for a device.
+    /// Creates a new refresh token record for a device, replacing any prior refresh tokens for that device.
     /// Note: We store the HASH, not the raw token.
     ///
     /// # Errors
@@ -26,6 +26,12 @@ impl RefreshTokenRepository {
         ttl_days: i64,
     ) -> Result<()> {
         let expires_at = OffsetDateTime::now_utc() + time::Duration::days(ttl_days);
+
+        sqlx::query("DELETE FROM refresh_tokens WHERE device_id = $1")
+            .bind(device_id)
+            .execute(&mut *conn)
+            .await
+            .map_err(AppError::Database)?;
 
         sqlx::query("INSERT INTO refresh_tokens (token_hash, device_id, expires_at) VALUES ($1, $2, $3)")
             .bind(token_hash)
@@ -80,17 +86,14 @@ impl RefreshTokenRepository {
         Ok(row)
     }
 
-    /// Revokes a specific refresh token owned by the user (Logout).
+    /// Revokes all refresh tokens for a device (Logout).
     ///
     /// # Errors
     /// Returns `AppError::Database` if the deletion fails.
-    #[tracing::instrument(level = "debug", skip(self, conn, token_hash), err)]
-    pub(crate) async fn delete_owned(&self, conn: &mut PgConnection, token_hash: &[u8], user_id: Uuid) -> Result<()> {
-        sqlx::query(
-            "DELETE FROM refresh_tokens r USING devices d WHERE r.token_hash = $1 AND r.device_id = d.id AND d.user_id = $2",
-        )
-            .bind(token_hash)
-            .bind(user_id)
+    #[tracing::instrument(level = "debug", skip(self, conn), err)]
+    pub(crate) async fn delete_for_device(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM refresh_tokens WHERE device_id = $1")
+            .bind(device_id)
             .execute(conn)
             .await
             .map_err(AppError::Database)?;

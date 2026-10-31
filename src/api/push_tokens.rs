@@ -18,5 +18,5 @@ pub(crate) async fn register_token(
     let token = PushToken::try_from(payload).map_err(AppError::BadRequest)?;
 
     state.push_token_service.register_token(auth.device_id, &token).await?;
-    Ok(StatusCode::OK)
+    Ok(StatusCode::NO_CONTENT)
 }

@@ -409,12 +409,8 @@ impl TestApp {
         let body = resp.json::<serde_json::Value>().await.unwrap();
         let token = body["token"].as_str().unwrap().to_string();
         let refresh_token = body["refreshToken"].as_str().unwrap().to_string();
+        let user_id = Uuid::parse_str(body["userId"].as_str().unwrap()).unwrap();
         let device_id = Uuid::parse_str(body["deviceId"].as_str().unwrap()).unwrap();
-
-        let parts: Vec<&str> = token.split('.').collect();
-        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
-        let claims: serde_json::Value = serde_json::from_slice(&decoded).unwrap();
-        let user_id = Uuid::parse_str(claims["sub"].as_str().unwrap()).unwrap();
 
         TestUser { username: username.to_string(), user_id, device_id, token, refresh_token, identity_key }
     }
@@ -448,7 +444,7 @@ impl TestApp {
     /// Returns a link session for the primary's account that the primary approved.
     pub(crate) async fn approved_link_session(&self, primary: &TestUser) -> String {
         let id = self.create_link_session(&primary.username).await;
-        assert_eq!(self.approve_link_session(&primary.token, &id, b"provisioning message").await, 200);
+        assert_eq!(self.approve_link_session(&primary.token, &id, b"provisioning message").await, 204);
         id
     }
 
@@ -478,16 +474,33 @@ impl TestApp {
     }
 
     pub(crate) async fn send_messages(&self, token: &str, messages: &[(Uuid, &[u8])]) {
-        let outgoing = messages
-            .iter()
-            .map(|(device_id, content)| proto::send_message_request::Submission {
-                submission_id: Uuid::new_v4().as_bytes().to_vec(),
+        let device_ids: Vec<Uuid> = messages.iter().map(|(id, _)| *id).collect();
+        let owners: Vec<(Uuid, Uuid)> = sqlx::query_as("SELECT id, user_id FROM devices WHERE id = ANY($1)")
+            .bind(&device_ids)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap();
+        let owner_of: std::collections::HashMap<Uuid, Uuid> = owners.into_iter().collect();
+
+        let mut by_user: std::collections::BTreeMap<Uuid, Vec<proto::send_message_request::Submission>> =
+            std::collections::BTreeMap::new();
+        for (device_id, content) in messages {
+            let user_id = owner_of.get(device_id).copied().unwrap_or_else(Uuid::new_v4);
+            by_user.entry(user_id).or_default().push(proto::send_message_request::Submission {
                 device_id: device_id.as_bytes().to_vec(),
                 message: content.to_vec(),
+            });
+        }
+
+        let recipients = by_user
+            .into_iter()
+            .map(|(user_id, submissions)| proto::send_message_request::Recipient {
+                user_id: user_id.as_bytes().to_vec(),
+                submissions,
             })
             .collect();
 
-        let request = proto::SendMessageRequest { recipient_user_ids: Vec::new(), messages: outgoing };
+        let request = proto::SendMessageRequest { recipients };
         let mut buf = Vec::new();
         request.encode(&mut buf).unwrap();
 
@@ -505,7 +518,7 @@ impl TestApp {
         assert_eq!(resp.status(), 200, "Message sending failed: {}", resp.text().await.unwrap());
         let response = proto::SendMessageResponse::decode(resp.bytes().await.unwrap()).unwrap();
         assert!(
-            response.failed_submissions.is_empty() && response.device_mismatches.is_empty(),
+            response.invalid_device_ids.is_empty() && response.device_mismatches.is_empty(),
             "Message sending was rejected: {response:?}"
         );
     }

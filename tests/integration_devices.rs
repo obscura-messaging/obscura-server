@@ -35,7 +35,7 @@ async fn test_device_crud_lifecycle() {
 
     // 2. Link Device 2 (with a name) through a link session the primary approved
     let link_session_id = app.create_link_session(&username).await;
-    assert_eq!(app.approve_link_session(&device1_token, &link_session_id, b"message").await, StatusCode::OK);
+    assert_eq!(app.approve_link_session(&device1_token, &link_session_id, b"message").await, StatusCode::NO_CONTENT);
     let mut dev2 = common::generate_device_payload_for(&identity_key, 222, 5);
     dev2["name"] = json!("My Phone");
     dev2["linkSessionId"] = json!(link_session_id);
@@ -84,7 +84,7 @@ async fn test_device_crud_lifecycle() {
         .await
         .unwrap();
 
-    assert_eq!(resp_delete.status(), StatusCode::OK);
+    assert_eq!(resp_delete.status(), StatusCode::NO_CONTENT);
 
     // 6. List devices again (should only have Device 1)
     let resp_list_after = app

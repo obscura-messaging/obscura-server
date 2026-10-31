@@ -32,7 +32,7 @@ async fn test_refresh_token_flow() {
     });
 
     let resp_refresh =
-        app.client.post(format!("{}/v1/sessions/refresh", app.server_url)).json(&refresh_payload).send().await.unwrap();
+        app.client.post(format!("{}/v1/session/refresh", app.server_url)).json(&refresh_payload).send().await.unwrap();
 
     assert_eq!(resp_refresh.status(), StatusCode::OK);
 
@@ -48,7 +48,7 @@ async fn test_refresh_token_flow() {
     // 3. Verify Old Refresh Token is Invalid (Rotation Check)
     let resp_old_refresh = app
         .client
-        .post(format!("{}/v1/sessions/refresh", app.server_url))
+        .post(format!("{}/v1/session/refresh", app.server_url))
         .json(&refresh_payload) // sending refresh_token_1 again
         .send()
         .await
@@ -68,19 +68,18 @@ async fn test_logout_revokes_refresh_token() {
     // 2. Logout
     let resp_logout = app
         .client
-        .delete(format!("{}/v1/sessions", app.server_url))
+        .delete(format!("{}/v1/session", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
-        .json(&json!({ "refreshToken": user.refresh_token }))
         .send()
         .await
         .unwrap();
 
-    assert_eq!(resp_logout.status(), StatusCode::OK);
+    assert_eq!(resp_logout.status(), StatusCode::NO_CONTENT);
 
     // 3. Try to Refresh after Logout
     let resp_fail = app
         .client
-        .post(format!("{}/v1/sessions/refresh", app.server_url))
+        .post(format!("{}/v1/session/refresh", app.server_url))
         .json(&json!({ "refreshToken": user.refresh_token }))
         .send()
         .await
@@ -110,7 +109,7 @@ async fn test_refresh_token_expiration() {
     });
 
     let resp_refresh =
-        app.client.post(format!("{}/v1/sessions/refresh", app.server_url)).json(&refresh_payload).send().await.unwrap();
+        app.client.post(format!("{}/v1/session/refresh", app.server_url)).json(&refresh_payload).send().await.unwrap();
 
     assert_eq!(resp_refresh.status(), StatusCode::UNAUTHORIZED, "Expired refresh token should be rejected");
 }
@@ -180,7 +179,7 @@ async fn test_login_requires_matching_device_id() {
         "password": "password12345"
     });
     let resp_missing =
-        app.client.post(format!("{}/v1/sessions", app.server_url)).json(&login_payload_missing).send().await.unwrap();
+        app.client.post(format!("{}/v1/session", app.server_url)).json(&login_payload_missing).send().await.unwrap();
     assert_eq!(resp_missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     // 3. Login with a deviceId that does not belong to the user (should return 409 Conflict)
@@ -190,7 +189,7 @@ async fn test_login_requires_matching_device_id() {
         "deviceId": uuid::Uuid::new_v4().to_string()
     });
     let resp_mismatch =
-        app.client.post(format!("{}/v1/sessions", app.server_url)).json(&login_payload_mismatch).send().await.unwrap();
+        app.client.post(format!("{}/v1/session", app.server_url)).json(&login_payload_mismatch).send().await.unwrap();
     assert_eq!(resp_mismatch.status(), StatusCode::CONFLICT);
 
     // 4. Login with a wrong password and a mismatched deviceId must return 401 (not 409)
@@ -200,7 +199,7 @@ async fn test_login_requires_matching_device_id() {
         "deviceId": uuid::Uuid::new_v4().to_string()
     });
     let resp_wrong_pw =
-        app.client.post(format!("{}/v1/sessions", app.server_url)).json(&login_payload_wrong_pw).send().await.unwrap();
+        app.client.post(format!("{}/v1/session", app.server_url)).json(&login_payload_wrong_pw).send().await.unwrap();
     assert_eq!(resp_wrong_pw.status(), StatusCode::UNAUTHORIZED);
 
     // 5. Login WITH matching deviceId (should return device session)
@@ -211,7 +210,7 @@ async fn test_login_requires_matching_device_id() {
     });
 
     let resp_device =
-        app.client.post(format!("{}/v1/sessions", app.server_url)).json(&login_payload_device).send().await.unwrap();
+        app.client.post(format!("{}/v1/session", app.server_url)).json(&login_payload_device).send().await.unwrap();
 
     assert_eq!(resp_device.status(), StatusCode::OK);
     let json_device: serde_json::Value = resp_device.json().await.unwrap();
@@ -227,7 +226,7 @@ async fn test_login_requires_matching_device_id() {
     // 6. Verify we can fetch keys
     let resp_keys = app
         .client
-        .get(format!("{}/v1/users/{}", app.server_url, user.user_id))
+        .get(format!("{}/v1/keys/{}", app.server_url, user.user_id))
         .header("Authorization", format!("Bearer {}", device_token))
         .send()
         .await

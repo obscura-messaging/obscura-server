@@ -61,16 +61,49 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
-  /v1/users/{userId}:
+  # --- Keys ---
+  /v1/keys:
+    post:
+      operationId: uploadKeys
+      summary: Upload PreKeys.
+      description: |
+        Uploads a new Signed PreKey and One-Time PreKeys for the authenticated device.
+        The signed prekey must verify against the account identity key, which cannot be changed here.
+      tags: [Keys]
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreKeyUploadRequest'
+      responses:
+        '204':
+          description: Keys updated.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '408':
+          $ref: '#/components/responses/RequestTimeoutError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/keys/{userId}:
     get:
       operationId: getPreKeyBundle
       summary: Fetch PreKey Bundles for all of a user's devices.
       description: |
-        Returns an array of PreKey bundles, one per device registered to the target user.
+        Returns the PreKey bundles for every device registered to the target user.
         Every bundle carries the account identity key, which all of the user's devices share;
         the registration id, signed prekey and one-time prekey are per device.
         Server atomically consumes one One-Time PreKey per device (if available).
-      tags: [Users]
+      tags: [Keys]
       parameters:
         - name: userId
           in: path
@@ -80,16 +113,14 @@ paths:
             format: uuid
       responses:
         '200':
-          description: Array of PreKey Bundles, one per device.
+          description: PreKey Bundles, one per device.
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/PreKeyBundleResponse'
+                $ref: '#/components/schemas/PreKeyBundleListResponse'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '404':
@@ -101,7 +132,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
-  /v1/users/{userId}/devices/{deviceId}:
+  /v1/keys/{userId}/devices/{deviceId}:
     get:
       operationId: getDevicePreKeyBundle
       summary: Fetch the PreKey Bundle of one of a user's devices.
@@ -109,7 +140,7 @@ paths:
         Returns the PreKey bundle of one device of the target user, carrying the account identity key.
         Server atomically consumes one One-Time PreKey on that device only (if available), so a client
         that needs a session with a single new device does not consume prekeys on the user's other devices.
-      tags: [Users]
+      tags: [Keys]
       parameters:
         - name: userId
           in: path
@@ -144,15 +175,15 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
-  # --- Sessions ---
-  /v1/sessions:
+  # --- Session ---
+  /v1/session:
     post:
       operationId: login
       summary: Login an existing device and retrieve a session.
       description: |
         Authenticates with username, password, and `deviceId`. If the credentials are valid and
         `deviceId` belongs to the user, returns an `AuthResponse` (`token`, `refreshToken`,
-        `expiresAt`, `deviceId`). If the credentials are valid but `deviceId` does not belong to
+        `expiresAt`, `userId`, `deviceId`). If the credentials are valid but `deviceId` does not belong to
         the user (e.g. the device was unlinked or the account was reset), returns `409 Conflict`.
       tags: [Sessions]
       security: []
@@ -194,19 +225,14 @@ paths:
 
     delete:
       operationId: logout
-      summary: Logout (Revoke Refresh Token).
+      summary: Logout (Revoke Device Refresh Token).
       description: |
-        Revokes the provided Refresh Token, effectively logging the user out of that session.
+        Revokes the authenticated device's refresh token, effectively ending its session.
       tags: [Sessions]
       security:
         - bearerAuth: []
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LogoutRequest'
       responses:
-        '200':
+        '204':
           description: Session revoked.
           headers:
             x-request-id:
@@ -218,7 +244,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
-  /v1/sessions/refresh:
+  /v1/session/refresh:
     post:
       operationId: refreshToken
       summary: Refresh Access Token.
@@ -249,7 +275,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
-  /v1/account/reset:
+  /v1/users/reset:
     post:
       operationId: resetAccount
       summary: Reset the account's devices and identity, and provision a new primary device.
@@ -261,7 +287,7 @@ paths:
 
         Authorized by the account's username and password, not by a token.
         Rate limited like registration and login.
-      tags: [Sessions]
+      tags: [Users]
       security: []
       requestBody:
         required: true
@@ -384,7 +410,7 @@ paths:
         Deletes a device of the authenticated user's account.
         - The primary device may delete any other device of the account.
         - Any other device may delete itself.
-        - The primary device cannot be deleted this way; use `POST /v1/account/reset`.
+        - The primary device cannot be deleted this way; use `POST /v1/users/reset`.
 
         Cascade delete removes the device's keys, the messages queued for it, its push token
         and refresh tokens. Messages the device sent that are still
@@ -401,7 +427,7 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
+        '204':
           description: Device deleted.
           headers:
             x-request-id:
@@ -424,38 +450,6 @@ paths:
           $ref: '#/components/responses/NotFoundError'
         '408':
           $ref: '#/components/responses/RequestTimeoutError'
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /v1/devices/keys:
-    post:
-      operationId: uploadKeys
-      summary: Upload PreKeys.
-      description: |
-        Uploads a new Signed PreKey and One-Time PreKeys for the authenticated device.
-        The signed prekey must verify against the account identity key, which cannot be changed here.
-      tags: [Devices]
-      security:
-        - bearerAuth: []
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PreKeyUploadRequest'
-      responses:
-        '200':
-          description: Keys updated.
-          headers:
-            x-request-id:
-              $ref: '#/components/headers/x-request-id'
-        '400':
-          $ref: '#/components/responses/BadRequestError'
-        '401':
-          $ref: '#/components/responses/UnauthorizedError'
-        '408':
-          $ref: '#/components/responses/RequestTimeoutError'
-        '429':
-          $ref: '#/components/responses/TooManyRequestsError'
         '500':
           $ref: '#/components/responses/InternalServerError'
 
@@ -530,7 +524,7 @@ paths:
               format: binary
               maxLength: 65536
       responses:
-        '200':
+        '204':
           description: Session approved.
           headers:
             x-request-id:
@@ -619,14 +613,13 @@ paths:
       operationId: sendMessages
       summary: Send one or more encrypted messages.
       description: |
-        Pushes an array of encrypted envelopes to target devices' queues.
-        Accepts a batch of messages to support multi-device fan-out or single messages.
+        Pushes encrypted envelopes to target devices' queues, grouped by recipient user.
 
-        **Complete delivery:** For each user owning a target device, the targeted devices must equal that user's current devices, excluding the sending device when the user is the sender. Otherwise none of that user's submissions are queued: each fails with `ERROR_CODE_DEVICE_MISMATCH` and `device_mismatches` lists the user's untargeted devices. Unknown devices and the sending device itself fail individually with `ERROR_CODE_INVALID_DEVICE` and do not by themselves make a mismatch.
+        **Complete delivery:** For each recipient user in `recipients`, any targeted `device_id` that does not belong to that user is reported in `invalid_device_ids` and not queued. The remaining targeted devices must cover all of that user's current devices (excluding the sending device when the user is the sender); otherwise none of that user's submissions are queued and `device_mismatches` lists the user's untargeted devices.
 
-        **Idempotency:** Requires an `Idempotency-Key` header to safely retry dropped network requests. The response is cached per key, a mismatch included, so a retry with a corrected device set needs a new key.
+        **Idempotency:** Requires an `Idempotency-Key` header to safely retry dropped network requests. The response is cached per `(sender_device_id, Idempotency-Key)`, a mismatch included, so a retry with a corrected device set needs a new key.
         **Payload:** `SendMessageRequest` (Protobuf).
-        **Response:** `SendMessageResponse` (Protobuf) detailing any partial failures. Empty `failed_submissions` indicates total success.
+        **Response:** `SendMessageResponse` (Protobuf) detailing any `invalid_device_ids` and `device_mismatches`. Both lists empty indicates total success.
       tags: [Messaging]
       security:
         - bearerAuth: []
@@ -648,7 +641,7 @@ paths:
               description: Serialized `SendMessageRequest` protobuf.
       responses:
         '200':
-          description: Batch processed. Parse the response payload to check for partial failures via `failed_submissions` and `device_mismatches`.
+          description: Batch processed. Parse the response payload to check for `invalid_device_ids` and `device_mismatches`.
           headers:
             x-request-id:
               $ref: '#/components/headers/x-request-id'
@@ -835,7 +828,7 @@ paths:
           $ref: '#/components/responses/InternalServerError'
 
   # --- Push Notifications ---
-  /v1/push-tokens:
+  /v1/push-token:
     put:
       operationId: updatePushToken
       summary: Register or update a push notification token.
@@ -852,7 +845,7 @@ paths:
             schema:
               $ref: '#/components/schemas/RegisterPushTokenRequest'
       responses:
-        '200':
+        '204':
           description: Token registered successfully.
           headers:
             x-request-id:
@@ -996,6 +989,7 @@ components:
         - token
         - refreshToken
         - expiresAt
+        - userId
         - deviceId
       properties:
         token:
@@ -1008,6 +1002,10 @@ components:
           type: integer
           format: int64
           description: UNIX timestamp of access token expiration.
+        userId:
+          type: string
+          format: uuid
+          description: The authenticated user's UUID.
         deviceId:
           type: string
           format: uuid
@@ -1078,13 +1076,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/OneTimePreKey'
-
-    LogoutRequest:
-      type: object
-      required: [refreshToken]
-      properties:
-        refreshToken:
-          type: string
 
     RefreshRequest:
       type: object
@@ -1168,6 +1159,9 @@ components:
 
     DeviceResponse:
       type: object
+      required:
+        - deviceId
+        - isPrimary
       properties:
         deviceId:
           type: string
@@ -1178,9 +1172,6 @@ components:
         isPrimary:
           type: boolean
           description: Whether this is the account's primary device, the only one that links or unlinks devices.
-        createdAt:
-          type: string
-          format: date-time
 
     DeviceListResponse:
       type: object
@@ -1205,6 +1196,15 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/OneTimePreKey'
+
+    PreKeyBundleListResponse:
+      type: object
+      required: [bundles]
+      properties:
+        bundles:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreKeyBundleResponse'
 
     PreKeyBundleResponse:
       type: object

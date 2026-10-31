@@ -18,13 +18,28 @@ mod common;
 use common::TestApp;
 use obscura_server::proto::obscura::v1 as proto;
 use prost::Message as ProstMessage;
-use proto::send_message_response::{DeviceMismatch, ErrorCode};
+use proto::send_message_response::DeviceMismatch;
 use serde_json::json;
 use std::time::Duration;
 use uuid::Uuid;
 
-fn request(targets: &[(Uuid, Uuid)]) -> Vec<u8> {
-    request_to(&[], targets)
+fn request(recipients: &[(Uuid, &[Uuid])]) -> Vec<u8> {
+    proto::SendMessageRequest {
+        recipients: recipients
+            .iter()
+            .map(|(user_id, device_ids)| proto::send_message_request::Recipient {
+                user_id: user_id.as_bytes().to_vec(),
+                submissions: device_ids
+                    .iter()
+                    .map(|device_id| proto::send_message_request::Submission {
+                        device_id: device_id.as_bytes().to_vec(),
+                        message: b"payload".to_vec(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
+    .encode_to_vec()
 }
 
 async fn send_raw(
@@ -47,13 +62,9 @@ async fn send_raw(
     resp.bytes().await.unwrap()
 }
 
-async fn send(app: &TestApp, token: &str, targets: &[(Uuid, Uuid)]) -> proto::SendMessageResponse {
-    let body = send_raw(&app.client, &app.server_url, token, Uuid::new_v4(), request(targets)).await;
+async fn send(app: &TestApp, token: &str, recipients: &[(Uuid, &[Uuid])]) -> proto::SendMessageResponse {
+    let body = send_raw(&app.client, &app.server_url, token, Uuid::new_v4(), request(recipients)).await;
     proto::SendMessageResponse::decode(body).unwrap()
-}
-
-fn failure_codes(response: &proto::SendMessageResponse) -> Vec<(Vec<u8>, i32)> {
-    response.failed_submissions.iter().map(|f| (f.submission_id.clone(), f.error_code)).collect()
 }
 
 fn mismatch(user_id: Uuid, missing: &[Uuid]) -> DeviceMismatch {
@@ -76,10 +87,9 @@ async fn test_complete_device_set_is_accepted() {
     let bob1 = app.register_user(&bob_name).await;
     let bob2 = app.link_device(&bob1).await;
 
-    let response =
-        send(&app, &alice.token, &[(Uuid::new_v4(), bob1.device_id), (Uuid::new_v4(), bob2.device_id)]).await;
+    let response = send(&app, &alice.token, &[(bob1.user_id, &[bob1.device_id, bob2.device_id])]).await;
 
-    assert!(response.failed_submissions.is_empty());
+    assert!(response.invalid_device_ids.is_empty());
     assert!(response.device_mismatches.is_empty());
     app.assert_message_count(bob1.device_id, 1).await;
     app.assert_message_count(bob2.device_id, 1).await;
@@ -94,10 +104,9 @@ async fn test_missing_device_rejects_all_of_that_users_submissions() {
     let bob2 = app.link_device(&bob1).await;
     let bob3 = app.link_device(&bob1).await;
 
-    let submission = Uuid::new_v4();
-    let response = send(&app, &alice.token, &[(submission, bob1.device_id)]).await;
+    let response = send(&app, &alice.token, &[(bob1.user_id, &[bob1.device_id])]).await;
 
-    assert_eq!(failure_codes(&response), vec![(submission.as_bytes().to_vec(), ErrorCode::DeviceMismatch as i32)]);
+    assert!(response.invalid_device_ids.is_empty());
     assert_eq!(response.device_mismatches, vec![mismatch(bob1.user_id, &sorted(vec![bob2.device_id, bob3.device_id]))]);
     app.assert_message_count(bob1.device_id, 0).await;
 }
@@ -111,24 +120,29 @@ async fn test_self_sync_excludes_the_sending_device() {
     let bob = app.register_user(&common::generate_username("cd_bob")).await;
 
     let response =
-        send(&app, &alice1.token, &[(Uuid::new_v4(), alice2.device_id), (Uuid::new_v4(), bob.device_id)]).await;
-    assert!(response.failed_submissions.is_empty());
+        send(&app, &alice1.token, &[(alice1.user_id, &[alice2.device_id]), (bob.user_id, &[bob.device_id])]).await;
+    assert!(response.invalid_device_ids.is_empty());
     assert!(response.device_mismatches.is_empty());
     app.assert_message_count(alice2.device_id, 1).await;
     app.assert_message_count(bob.device_id, 1).await;
 
-    let response = send(&app, &alice2.token, &[(Uuid::new_v4(), alice1.device_id)]).await;
-    assert!(response.failed_submissions.is_empty());
+    let response = send(&app, &alice2.token, &[(alice1.user_id, &[alice1.device_id])]).await;
+    assert!(response.invalid_device_ids.is_empty());
     assert!(response.device_mismatches.is_empty());
     app.assert_message_count(alice1.device_id, 1).await;
 
-    let to_self = Uuid::new_v4();
-    let to_other = Uuid::new_v4();
-    let response = send(&app, &alice1.token, &[(to_self, alice1.device_id), (to_other, alice2.device_id)]).await;
-    assert_eq!(failure_codes(&response), vec![(to_self.as_bytes().to_vec(), ErrorCode::InvalidDevice as i32)]);
-    assert!(response.device_mismatches.is_empty(), "Targeting the sending device must not make a mismatch");
-    app.assert_message_count(alice1.device_id, 1).await;
-    app.assert_message_count(alice2.device_id, 2).await;
+    // Targeting the sending device itself is a structural error (400 Bad Request).
+    let resp = app
+        .client
+        .post(format!("{}/v1/messages", app.server_url))
+        .header("Authorization", format!("Bearer {}", alice1.token))
+        .header("Idempotency-Key", Uuid::new_v4().to_string())
+        .header("Content-Type", "application/x-protobuf")
+        .body(request(&[(alice1.user_id, &[alice1.device_id, alice2.device_id])]))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
 }
 
 #[tokio::test]
@@ -142,15 +156,14 @@ async fn test_mixed_batch_rejects_only_the_incomplete_user() {
     let carol1 = app.register_user(&carol_name).await;
     let carol2 = app.link_device(&carol1).await;
 
-    let to_bob = Uuid::new_v4();
     let response = send(
         &app,
         &alice.token,
-        &[(to_bob, bob2.device_id), (Uuid::new_v4(), carol1.device_id), (Uuid::new_v4(), carol2.device_id)],
+        &[(bob1.user_id, &[bob2.device_id]), (carol1.user_id, &[carol1.device_id, carol2.device_id])],
     )
     .await;
 
-    assert_eq!(failure_codes(&response), vec![(to_bob.as_bytes().to_vec(), ErrorCode::DeviceMismatch as i32)]);
+    assert!(response.invalid_device_ids.is_empty());
     assert_eq!(response.device_mismatches, vec![mismatch(bob1.user_id, &[bob1.device_id])]);
     app.assert_message_count(bob2.device_id, 0).await;
     app.assert_message_count(carol1.device_id, 1).await;
@@ -163,10 +176,10 @@ async fn test_unknown_device_fails_individually() {
     let alice = app.register_user(&common::generate_username("cd_alice")).await;
     let bob = app.register_user(&common::generate_username("cd_bob")).await;
 
-    let to_unknown = Uuid::new_v4();
-    let response = send(&app, &alice.token, &[(Uuid::new_v4(), bob.device_id), (to_unknown, Uuid::new_v4())]).await;
+    let unknown_device = Uuid::new_v4();
+    let response = send(&app, &alice.token, &[(bob.user_id, &[bob.device_id, unknown_device])]).await;
 
-    assert_eq!(failure_codes(&response), vec![(to_unknown.as_bytes().to_vec(), ErrorCode::InvalidDevice as i32)]);
+    assert_eq!(response.invalid_device_ids, vec![unknown_device.as_bytes().to_vec()]);
     assert!(response.device_mismatches.is_empty());
     app.assert_message_count(bob.device_id, 1).await;
 }
@@ -217,12 +230,11 @@ async fn test_device_added_during_send_is_not_silently_skipped() {
     });
     let registration_pid = backend_blocked_by(&app, holder_pid).await;
 
-    let submission = Uuid::new_v4();
     let sending = tokio::spawn({
         let client = app.client.clone();
         let server_url = app.server_url.clone();
         let token = alice.token.clone();
-        let body = request(&[(submission, bob.device_id)]);
+        let body = request(&[(bob.user_id, &[bob.device_id])]);
         async move { send_raw(&client, &server_url, &token, Uuid::new_v4(), body).await }
     });
     backend_blocked_by(&app, registration_pid).await;
@@ -230,7 +242,7 @@ async fn test_device_added_during_send_is_not_silently_skipped() {
 
     let new_device = Uuid::parse_str(registering.await.unwrap()["deviceId"].as_str().unwrap()).unwrap();
     let response = proto::SendMessageResponse::decode(sending.await.unwrap()).unwrap();
-    assert_eq!(failure_codes(&response), vec![(submission.as_bytes().to_vec(), ErrorCode::DeviceMismatch as i32)]);
+    assert!(response.invalid_device_ids.is_empty());
     assert_eq!(response.device_mismatches, vec![mismatch(bob.user_id, &[new_device])]);
     app.assert_message_count(bob.device_id, 0).await;
 }
@@ -242,20 +254,20 @@ async fn test_concurrent_sends_to_the_same_recipient_do_not_block_each_other() {
     let carol = app.register_user(&common::generate_username("cd_carol")).await;
     let bob = app.register_user(&common::generate_username("cd_bob")).await;
 
-    // An uncommitted message with the same submission id holds alice's send open after it took its locks.
-    let submission = Uuid::new_v4();
+    // An uncommitted message with the same idempotency_key holds alice's send open after it took its locks.
+    let held_key = Uuid::new_v4();
     let mut holder = app.pool.begin().await.unwrap();
     let holder_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *holder).await.unwrap();
     sqlx::query(
         r#"
-        INSERT INTO messages (sender_id, sender_device_id, device_id, submission_id, content, expires_at)
+        INSERT INTO messages (sender_id, sender_device_id, device_id, idempotency_key, content, expires_at)
         VALUES ($1, $2, $3, $4, 'held', NOW() + INTERVAL '1 day')
         "#,
     )
     .bind(alice.user_id)
     .bind(alice.device_id)
     .bind(bob.device_id)
-    .bind(submission)
+    .bind(held_key)
     .execute(&mut *holder)
     .await
     .unwrap();
@@ -264,22 +276,22 @@ async fn test_concurrent_sends_to_the_same_recipient_do_not_block_each_other() {
         let client = app.client.clone();
         let server_url = app.server_url.clone();
         let token = alice.token.clone();
-        let body = request(&[(submission, bob.device_id)]);
-        async move { send_raw(&client, &server_url, &token, Uuid::new_v4(), body).await }
+        let body = request(&[(bob.user_id, &[bob.device_id])]);
+        async move { send_raw(&client, &server_url, &token, held_key, body).await }
     });
     backend_blocked_by(&app, holder_pid).await;
 
     let response =
-        tokio::time::timeout(Duration::from_secs(5), send(&app, &carol.token, &[(Uuid::new_v4(), bob.device_id)]))
+        tokio::time::timeout(Duration::from_secs(5), send(&app, &carol.token, &[(bob.user_id, &[bob.device_id])]))
             .await
             .expect("a send must not wait for another send to the same recipient");
-    assert!(response.failed_submissions.is_empty());
+    assert!(response.invalid_device_ids.is_empty());
     assert!(response.device_mismatches.is_empty());
     app.assert_message_count(bob.device_id, 1).await;
 
     holder.rollback().await.unwrap();
     let response = proto::SendMessageResponse::decode(held_send.await.unwrap()).unwrap();
-    assert!(response.failed_submissions.is_empty());
+    assert!(response.invalid_device_ids.is_empty());
     assert!(response.device_mismatches.is_empty());
     app.assert_message_count(bob.device_id, 2).await;
 }
@@ -293,14 +305,14 @@ async fn test_idempotency_key_reuse_returns_the_cached_mismatch() {
     let bob2 = app.link_device(&bob1).await;
 
     let key = Uuid::new_v4();
-    let incomplete = request(&[(Uuid::new_v4(), bob1.device_id)]);
+    let incomplete = request(&[(bob1.user_id, &[bob1.device_id])]);
     let first = send_raw(&app.client, &app.server_url, &alice.token, key, incomplete).await;
     assert_eq!(
         proto::SendMessageResponse::decode(first.clone()).unwrap().device_mismatches,
         vec![mismatch(bob1.user_id, &[bob2.device_id])]
     );
 
-    let complete = request(&[(Uuid::new_v4(), bob1.device_id), (Uuid::new_v4(), bob2.device_id)]);
+    let complete = request(&[(bob1.user_id, &[bob1.device_id, bob2.device_id])]);
     let replay = send_raw(&app.client, &app.server_url, &alice.token, key, complete.clone()).await;
     assert_eq!(replay, first);
     app.assert_message_count(bob1.device_id, 0).await;
@@ -308,35 +320,10 @@ async fn test_idempotency_key_reuse_returns_the_cached_mismatch() {
 
     let retry = send_raw(&app.client, &app.server_url, &alice.token, Uuid::new_v4(), complete).await;
     let retry = proto::SendMessageResponse::decode(retry).unwrap();
-    assert!(retry.failed_submissions.is_empty());
+    assert!(retry.invalid_device_ids.is_empty());
     assert!(retry.device_mismatches.is_empty());
     app.assert_message_count(bob1.device_id, 1).await;
     app.assert_message_count(bob2.device_id, 1).await;
-}
-
-fn request_to(recipients: &[Uuid], targets: &[(Uuid, Uuid)]) -> Vec<u8> {
-    proto::SendMessageRequest {
-        recipient_user_ids: recipients.iter().map(|id| id.as_bytes().to_vec()).collect(),
-        messages: targets
-            .iter()
-            .map(|(submission_id, device_id)| proto::send_message_request::Submission {
-                submission_id: submission_id.as_bytes().to_vec(),
-                device_id: device_id.as_bytes().to_vec(),
-                message: b"payload".to_vec(),
-            })
-            .collect(),
-    }
-    .encode_to_vec()
-}
-
-async fn send_to(
-    app: &TestApp,
-    token: &str,
-    recipients: &[Uuid],
-    targets: &[(Uuid, Uuid)],
-) -> proto::SendMessageResponse {
-    let body = send_raw(&app.client, &app.server_url, token, Uuid::new_v4(), request_to(recipients, targets)).await;
-    proto::SendMessageResponse::decode(body).unwrap()
 }
 
 #[tokio::test]
@@ -346,9 +333,9 @@ async fn test_a_listed_recipient_with_no_targets_is_checked() {
     let bob = app.register_user(&common::generate_username("cd_bob")).await;
     let bob2 = app.link_device(&bob).await;
 
-    let response = send_to(&app, &alice.token, &[bob.user_id], &[]).await;
+    let response = send(&app, &alice.token, &[(bob.user_id, &[])]).await;
 
-    assert!(response.failed_submissions.is_empty());
+    assert!(response.invalid_device_ids.is_empty());
     assert_eq!(response.device_mismatches, vec![mismatch(bob.user_id, &sorted(vec![bob.device_id, bob2.device_id]))]);
 }
 
@@ -357,11 +344,11 @@ async fn test_listing_the_sender_reveals_its_unknown_devices() {
     let app = TestApp::spawn().await;
     let alice = app.register_user(&common::generate_username("cd_alice")).await;
 
-    let alone = send_to(&app, &alice.token, &[alice.user_id], &[]).await;
+    let alone = send(&app, &alice.token, &[(alice.user_id, &[])]).await;
     assert!(alone.device_mismatches.is_empty(), "the sending device alone is complete");
 
     let alice2 = app.link_device(&alice).await;
-    let response = send_to(&app, &alice.token, &[alice.user_id], &[]).await;
+    let response = send(&app, &alice.token, &[(alice.user_id, &[])]).await;
     assert_eq!(response.device_mismatches, vec![mismatch(alice.user_id, &[alice2.device_id])]);
 }
 
@@ -370,22 +357,22 @@ async fn test_a_listed_recipient_whose_known_devices_are_gone_reports_the_curren
     let app = TestApp::spawn().await;
     let alice = app.register_user(&common::generate_username("cd_alice")).await;
     let bob = app.register_user(&common::generate_username("cd_bob")).await;
-    let stale = (Uuid::new_v4(), Uuid::new_v4());
+    let stale = Uuid::new_v4();
 
-    let response = send_to(&app, &alice.token, &[bob.user_id], &[stale]).await;
+    let response = send(&app, &alice.token, &[(bob.user_id, &[stale])]).await;
 
-    assert_eq!(failure_codes(&response), vec![(stale.0.as_bytes().to_vec(), ErrorCode::InvalidDevice as i32)]);
+    assert_eq!(response.invalid_device_ids, vec![stale.as_bytes().to_vec()]);
     assert_eq!(response.device_mismatches, vec![mismatch(bob.user_id, &[bob.device_id])]);
 }
 
 #[tokio::test]
-async fn test_too_many_recipient_user_ids_is_rejected_with_413() {
+async fn test_too_many_recipients_is_rejected_with_413() {
     let mut config = common::get_test_config();
     config.messaging.send_batch_limit = 2;
     let app = TestApp::spawn_with_config(config).await;
     let alice = app.register_user(&common::generate_username("cd_limit")).await;
 
-    let body = request_to(&[Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()], &[]);
+    let body = request(&[(Uuid::new_v4(), &[]), (Uuid::new_v4(), &[]), (Uuid::new_v4(), &[])]);
     let resp = app
         .client
         .post(format!("{}/v1/messages", app.server_url))

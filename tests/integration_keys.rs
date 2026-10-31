@@ -138,14 +138,14 @@ async fn test_key_limit_enforced() {
 
     let resp = app
         .client
-        .post(format!("{}/v1/devices/keys", app.server_url))
+        .post(format!("{}/v1/keys", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
         .json(&refill_payload)
         .send()
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 204);
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_time_pre_keys WHERE device_id = $1")
         .bind(user.device_id)
@@ -163,18 +163,18 @@ async fn test_key_rotation_monotonic_check() {
 
     // Rotate to 11
     let (spk_pub_11, spk_sig_11) = common::generate_signed_pre_key(&user.identity_key);
-    let resp_11 = app.client.post(format!("{}/v1/devices/keys", app.server_url))
+    let resp_11 = app.client.post(format!("{}/v1/keys", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
         .json(&json!({
             "registrationId": 123,
             "signedPreKey": { "keyId": 11, "publicKey": STANDARD.encode(&spk_pub_11), "signature": STANDARD.encode(&spk_sig_11) },
             "oneTimePreKeys": []
         })).send().await.unwrap();
-    assert_eq!(resp_11.status(), 200);
+    assert_eq!(resp_11.status(), 204);
 
     // Replay 10 (Fail - ID is smaller than current max)
     let (spk_pub_10, spk_sig_10) = common::generate_signed_pre_key(&user.identity_key);
-    let resp_10 = app.client.post(format!("{}/v1/devices/keys", app.server_url))
+    let resp_10 = app.client.post(format!("{}/v1/keys", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
         .json(&json!({
             "registrationId": 123,
@@ -192,7 +192,7 @@ async fn test_key_rotation_cleanup() {
 
     // Rotate to ID 10
     let (spk_pub, spk_sig) = common::generate_signed_pre_key(&user.identity_key);
-    app.client.post(format!("{}/v1/devices/keys", app.server_url))
+    app.client.post(format!("{}/v1/keys", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
         .json(&json!({
             "registrationId": 123,
@@ -241,7 +241,7 @@ async fn test_upload_keys_verified_against_account_identity() {
     let other_identity = common::generate_signing_key();
     let resp = app
         .client
-        .post(format!("{}/v1/devices/keys", app.server_url))
+        .post(format!("{}/v1/keys", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
         .json(&upload(&other_identity, 2))
         .send()
@@ -251,13 +251,13 @@ async fn test_upload_keys_verified_against_account_identity() {
 
     let resp = app
         .client
-        .post(format!("{}/v1/devices/keys", app.server_url))
+        .post(format!("{}/v1/keys", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
         .json(&upload(&user.identity_key, 2))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 204);
 }
 
 #[tokio::test]
@@ -277,7 +277,7 @@ async fn test_upload_keys_bad_signature() {
 
     let resp = app
         .client
-        .post(format!("{}/v1/devices/keys", app.server_url))
+        .post(format!("{}/v1/keys", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
         .json(&payload)
         .send()
@@ -301,14 +301,15 @@ async fn test_fetch_keys_multiple_devices() {
     // 3. Fetch keys with the first device's token
     let fetch_resp = app
         .client
-        .get(format!("{}/v1/users/{}", app.server_url, user.user_id))
+        .get(format!("{}/v1/keys/{}", app.server_url, user.user_id))
         .header("Authorization", format!("Bearer {}", user.token))
         .send()
         .await
         .unwrap();
     assert_eq!(fetch_resp.status(), 200);
 
-    let bundles: Vec<serde_json::Value> = fetch_resp.json().await.unwrap();
+    let body: serde_json::Value = fetch_resp.json().await.unwrap();
+    let bundles = body["bundles"].as_array().expect("bundles array should be present");
 
     // We expect exactly 2 bundles, one for each device
     assert_eq!(bundles.len(), 2, "Should return an array of 2 bundles");
@@ -343,7 +344,7 @@ async fn test_fetch_one_device_bundle_consumes_only_that_device() {
     };
     let fetch = |owner: uuid::Uuid, device: uuid::Uuid, token: String| {
         app.client
-            .get(format!("{}/v1/users/{owner}/devices/{device}", app.server_url))
+            .get(format!("{}/v1/keys/{owner}/devices/{device}", app.server_url))
             .header("Authorization", format!("Bearer {token}"))
             .send()
     };

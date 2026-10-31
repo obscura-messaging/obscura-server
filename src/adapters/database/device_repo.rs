@@ -30,7 +30,7 @@ impl DeviceRepository {
             r#"
             INSERT INTO devices (user_id, name, registration_id, is_primary)
             VALUES ($1, $2, $3, $4)
-            RETURNING id, user_id, name, is_primary, created_at
+            RETURNING id, user_id, name, is_primary
             "#,
         )
         .bind(user_id)
@@ -50,7 +50,7 @@ impl DeviceRepository {
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn find_by_user(&self, conn: &mut PgConnection, user_id: Uuid) -> Result<Vec<Device>> {
         let records = sqlx::query_as::<_, DeviceRecord>(
-            "SELECT id, user_id, name, is_primary, created_at FROM devices WHERE user_id = $1 ORDER BY created_at ASC",
+            "SELECT id, user_id, name, is_primary FROM devices WHERE user_id = $1 ORDER BY created_at ASC",
         )
         .bind(user_id)
         .fetch_all(conn)
@@ -99,7 +99,7 @@ impl DeviceRepository {
         user_id: Uuid,
     ) -> Result<Option<Device>> {
         let record = sqlx::query_as::<_, DeviceRecord>(
-            "SELECT id, user_id, name, is_primary, created_at FROM devices WHERE id = $1 AND user_id = $2",
+            "SELECT id, user_id, name, is_primary FROM devices WHERE id = $1 AND user_id = $2",
         )
         .bind(device_id)
         .bind(user_id)

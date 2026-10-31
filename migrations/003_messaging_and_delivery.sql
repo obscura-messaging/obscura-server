@@ -4,12 +4,12 @@ CREATE TABLE messages (
     -- No foreign key: recipients still need the sender device id after the sender device is deleted.
     sender_device_id UUID NOT NULL,
     device_id UUID NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-    submission_id UUID NOT NULL,
+    idempotency_key UUID NOT NULL,
     content BYTEA NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at TIMESTAMPTZ NOT NULL,
-    -- Deduplication constraint: A sending device cannot send the same submission_id twice.
-    UNIQUE (sender_device_id, submission_id)
+    -- Deduplication constraint: A sending device cannot insert duplicate messages for the same idempotency_key.
+    UNIQUE (sender_device_id, device_id, idempotency_key)
 );
 
 CREATE INDEX idx_messages_fetch ON messages(device_id, created_at);

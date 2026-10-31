@@ -159,7 +159,7 @@ impl AuthService {
         let refresh_hash = hash_opaque_token(&refresh_token);
         self.refresh_repo.create(conn, device_id, &refresh_hash, self.config.refresh_token_ttl_days).await?;
 
-        Ok(AuthSession { token, refresh_token, expires_at, device_id })
+        Ok(AuthSession { token, refresh_token, expires_at, user_id, device_id })
     }
 
     /// Refreshes a session.
@@ -186,7 +186,7 @@ impl AuthService {
         tracing::info!("Tokens rotated successfully");
         self.metrics.refresh.add(1, &[]);
 
-        Ok(AuthSession { token, refresh_token: new_refresh_token, expires_at, device_id })
+        Ok(AuthSession { token, refresh_token: new_refresh_token, expires_at, user_id, device_id })
     }
 
     fn issue_access_token(&self, user_id: Uuid, device_id: Uuid) -> Result<(String, i64)> {
@@ -197,15 +197,14 @@ impl AuthService {
         Ok((jwt.0, i64::try_from(exp).map_err(|_| AppError::Internal)?))
     }
 
-    /// Logs out a user by deleting their refresh token.
+    /// Logs out a device by deleting its refresh tokens.
     ///
     /// # Errors
-    /// Returns `AppError::Database` if the token cannot be deleted.
-    #[tracing::instrument(err, skip(self, refresh_token), fields(user.id = %user_id))]
-    pub(crate) async fn logout(&self, user_id: Uuid, refresh_token: String) -> Result<()> {
+    /// Returns `AppError::Database` if the tokens cannot be deleted.
+    #[tracing::instrument(err, skip(self), fields(device.id = %device_id))]
+    pub(crate) async fn logout(&self, device_id: Uuid) -> Result<()> {
         let mut conn = self.pool.acquire().await?;
-        let hash = hash_opaque_token(&refresh_token);
-        self.refresh_repo.delete_owned(&mut conn, &hash, user_id).await?;
+        self.refresh_repo.delete_for_device(&mut conn, device_id).await?;
         self.metrics.logout.add(1, &[]);
         Ok(())
     }

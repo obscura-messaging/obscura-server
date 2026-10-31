@@ -78,7 +78,7 @@ pub(crate) async fn approve_link_session(
     body: Bytes,
 ) -> Result<impl IntoResponse> {
     state.device_service.approve_link_session(auth.user_id, auth.is_primary, &id, &body).await?;
-    Ok(StatusCode::OK)
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Returns the provisioning message of an approved link session, or 204 if it is not approved yet.
@@ -119,7 +119,7 @@ pub(crate) async fn create_device(
 pub(crate) async fn list_devices(auth_user: AuthUser, State(state): State<AppState>) -> Result<impl IntoResponse> {
     let devices = state.device_service.list_devices(auth_user.user_id).await?;
 
-    let response = DeviceListResponse { devices: devices.into_iter().map(device_to_response).collect() };
+    let response = DeviceListResponse { devices: devices.into_iter().map(DeviceResponse::from).collect() };
 
     Ok(Json(response))
 }
@@ -135,14 +135,5 @@ pub(crate) async fn delete_device(
     Path(device_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     state.device_service.delete_device(auth.user_id, auth.device_id, auth.is_primary, device_id).await?;
-    Ok(StatusCode::OK)
-}
-
-fn device_to_response(d: crate::domain::device::Device) -> DeviceResponse {
-    DeviceResponse {
-        device_id: d.id.to_string(),
-        name: d.name,
-        is_primary: d.is_primary,
-        created_at: d.created_at.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
-    }
+    Ok(StatusCode::NO_CONTENT)
 }

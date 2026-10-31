@@ -12,9 +12,9 @@ sequenceDiagram
 
     A->>S: POST /v1/users with keys (creates account + primary device, returns JWT)
     B->>S: same (additional devices link via /v1/link-sessions approved by the primary)
-    A->>S: GET /v1/users/{bob} (or /devices/{id}): bundle(s) with shared account identity, consumes a one-time prekey
+    A->>S: GET /v1/keys/{bob} (or /devices/{id}): bundle(s) with shared account identity, consumes a one-time prekey
     A->>A: X3DH, encrypt once per device
-    A->>S: POST /v1/messages (protobuf, recipient_user_ids + submissions, Idempotency-Key)
+    A->>S: POST /v1/messages (protobuf, recipients + submissions, Idempotency-Key)
     S->>S: lock recipient device sets, enforce complete delivery, queue per device, publish on Valkey
     S-->>B: EnvelopeBatch over /v1/gateway, if connected
     S-->>B: FCM wake-up after the push delay, unless B connected or acked first
@@ -25,7 +25,7 @@ sequenceDiagram
 
 | Component | Code | Role |
 |---|---|---|
-| REST API | `src/api` | Accounts (`/v1/account/reset`), devices, link sessions (`/v1/link-sessions`), keys, sending, attachments, push tokens. `/openapi.yaml` serves the spec. |
+| REST API | `src/api` | Users (`/v1/users`, `/v1/users/reset`), session (`/v1/session*`), devices (`/v1/devices`), link sessions (`/v1/link-sessions`), keys (`/v1/keys*`), sending, attachments, push token (`/v1/push-token`). `/openapi.yaml` serves the spec. |
 | Gateway | `src/services/gateway` | One WebSocket per device, opened with a single-use ticket. Pumps queued messages in batches and batches acks into deletes. |
 | Management | port 9090 | `/livez`; `/readyz` checks Postgres, the storage bucket and Valkey. |
 | PostgreSQL | `migrations/` | Users (with account identity), devices, link sessions, keys, message queue, attachment metadata, push tokens, refresh tokens. |

@@ -125,6 +125,12 @@ mod tests {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PreKeyBundleListResponse {
+    pub bundles: Vec<PreKeyBundleResponse>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PreKeyBundleResponse {
     pub device_id: String,
     pub registration_id: i32,

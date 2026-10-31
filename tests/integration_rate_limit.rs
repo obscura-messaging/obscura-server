@@ -35,7 +35,7 @@ async fn test_rate_limit_isolation() {
     for i in 1..=2 {
         let resp = app
             .client
-            .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+            .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
             .header("Authorization", format!("Bearer {}", user.token))
             .header("X-Forwarded-For", user_a)
             .send()
@@ -46,7 +46,7 @@ async fn test_rate_limit_isolation() {
 
     let resp_a = app
         .client
-        .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+        .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
         .header("Authorization", format!("Bearer {}", user.token))
         .header("X-Forwarded-For", user_a)
         .send()
@@ -56,7 +56,7 @@ async fn test_rate_limit_isolation() {
 
     let resp_b = app
         .client
-        .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+        .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
         .header("Authorization", format!("Bearer {}", user.token))
         .header("X-Forwarded-For", user_b)
         .send()
@@ -78,7 +78,7 @@ async fn test_rate_limit_proxy_chain() {
     for _ in 0..2 {
         let resp = app
             .client
-            .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+            .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
             .header("Authorization", format!("Bearer {}", user.token))
             .header("X-Forwarded-For", chain)
             .send()
@@ -89,7 +89,7 @@ async fn test_rate_limit_proxy_chain() {
 
     let resp = app
         .client
-        .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+        .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
         .header("Authorization", format!("Bearer {}", user.token))
         .header("X-Forwarded-For", "different.spoof, 2.2.2.2")
         .send()
@@ -115,7 +115,7 @@ async fn test_rate_limit_concurrency() {
         let token = user.token.clone();
         tasks.push(tokio::spawn(async move {
             let ip = format!("10.10.10.{i}");
-            c.get(format!("{}/v1/users/{}", url, Uuid::new_v4()))
+            c.get(format!("{}/v1/keys/{}", url, Uuid::new_v4()))
                 .header("Authorization", format!("Bearer {token}"))
                 .header("X-Forwarded-For", ip)
                 .send()
@@ -141,7 +141,7 @@ async fn test_rate_limit_fallback_to_peer_ip() {
     for _ in 0..2 {
         let resp = app
             .client
-            .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+            .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
             .header("Authorization", format!("Bearer {}", user.token))
             .send()
             .await
@@ -150,7 +150,7 @@ async fn test_rate_limit_fallback_to_peer_ip() {
     }
     let resp = app
         .client
-        .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+        .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
         .header("Authorization", format!("Bearer {}", user.token))
         .send()
         .await
@@ -171,7 +171,7 @@ async fn test_rate_limit_spoofing_protection() {
 
     let _ = app
         .client
-        .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+        .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
         .header("Authorization", format!("Bearer {}", user.token))
         .header("X-Forwarded-For", format!("{spoofed_ip}, {real_attacker_ip}"))
         .send()
@@ -180,7 +180,7 @@ async fn test_rate_limit_spoofing_protection() {
 
     let resp = app
         .client
-        .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+        .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
         .header("Authorization", format!("Bearer {}", user.token))
         .header("X-Forwarded-For", format!("9.9.9.9, {real_attacker_ip}"))
         .send()
@@ -195,7 +195,7 @@ async fn test_rate_limit_spoofing_protection() {
 
     let resp_ok = app
         .client
-        .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+        .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
         .header("Authorization", format!("Bearer {}", user.token))
         .header("X-Forwarded-For", spoofed_ip)
         .send()
@@ -230,7 +230,7 @@ async fn test_rate_limit_tiers() {
     for _ in 0..5 {
         let resp = app
             .client
-            .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+            .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
             .header("Authorization", format!("Bearer {}", user.token))
             .header("X-Forwarded-For", ip)
             .send()
@@ -257,7 +257,7 @@ async fn test_rate_limit_recovery() {
 
     let _ = app
         .client
-        .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+        .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
         .header("Authorization", format!("Bearer {}", user.token))
         .header("X-Forwarded-For", ip)
         .send()
@@ -266,7 +266,7 @@ async fn test_rate_limit_recovery() {
 
     let resp = app
         .client
-        .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+        .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
         .header("Authorization", format!("Bearer {}", user.token))
         .header("X-Forwarded-For", ip)
         .send()
@@ -278,7 +278,7 @@ async fn test_rate_limit_recovery() {
 
     let resp_ok = app
         .client
-        .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+        .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
         .header("Authorization", format!("Bearer {}", user.token))
         .header("X-Forwarded-For", ip)
         .send()
@@ -298,7 +298,7 @@ async fn test_rate_limit_retry_after_header() {
     let ip = "7.7.7.7";
 
     app.client
-        .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+        .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
         .header("Authorization", format!("Bearer {}", user.token))
         .header("X-Forwarded-For", ip)
         .send()
@@ -307,7 +307,7 @@ async fn test_rate_limit_retry_after_header() {
 
     let resp = app
         .client
-        .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+        .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
         .header("Authorization", format!("Bearer {}", user.token))
         .header("X-Forwarded-For", ip)
         .send()
@@ -329,7 +329,7 @@ async fn test_rate_limit_retry_after_header() {
     tokio::time::sleep(Duration::from_secs(retry_after)).await;
     let retried = app
         .client
-        .get(format!("{}/v1/users/{}", app.server_url, Uuid::new_v4()))
+        .get(format!("{}/v1/keys/{}", app.server_url, Uuid::new_v4()))
         .header("Authorization", format!("Bearer {}", user.token))
         .header("X-Forwarded-For", ip)
         .send()

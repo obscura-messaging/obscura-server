@@ -128,15 +128,16 @@ async fn test_ack_batching_behavior() {
 async fn test_send_message_recipient_not_found() {
     let app = TestApp::spawn().await;
     let user_a = app.register_user(&common::generate_username("alice_404")).await;
-    let bad_id = Uuid::new_v4();
+    let bad_user = Uuid::new_v4();
+    let bad_device = Uuid::new_v4();
 
-    let submission_id = Uuid::new_v4();
     let request = proto::SendMessageRequest {
-        recipient_user_ids: Vec::new(),
-        messages: vec![proto::send_message_request::Submission {
-            submission_id: submission_id.as_bytes().to_vec(),
-            device_id: bad_id.as_bytes().to_vec(),
-            message: b"Hello".to_vec(),
+        recipients: vec![proto::send_message_request::Recipient {
+            user_id: bad_user.as_bytes().to_vec(),
+            submissions: vec![proto::send_message_request::Submission {
+                device_id: bad_device.as_bytes().to_vec(),
+                message: b"Hello".to_vec(),
+            }],
         }],
     };
     let mut buf = Vec::new();
@@ -156,12 +157,8 @@ async fn test_send_message_recipient_not_found() {
     assert_eq!(resp.status(), 200);
     let body = resp.bytes().await.unwrap();
     let response = proto::SendMessageResponse::decode(body).unwrap();
-    assert_eq!(response.failed_submissions.len(), 1);
-    assert_eq!(response.failed_submissions[0].submission_id, submission_id.as_bytes().to_vec());
-    assert_eq!(
-        response.failed_submissions[0].error_code,
-        proto::send_message_response::ErrorCode::InvalidDevice as i32
-    );
+    assert_eq!(response.invalid_device_ids, vec![bad_device.as_bytes().to_vec()]);
+    assert!(response.device_mismatches.is_empty());
 }
 
 #[tokio::test]
@@ -193,11 +190,12 @@ async fn test_message_idempotency() {
     let content = b"Idempotent Hello".to_vec();
 
     let request = proto::SendMessageRequest {
-        recipient_user_ids: Vec::new(),
-        messages: vec![proto::send_message_request::Submission {
-            submission_id: Uuid::new_v4().as_bytes().to_vec(),
-            device_id: user_b.device_id.as_bytes().to_vec(),
-            message: content.clone(),
+        recipients: vec![proto::send_message_request::Recipient {
+            user_id: user_b.user_id.as_bytes().to_vec(),
+            submissions: vec![proto::send_message_request::Submission {
+                device_id: user_b.device_id.as_bytes().to_vec(),
+                message: content.clone(),
+            }],
         }],
     };
     let mut buf = Vec::new();
@@ -246,32 +244,29 @@ async fn test_batch_partial_success() {
     let user_a = app.register_user(&common::generate_username("alice_mix")).await;
     let user_b = app.register_user(&common::generate_username("bob_mix")).await;
     let user_c = app.register_user(&common::generate_username("charlie_mix")).await;
-    let bad_id = Uuid::new_v4();
-
-    let submission_id_b = Uuid::new_v4();
-    let submission_id_bad = Uuid::new_v4();
-    let submission_id_c = Uuid::new_v4();
+    let bad_device = Uuid::new_v4();
 
     let request = proto::SendMessageRequest {
-        recipient_user_ids: Vec::new(),
-        messages: vec![
-            // 1. Valid (Bob)
-            proto::send_message_request::Submission {
-                submission_id: submission_id_b.as_bytes().to_vec(),
-                device_id: user_b.device_id.as_bytes().to_vec(),
-                message: b"Msg for Bob".to_vec(),
+        recipients: vec![
+            proto::send_message_request::Recipient {
+                user_id: user_b.user_id.as_bytes().to_vec(),
+                submissions: vec![
+                    proto::send_message_request::Submission {
+                        device_id: user_b.device_id.as_bytes().to_vec(),
+                        message: b"Msg for Bob".to_vec(),
+                    },
+                    proto::send_message_request::Submission {
+                        device_id: bad_device.as_bytes().to_vec(),
+                        message: b"Msg for Nowhere".to_vec(),
+                    },
+                ],
             },
-            // 2. Invalid (Bad ID)
-            proto::send_message_request::Submission {
-                submission_id: submission_id_bad.as_bytes().to_vec(),
-                device_id: bad_id.as_bytes().to_vec(),
-                message: b"Msg for Nowhere".to_vec(),
-            },
-            // 3. Valid (Charlie)
-            proto::send_message_request::Submission {
-                submission_id: submission_id_c.as_bytes().to_vec(),
-                device_id: user_c.device_id.as_bytes().to_vec(),
-                message: b"Msg for Charlie".to_vec(),
+            proto::send_message_request::Recipient {
+                user_id: user_c.user_id.as_bytes().to_vec(),
+                submissions: vec![proto::send_message_request::Submission {
+                    device_id: user_c.device_id.as_bytes().to_vec(),
+                    message: b"Msg for Charlie".to_vec(),
+                }],
             },
         ],
     };
@@ -293,13 +288,9 @@ async fn test_batch_partial_success() {
     let body = resp.bytes().await.unwrap();
     let response = proto::SendMessageResponse::decode(body).unwrap();
 
-    // Verify Response: Should list ONLY the failed message
-    assert_eq!(response.failed_submissions.len(), 1);
-    assert_eq!(response.failed_submissions[0].submission_id, submission_id_bad.as_bytes().to_vec());
-    assert_eq!(
-        response.failed_submissions[0].error_code,
-        proto::send_message_response::ErrorCode::InvalidDevice as i32
-    );
+    // Verify Response: Should list ONLY the invalid device
+    assert_eq!(response.invalid_device_ids, vec![bad_device.as_bytes().to_vec()]);
+    assert!(response.device_mismatches.is_empty());
 
     // Verify Delivery: Bob and Charlie should have messages
     app.assert_message_count(user_b.device_id, 1).await;
@@ -311,7 +302,7 @@ async fn test_batch_empty() {
     let app = TestApp::spawn().await;
     let user = app.register_user(&common::generate_username("empty")).await;
 
-    let request = proto::SendMessageRequest { recipient_user_ids: Vec::new(), messages: vec![] };
+    let request = proto::SendMessageRequest { recipients: vec![] };
     let mut buf = Vec::new();
     request.encode(&mut buf).unwrap();
 
@@ -329,7 +320,8 @@ async fn test_batch_empty() {
     assert_eq!(resp.status(), 200);
     let body = resp.bytes().await.unwrap();
     let response = proto::SendMessageResponse::decode(body).unwrap();
-    assert!(response.failed_submissions.is_empty());
+    assert!(response.invalid_device_ids.is_empty());
+    assert!(response.device_mismatches.is_empty());
 }
 
 #[tokio::test]
@@ -340,16 +332,20 @@ async fn test_batch_too_large() {
     let app = TestApp::spawn_with_config(config).await;
     let user = app.register_user(&common::generate_username("limit")).await;
 
-    let mut messages = Vec::new();
+    let mut submissions = Vec::new();
     for _ in 0..6 {
-        messages.push(proto::send_message_request::Submission {
-            submission_id: Uuid::new_v4().as_bytes().to_vec(),
-            device_id: user.device_id.as_bytes().to_vec(),
+        submissions.push(proto::send_message_request::Submission {
+            device_id: Uuid::new_v4().as_bytes().to_vec(),
             message: b"Msg".to_vec(),
         });
     }
 
-    let request = proto::SendMessageRequest { recipient_user_ids: Vec::new(), messages };
+    let request = proto::SendMessageRequest {
+        recipients: vec![proto::send_message_request::Recipient {
+            user_id: Uuid::new_v4().as_bytes().to_vec(),
+            submissions,
+        }],
+    };
     let mut buf = Vec::new();
     request.encode(&mut buf).unwrap();
 
@@ -463,11 +459,12 @@ async fn test_send_message_invalid_uuid_bytes() {
     let user = app.register_user(&common::generate_username("malformed_bytes")).await;
 
     let request = proto::SendMessageRequest {
-        recipient_user_ids: Vec::new(),
-        messages: vec![proto::send_message_request::Submission {
-            submission_id: Uuid::new_v4().as_bytes().to_vec(), // Valid
-            device_id: vec![4, 5, 6],                          // Invalid length
-            message: b"Hello".to_vec(),
+        recipients: vec![proto::send_message_request::Recipient {
+            user_id: Uuid::new_v4().as_bytes().to_vec(),
+            submissions: vec![proto::send_message_request::Submission {
+                device_id: vec![4, 5, 6], // Invalid length
+                message: b"Hello".to_vec(),
+            }],
         }],
     };
     let mut buf = Vec::new();
@@ -484,16 +481,7 @@ async fn test_send_message_invalid_uuid_bytes() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200);
-    let body = resp.bytes().await.unwrap();
-    let response = proto::SendMessageResponse::decode(body).unwrap();
-
-    assert_eq!(response.failed_submissions.len(), 1);
-    assert_eq!(response.failed_submissions[0].error_message, "Invalid device_id UUID bytes (expected 16)");
-    assert_eq!(
-        response.failed_submissions[0].error_code,
-        proto::send_message_response::ErrorCode::MalformedDeviceId as i32
-    );
+    assert_eq!(resp.status(), 400);
 }
 
 #[tokio::test]
@@ -522,55 +510,18 @@ async fn test_ack_invalid_uuid_bytes() {
 }
 
 #[tokio::test]
-async fn test_send_message_malformed_submission_id() {
-    let app = TestApp::spawn().await;
-    let user = app.register_user(&common::generate_username("malformed_sub")).await;
-    let recipient = app.register_user(&common::generate_username("recipient_sub")).await;
-
-    let request = proto::SendMessageRequest {
-        recipient_user_ids: Vec::new(),
-        messages: vec![proto::send_message_request::Submission {
-            submission_id: vec![1, 2, 3], // Invalid length
-            device_id: recipient.device_id.as_bytes().to_vec(),
-            message: b"Hello".to_vec(),
-        }],
-    };
-    let mut buf = Vec::new();
-    request.encode(&mut buf).unwrap();
-
-    let resp = app
-        .client
-        .post(format!("{}/v1/messages", app.server_url))
-        .header("Authorization", format!("Bearer {}", user.token))
-        .header("Idempotency-Key", Uuid::new_v4().to_string())
-        .header("Content-Type", "application/x-protobuf")
-        .body(buf)
-        .send()
-        .await
-        .unwrap();
-
-    let body = resp.bytes().await.unwrap();
-    let response = proto::SendMessageResponse::decode(body).unwrap();
-
-    assert_eq!(response.failed_submissions.len(), 1);
-    assert_eq!(
-        response.failed_submissions[0].error_code,
-        proto::send_message_response::ErrorCode::MalformedSubmissionId as i32
-    );
-}
-
-#[tokio::test]
 async fn test_send_message_missing_payload() {
     let app = TestApp::spawn().await;
     let user = app.register_user(&common::generate_username("missing_payload")).await;
     let recipient = app.register_user(&common::generate_username("recipient_payload")).await;
 
     let request = proto::SendMessageRequest {
-        recipient_user_ids: Vec::new(),
-        messages: vec![proto::send_message_request::Submission {
-            submission_id: Uuid::new_v4().as_bytes().to_vec(),
-            device_id: recipient.device_id.as_bytes().to_vec(),
-            message: Vec::new(), // Missing payload
+        recipients: vec![proto::send_message_request::Recipient {
+            user_id: recipient.user_id.as_bytes().to_vec(),
+            submissions: vec![proto::send_message_request::Submission {
+                device_id: recipient.device_id.as_bytes().to_vec(),
+                message: Vec::new(), // Missing payload
+            }],
         }],
     };
     let mut buf = Vec::new();
@@ -587,14 +538,7 @@ async fn test_send_message_missing_payload() {
         .await
         .unwrap();
 
-    let body = resp.bytes().await.unwrap();
-    let response = proto::SendMessageResponse::decode(body).unwrap();
-
-    assert_eq!(response.failed_submissions.len(), 1);
-    assert_eq!(
-        response.failed_submissions[0].error_code,
-        proto::send_message_response::ErrorCode::MessageMissing as i32
-    );
+    assert_eq!(resp.status(), 400);
 }
 
 #[tokio::test]

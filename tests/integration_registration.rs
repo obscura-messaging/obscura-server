@@ -47,7 +47,7 @@ async fn test_register_flow() {
     });
 
     let resp_login =
-        app.client.post(format!("{}/v1/sessions", app.server_url)).json(&login_payload).send().await.unwrap();
+        app.client.post(format!("{}/v1/session", app.server_url)).json(&login_payload).send().await.unwrap();
 
     assert_eq!(resp_login.status(), StatusCode::OK);
 
@@ -59,7 +59,7 @@ async fn test_register_flow() {
     // Step 3: Fetch Keys (should succeed using user_id)
     let resp_keys = app
         .client
-        .get(format!("{}/v1/users/{}", app.server_url, user_id))
+        .get(format!("{}/v1/keys/{}", app.server_url, user_id))
         .header("Authorization", format!("Bearer {device_token}"))
         .send()
         .await

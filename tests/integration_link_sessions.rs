@@ -114,7 +114,7 @@ async fn test_approval_requires_the_same_users_primary() {
     assert_eq!(app.approve_link_session(&stranger.token, &id, b"x").await, StatusCode::NOT_FOUND);
     assert_eq!(app.approve_link_session(&primary.token, "unknown", b"x").await, StatusCode::NOT_FOUND);
 
-    assert_eq!(app.approve_link_session(&primary.token, &id, b"x").await, StatusCode::OK);
+    assert_eq!(app.approve_link_session(&primary.token, &id, b"x").await, StatusCode::NO_CONTENT);
     assert_eq!(app.approve_link_session(&primary.token, &id, b"again").await, StatusCode::CONFLICT);
 }
 
@@ -125,7 +125,7 @@ async fn test_body_size_cap() {
     let id = app.create_link_session(&primary.username).await;
 
     assert_eq!(app.approve_link_session(&primary.token, &id, &[7; 64 * 1024 + 1]).await, StatusCode::PAYLOAD_TOO_LARGE);
-    assert_eq!(app.approve_link_session(&primary.token, &id, &[7; 64 * 1024]).await, StatusCode::OK);
+    assert_eq!(app.approve_link_session(&primary.token, &id, &[7; 64 * 1024]).await, StatusCode::NO_CONTENT);
     assert_eq!(get(&app, &id).await.1.len(), 64 * 1024);
 }
 
@@ -136,7 +136,7 @@ async fn test_read_returns_the_body_without_consuming_it() {
     let id = app.create_link_session(&primary.username).await;
 
     assert_eq!(get(&app, &id).await, (StatusCode::NO_CONTENT, Vec::new()));
-    assert_eq!(app.approve_link_session(&primary.token, &id, b"ciphertext").await, StatusCode::OK);
+    assert_eq!(app.approve_link_session(&primary.token, &id, b"ciphertext").await, StatusCode::NO_CONTENT);
 
     assert_eq!(get(&app, &id).await, (StatusCode::OK, b"ciphertext".to_vec()));
     assert_eq!(get(&app, &id).await, (StatusCode::OK, b"ciphertext".to_vec()));
@@ -189,8 +189,7 @@ async fn test_account_reset_discards_sessions() {
     let id = app.approved_link_session(&primary).await;
     let (reset_payload, _) = common::generate_registration_payload(&primary.username, "password12345", 9, 1);
 
-    let resp =
-        app.client.post(format!("{}/v1/account/reset", app.server_url)).json(&reset_payload).send().await.unwrap();
+    let resp = app.client.post(format!("{}/v1/users/reset", app.server_url)).json(&reset_payload).send().await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(!stored(&app, &id).await);
 }

@@ -1,6 +1,6 @@
 use crate::api::AppState;
 use crate::api::middleware::AuthUser;
-use crate::api::schemas::keys::{PreKeyBundleResponse, PreKeyUploadRequest};
+use crate::api::schemas::keys::{PreKeyBundleListResponse, PreKeyBundleResponse, PreKeyUploadRequest};
 use crate::error::{AppError, Result};
 use axum::{
     Json,
@@ -25,8 +25,8 @@ pub(crate) async fn get_pre_key_bundles(
         return Err(AppError::NotFound);
     }
 
-    let response: Vec<PreKeyBundleResponse> = bundles.into_iter().map(PreKeyBundleResponse::from).collect();
-    Ok(Json(response))
+    let bundles = bundles.into_iter().map(PreKeyBundleResponse::from).collect();
+    Ok(Json(PreKeyBundleListResponse { bundles }))
 }
 
 /// Fetches the pre-key bundle of one device of a user, consuming a one-time pre-key on that device only.
@@ -55,5 +55,5 @@ pub(crate) async fn upload_keys(
 ) -> Result<impl IntoResponse> {
     let upload = payload.try_into().map_err(AppError::BadRequest)?;
     state.key_service.upload_keys(auth.device_id, upload).await?;
-    Ok(StatusCode::OK)
+    Ok(StatusCode::NO_CONTENT)
 }

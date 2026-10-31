@@ -53,44 +53,33 @@ async fn test_full_system_flow() {
         repo.upsert_token(&mut conn, receiver.device_id, &format!("token:{}", receiver.device_id)).await.unwrap();
     }
 
-    // 5. Construct Batch of 50 Messages
-    // - 20 Valid
-    // - 1 Invalid (Bad Recipient)
-    // - 29 Valid
-    let mut messages = Vec::new();
+    // 5. Send 49 Valid Messages + 1 Invalid Device via Node A
     let mut expected_content = std::collections::HashSet::new();
 
-    // First 20 Valid
-    for i in 0..20 {
+    for i in 0..48 {
         let content = format!("Valid Message {i}").into_bytes();
         expected_content.insert(content.clone());
-        messages.push(proto::send_message_request::Submission {
-            submission_id: Uuid::new_v4().as_bytes().to_vec(),
-            device_id: receiver.device_id.as_bytes().to_vec(),
-            message: content.clone(),
-        });
+        app_a.send_message(&sender.token, receiver.device_id, &content).await;
     }
 
-    // 1 Invalid Recipient
+    let last_content = "Valid Message 48".as_bytes().to_vec();
+    expected_content.insert(last_content.clone());
     let invalid_device_id = Uuid::new_v4();
-    messages.push(proto::send_message_request::Submission {
-        submission_id: Uuid::new_v4().as_bytes().to_vec(),
-        device_id: invalid_device_id.as_bytes().to_vec(),
-        message: b"Invalid".to_vec(),
-    });
-
-    // Next 29 Valid
-    for i in 20..49 {
-        let content = format!("Valid Message {i}").into_bytes();
-        expected_content.insert(content.clone());
-        messages.push(proto::send_message_request::Submission {
-            submission_id: Uuid::new_v4().as_bytes().to_vec(),
-            device_id: receiver.device_id.as_bytes().to_vec(),
-            message: content.clone(),
-        });
-    }
-
-    let request = proto::SendMessageRequest { recipient_user_ids: Vec::new(), messages };
+    let request = proto::SendMessageRequest {
+        recipients: vec![proto::send_message_request::Recipient {
+            user_id: receiver.user_id.as_bytes().to_vec(),
+            submissions: vec![
+                proto::send_message_request::Submission {
+                    device_id: receiver.device_id.as_bytes().to_vec(),
+                    message: last_content,
+                },
+                proto::send_message_request::Submission {
+                    device_id: invalid_device_id.as_bytes().to_vec(),
+                    message: b"Invalid".to_vec(),
+                },
+            ],
+        }],
+    };
     let mut payload = Vec::new();
     request.encode(&mut payload).unwrap();
 
@@ -112,12 +101,8 @@ async fn test_full_system_flow() {
     let response = proto::SendMessageResponse::decode(resp_bytes).unwrap();
 
     // 7. Verify Partial Success
-    // We expect exactly 1 failed message (the invalid recipient)
-    assert_eq!(response.failed_submissions.len(), 1, "Expected 1 failed message in the batch");
-    assert_eq!(
-        response.failed_submissions[0].error_code,
-        proto::send_message_response::ErrorCode::InvalidDevice as i32
-    );
+    assert_eq!(response.invalid_device_ids, vec![invalid_device_id.as_bytes().to_vec()]);
+    assert!(response.device_mismatches.is_empty());
 
     // 8. Verify Push Coalescing
     // Receiver is offline, so push notification should fire.

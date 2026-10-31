@@ -45,7 +45,12 @@ pub struct DeviceResponse {
     pub device_id: String,
     pub name: Option<String>,
     pub is_primary: bool,
-    pub created_at: String,
+}
+
+impl From<crate::domain::device::Device> for DeviceResponse {
+    fn from(d: crate::domain::device::Device) -> Self {
+        Self { device_id: d.id.to_string(), name: d.name, is_primary: d.is_primary }
+    }
 }
 
 #[derive(Debug, Serialize)]

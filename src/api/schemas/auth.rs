@@ -120,18 +120,13 @@ pub struct RefreshRequest {
     pub refresh_token: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LogoutRequest {
-    pub refresh_token: String,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthResponse {
     pub token: String,
     pub refresh_token: String,
     pub expires_at: i64,
+    pub user_id: String,
     pub device_id: String,
 }
 
@@ -141,6 +136,7 @@ impl From<AuthSession> for AuthResponse {
             token: session.token,
             refresh_token: session.refresh_token,
             expires_at: session.expires_at,
+            user_id: session.user_id.to_string(),
             device_id: session.device_id.to_string(),
         }
     }

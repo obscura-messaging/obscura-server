@@ -37,7 +37,7 @@ For production, set at least the JWT secret and the database, Valkey and storage
 | **Rate limits** (per client IP; attachment routes are not limited) | | | |
 | `--rate-limit-per-second` | `OBSCURA_RATE_LIMIT_PER_SECOND` | `10` | Standard API routes. |
 | `--rate-limit-burst` | `OBSCURA_RATE_LIMIT_BURST` | `20` | Standard API burst. |
-| `--auth-rate-limit-per-second` | `OBSCURA_RATE_LIMIT_AUTH_PER_SECOND` | `1` | `/v1/users` (register) and `/v1/sessions*`. |
+| `--auth-rate-limit-per-second` | `OBSCURA_RATE_LIMIT_AUTH_PER_SECOND` | `1` | `/v1/users*`, `/v1/session*`, and `POST /v1/link-sessions`. |
 | `--auth-rate-limit-burst` | `OBSCURA_RATE_LIMIT_AUTH_BURST` | `3` | Auth burst. |
 | **Messaging and keys** | | | |
 | `--messaging-inbox-max-size` | `OBSCURA_MESSAGING_INBOX_MAX_SIZE` | `1000` | Queued messages per device; the cleanup worker deletes the oldest beyond this. |

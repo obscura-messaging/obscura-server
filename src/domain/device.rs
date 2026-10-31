@@ -1,4 +1,3 @@
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -7,7 +6,6 @@ pub struct Device {
     pub user_id: Uuid,
     pub name: Option<String>,
     pub is_primary: bool,
-    pub created_at: OffsetDateTime,
 }
 
 /// Validated push notification token for a device (non-empty, trimmed, at most 4096 bytes).

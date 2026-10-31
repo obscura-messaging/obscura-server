@@ -191,7 +191,7 @@ async fn test_ticket_of_deleted_device_is_refused() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     assert_eq!(connect_status(&app, &ticket).await, 401);
 }

@@ -97,10 +97,9 @@ fn auth_router(config: &Config, rate_limit_extractor: IpKeyExtractor) -> Router<
 
     Router::new()
         .route("/users", post(devices::register))
-        .route("/sessions", post(auth::login))
-        .route("/sessions", delete(auth::logout))
-        .route("/sessions/refresh", post(auth::refresh))
-        .route("/account/reset", post(devices::reset_account))
+        .route("/users/reset", post(devices::reset_account))
+        .route("/session", post(auth::login).delete(auth::logout))
+        .route("/session/refresh", post(auth::refresh))
         .route("/link-sessions", post(devices::create_link_session))
         .layer(GovernorLayer::new(auth_conf))
         .layer(standard_timeout)
@@ -118,17 +117,16 @@ fn api_router(config: &Config, rate_limit_extractor: IpKeyExtractor) -> Router<A
     );
 
     let standard_routes = Router::new()
-        .route("/devices", post(devices::create_device))
-        .route("/devices", get(devices::list_devices))
+        .route("/devices", post(devices::create_device).get(devices::list_devices))
         .route("/devices/{deviceId}", delete(devices::delete_device))
-        .route("/devices/keys", post(keys::upload_keys))
         .route("/link-sessions/{id}", put(devices::approve_link_session).get(devices::get_link_session))
-        .route("/users/{userId}", get(keys::get_pre_key_bundles))
-        .route("/users/{userId}/devices/{deviceId}", get(keys::get_device_pre_key_bundle))
+        .route("/keys", post(keys::upload_keys))
+        .route("/keys/{userId}", get(keys::get_pre_key_bundles))
+        .route("/keys/{userId}/devices/{deviceId}", get(keys::get_device_pre_key_bundle))
         .route("/messages", post(messages::send_messages))
         .route("/gateway", get(gateway::websocket_handler))
         .route("/gateway/ticket", post(gateway::generate_ticket))
-        .route("/push-tokens", put(push_tokens::register_token));
+        .route("/push-token", put(push_tokens::register_token));
 
     Router::new()
         .merge(standard_routes)

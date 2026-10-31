@@ -390,14 +390,14 @@ async fn test_register_push_token() {
 
     let resp = app
         .client
-        .put(format!("{}/v1/push-tokens", app.server_url))
+        .put(format!("{}/v1/push-token", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
         .json(&payload)
         .send()
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 204);
 
     let stored_token: String = sqlx::query_scalar("SELECT token FROM push_tokens WHERE device_id = $1")
         .bind(user.device_id)
@@ -410,14 +410,14 @@ async fn test_register_push_token() {
     let new_token = "updated_fcm_token_456";
     let resp = app
         .client
-        .put(format!("{}/v1/push-tokens", app.server_url))
+        .put(format!("{}/v1/push-token", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
         .json(&json!({ "token": new_token }))
         .send()
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 204);
 
     let stored_token: String = sqlx::query_scalar("SELECT token FROM push_tokens WHERE device_id = $1")
         .bind(user.device_id)
@@ -434,7 +434,7 @@ async fn test_register_push_token_unauthorized() {
 
     let resp = app
         .client
-        .put(format!("{}/v1/push-tokens", app.server_url))
+        .put(format!("{}/v1/push-token", app.server_url))
         .json(&json!({ "token": "some_token" }))
         .send()
         .await

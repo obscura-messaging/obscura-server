@@ -1,9 +1,7 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::message_repo::MessageRepository;
 use crate::adapters::redis::RedisCache;
-use crate::domain::message::{
-    DeviceMismatch, FailedSubmission, Message, RawSubmission, SubmissionErrorCode, SubmissionOutcome,
-};
+use crate::domain::message::{DeviceMismatch, Message, RecipientSubmissions, SubmissionOutcome};
 use crate::domain::notification::DeviceEvent;
 use crate::error::Result;
 use crate::services::notification_service::NotificationService;
@@ -11,7 +9,7 @@ use opentelemetry::{
     KeyValue, global,
     metrics::{Counter, Histogram},
 };
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -41,124 +39,52 @@ impl Metrics {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ValidSubmission {
-    device_id: Uuid,
-    submission_id: Uuid,
-    message: Vec<u8>,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct DeliveryPlan {
-    to_insert: Vec<(Uuid, Uuid, Vec<u8>)>,
+    to_insert: Vec<(Uuid, Vec<u8>)>,
     outcome: SubmissionOutcome,
-}
-
-/// Pure structural validation of raw submissions before touching the database.
-fn parse_submissions(
-    sender_device_id: Uuid,
-    submissions: Vec<RawSubmission>,
-) -> (Vec<ValidSubmission>, Vec<FailedSubmission>) {
-    let mut failed_submissions = Vec::new();
-    let mut valid = Vec::with_capacity(submissions.len());
-
-    for raw in submissions {
-        let Ok(submission_id) = Uuid::from_slice(&raw.submission_id) else {
-            failed_submissions.push(FailedSubmission {
-                submission_id: raw.submission_id,
-                error_code: SubmissionErrorCode::MalformedSubmissionId,
-                error_message: "Invalid submission_id UUID bytes (expected 16)".to_string(),
-            });
-            continue;
-        };
-
-        let Ok(device_id) = Uuid::from_slice(&raw.device_id) else {
-            failed_submissions.push(FailedSubmission {
-                submission_id: raw.submission_id,
-                error_code: SubmissionErrorCode::MalformedDeviceId,
-                error_message: "Invalid device_id UUID bytes (expected 16)".to_string(),
-            });
-            continue;
-        };
-
-        if device_id == sender_device_id {
-            failed_submissions.push(FailedSubmission {
-                submission_id: raw.submission_id,
-                error_code: SubmissionErrorCode::InvalidDevice,
-                error_message: "Cannot send to the sending device".to_string(),
-            });
-            continue;
-        }
-
-        if raw.message.is_empty() {
-            failed_submissions.push(FailedSubmission {
-                submission_id: raw.submission_id,
-                error_code: SubmissionErrorCode::MessageMissing,
-                error_message: "Missing message payload".to_string(),
-            });
-            continue;
-        }
-
-        valid.push(ValidSubmission { device_id, submission_id, message: raw.message });
-    }
-
-    (valid, failed_submissions)
 }
 
 /// Pure complete-delivery evaluation against the locked `(device_id, user_id)` pairs from the database.
 fn resolve_delivery(
     sender_device_id: Uuid,
-    recipient_user_ids: &BTreeSet<Uuid>,
-    valid: Vec<ValidSubmission>,
+    recipients: Vec<RecipientSubmissions>,
     locked_devices: Vec<(Uuid, Uuid)>,
-    mut failed_submissions: Vec<FailedSubmission>,
 ) -> DeliveryPlan {
-    let mut owner_of = HashMap::new();
-    let mut current_devices: BTreeMap<Uuid, BTreeSet<Uuid>> = BTreeMap::new();
+    let mut current_devices: HashMap<Uuid, BTreeSet<Uuid>> = HashMap::new();
     for (device_id, user_id) in locked_devices {
-        owner_of.insert(device_id, user_id);
         if device_id != sender_device_id {
             current_devices.entry(user_id).or_default().insert(device_id);
         }
     }
 
-    // A listed user is checked even when the request targets none of its devices.
-    let mut targeted: BTreeMap<Uuid, BTreeSet<Uuid>> =
-        recipient_user_ids.iter().map(|user_id| (*user_id, BTreeSet::new())).collect();
-    for sub in &valid {
-        if let Some(user_id) = owner_of.get(&sub.device_id) {
-            targeted.entry(*user_id).or_default().insert(sub.device_id);
-        }
-    }
-
+    let mut invalid_device_ids = Vec::new();
     let mut device_mismatches = Vec::new();
-    for (user_id, targets) in &targeted {
-        let current = current_devices.remove(user_id).unwrap_or_default();
-        let missing_device_ids: Vec<Uuid> = current.difference(targets).copied().collect();
-        if !missing_device_ids.is_empty() {
-            device_mismatches.push(DeviceMismatch { user_id: *user_id, missing_device_ids });
-        }
-    }
-    let mismatched: HashSet<Uuid> = device_mismatches.iter().map(|m| m.user_id).collect();
+    let mut to_insert = Vec::new();
 
-    let mut to_insert = Vec::with_capacity(valid.len());
-    for sub in valid {
-        match owner_of.get(&sub.device_id) {
-            None => failed_submissions.push(FailedSubmission {
-                submission_id: sub.submission_id.as_bytes().to_vec(),
-                error_code: SubmissionErrorCode::InvalidDevice,
-                error_message: "Device not found".to_string(),
-            }),
-            Some(user_id) if mismatched.contains(user_id) => failed_submissions.push(FailedSubmission {
-                submission_id: sub.submission_id.as_bytes().to_vec(),
-                error_code: SubmissionErrorCode::DeviceMismatch,
-                error_message: "Targeted devices do not match the user's current devices".to_string(),
-            }),
-            Some(_) => to_insert.push((sub.device_id, sub.submission_id, sub.message)),
+    for recipient in recipients {
+        let current = current_devices.remove(&recipient.user_id).unwrap_or_default();
+        let mut targeted_valid = BTreeSet::new();
+        let mut valid_subs = Vec::with_capacity(recipient.submissions.len());
+
+        for sub in recipient.submissions {
+            if current.contains(&sub.device_id) {
+                targeted_valid.insert(sub.device_id);
+                valid_subs.push((sub.device_id, sub.message));
+            } else {
+                invalid_device_ids.push(sub.device_id);
+            }
+        }
+
+        let missing_device_ids: Vec<Uuid> = current.difference(&targeted_valid).copied().collect();
+        if missing_device_ids.is_empty() {
+            to_insert.extend(valid_subs);
+        } else {
+            device_mismatches.push(DeviceMismatch { user_id: recipient.user_id, missing_device_ids });
         }
     }
 
-    DeliveryPlan { to_insert, outcome: SubmissionOutcome { failed_submissions, device_mismatches } }
+    DeliveryPlan { to_insert, outcome: SubmissionOutcome { invalid_device_ids, device_mismatches } }
 }
 
 #[derive(Clone, Debug)]
@@ -185,26 +111,25 @@ impl MessageService {
         Self { pool, repo, notifier, submission_cache, max_inbox_size, ttl_days, metrics: Metrics::new() }
     }
 
-    /// Processes an idempotent batch of raw submissions.
-    /// Performs structural validation, device checking, the complete-delivery check per target user,
-    /// and bulk insertion, with the target users' device sets locked from the check to the commit.
+    /// Processes an idempotent batch of recipient submissions.
+    /// Evaluates device membership and complete delivery per target user, and bulk-inserts valid
+    /// messages with the target users' device sets locked from the check to the commit.
     ///
     /// # Errors
     /// Returns `AppError::Database` if any database operation fails.
     #[tracing::instrument(
         err(level = "warn"),
-        skip(self, submissions),
-        fields(sender_id = %sender_id, sender_device_id = %sender_device_id, count = submissions.len())
+        skip(self, recipients),
+        fields(sender_id = %sender_id, sender_device_id = %sender_device_id, recipients = recipients.len())
     )]
     pub(crate) async fn send(
         &self,
         sender_id: Uuid,
         sender_device_id: Uuid,
         idempotency_key: Uuid,
-        recipient_user_ids: &BTreeSet<Uuid>,
-        submissions: Vec<RawSubmission>,
+        recipients: Vec<RecipientSubmissions>,
     ) -> Result<SubmissionOutcome> {
-        let cache_key = idempotency_key.to_string();
+        let cache_key = format!("{sender_device_id}:{idempotency_key}");
         if let Ok(Some(cached)) = self.submission_cache.get(&cache_key).await
             && let Ok(outcome) = serde_json::from_slice::<SubmissionOutcome>(&cached)
         {
@@ -212,31 +137,30 @@ impl MessageService {
             return Ok(outcome);
         }
 
-        let (valid, failed_submissions) = parse_submissions(sender_device_id, submissions);
-        if valid.is_empty() && recipient_user_ids.is_empty() {
-            let outcome = SubmissionOutcome { failed_submissions, device_mismatches: Vec::new() };
+        if recipients.is_empty() {
+            let outcome = SubmissionOutcome { invalid_device_ids: Vec::new(), device_mismatches: Vec::new() };
             self.cache_outcome(&cache_key, &outcome).await;
             return Ok(outcome);
         }
 
-        let check_ids: Vec<Uuid> = valid.iter().map(|s| s.device_id).collect::<HashSet<_>>().into_iter().collect();
-        let explicit_user_ids: Vec<Uuid> = recipient_user_ids.iter().copied().collect();
+        let recipient_user_ids: Vec<Uuid> = recipients.iter().map(|r| r.user_id).collect();
 
         let mut tx = self.pool.begin().await?;
-        let locked_devices = self.repo.lock_device_sets(&mut tx, &check_ids, &explicit_user_ids).await?;
-        let plan = resolve_delivery(sender_device_id, recipient_user_ids, valid, locked_devices, failed_submissions);
+        let locked_devices = self.repo.lock_device_sets(&mut tx, &recipient_user_ids).await?;
+        let plan = resolve_delivery(sender_device_id, recipients, locked_devices);
 
         if plan.to_insert.is_empty() {
             tx.commit().await?;
         } else {
-            let inserted =
-                self.repo.create_batch(&mut tx, sender_id, sender_device_id, plan.to_insert, self.ttl_days).await?;
+            let inserted = self
+                .repo
+                .create_batch(&mut tx, sender_id, sender_device_id, idempotency_key, plan.to_insert, self.ttl_days)
+                .await?;
             tx.commit().await?;
 
             self.metrics.sent_total.add(inserted.len() as u64, &[KeyValue::new("status", "success")]);
 
-            let inserted_device_ids: Vec<Uuid> = inserted.into_iter().map(|(id, _)| id).collect();
-            self.notifier.notify(&inserted_device_ids, DeviceEvent::MessageReceived).await;
+            self.notifier.notify(&inserted, DeviceEvent::MessageReceived).await;
         }
 
         self.cache_outcome(&cache_key, &plan.outcome).await;
@@ -338,53 +262,67 @@ impl MessageService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::schemas::messaging::parse_send_request;
+    use crate::domain::message::DeviceSubmission;
+    use crate::error::AppError;
+    use crate::proto::obscura::v1 as proto;
 
     #[test]
-    fn test_parse_submissions_classifies_structural_errors() {
+    fn test_parse_send_request_rejects_structural_errors() {
         let sender_device = Uuid::new_v4();
+        let user = Uuid::new_v4();
         let target_device = Uuid::new_v4();
-        let sub_self = Uuid::new_v4();
-        let sub_empty = Uuid::new_v4();
-        let sub_ok = Uuid::new_v4();
 
-        let raw = vec![
-            RawSubmission { submission_id: vec![1, 2], device_id: target_device.as_bytes().to_vec(), message: vec![1] },
-            RawSubmission {
-                submission_id: Uuid::new_v4().as_bytes().to_vec(),
-                device_id: vec![3, 4],
-                message: vec![1],
+        // Malformed user_id
+        let err = parse_send_request(
+            sender_device,
+            10,
+            proto::SendMessageRequest {
+                recipients: vec![proto::send_message_request::Recipient { user_id: vec![1, 2], submissions: vec![] }],
             },
-            RawSubmission {
-                submission_id: sub_self.as_bytes().to_vec(),
-                device_id: sender_device.as_bytes().to_vec(),
-                message: vec![1],
-            },
-            RawSubmission {
-                submission_id: sub_empty.as_bytes().to_vec(),
-                device_id: target_device.as_bytes().to_vec(),
-                message: vec![],
-            },
-            RawSubmission {
-                submission_id: sub_ok.as_bytes().to_vec(),
-                device_id: target_device.as_bytes().to_vec(),
-                message: vec![9, 9],
-            },
-        ];
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)));
 
-        let (valid, failed) = parse_submissions(sender_device, raw);
-        assert_eq!(
-            valid,
-            vec![ValidSubmission { device_id: target_device, submission_id: sub_ok, message: vec![9, 9] }]
-        );
-        assert_eq!(
-            failed.iter().map(|f| f.error_code).collect::<Vec<_>>(),
-            vec![
-                SubmissionErrorCode::MalformedSubmissionId,
-                SubmissionErrorCode::MalformedDeviceId,
-                SubmissionErrorCode::InvalidDevice,
-                SubmissionErrorCode::MessageMissing,
-            ]
-        );
+        // Self-send
+        let err = parse_send_request(
+            sender_device,
+            10,
+            proto::SendMessageRequest {
+                recipients: vec![proto::send_message_request::Recipient {
+                    user_id: user.as_bytes().to_vec(),
+                    submissions: vec![proto::send_message_request::Submission {
+                        device_id: sender_device.as_bytes().to_vec(),
+                        message: vec![1],
+                    }],
+                }],
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)));
+
+        // Duplicate device_id
+        let err = parse_send_request(
+            sender_device,
+            10,
+            proto::SendMessageRequest {
+                recipients: vec![proto::send_message_request::Recipient {
+                    user_id: user.as_bytes().to_vec(),
+                    submissions: vec![
+                        proto::send_message_request::Submission {
+                            device_id: target_device.as_bytes().to_vec(),
+                            message: vec![1],
+                        },
+                        proto::send_message_request::Submission {
+                            device_id: target_device.as_bytes().to_vec(),
+                            message: vec![2],
+                        },
+                    ],
+                }],
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)));
     }
 
     #[test]
@@ -397,30 +335,28 @@ mod tests {
         let carol_d1 = Uuid::new_v4();
         let unknown_device = Uuid::new_v4();
 
-        let sub_bob = Uuid::new_v4();
-        let sub_carol = Uuid::new_v4();
-        let sub_unknown = Uuid::new_v4();
-
-        let valid = vec![
-            ValidSubmission { device_id: bob_d1, submission_id: sub_bob, message: vec![1] },
-            ValidSubmission { device_id: carol_d1, submission_id: sub_carol, message: vec![2] },
-            ValidSubmission { device_id: unknown_device, submission_id: sub_unknown, message: vec![3] },
+        let recipients = vec![
+            RecipientSubmissions {
+                user_id: bob,
+                submissions: vec![DeviceSubmission { device_id: bob_d1, message: vec![1] }],
+            },
+            RecipientSubmissions {
+                user_id: carol,
+                submissions: vec![
+                    DeviceSubmission { device_id: carol_d1, message: vec![2] },
+                    DeviceSubmission { device_id: unknown_device, message: vec![3] },
+                ],
+            },
         ];
         let locked = vec![(bob_d1, bob), (bob_d2, bob), (carol_d1, carol)];
 
-        let plan = resolve_delivery(sender_device, &BTreeSet::new(), valid, locked, Vec::new());
+        let plan = resolve_delivery(sender_device, recipients, locked);
 
-        assert_eq!(plan.to_insert, vec![(carol_d1, sub_carol, vec![2])]);
+        assert_eq!(plan.to_insert, vec![(carol_d1, vec![2])]);
         assert_eq!(
             plan.outcome.device_mismatches,
             vec![DeviceMismatch { user_id: bob, missing_device_ids: vec![bob_d2] }]
         );
-        assert_eq!(
-            plan.outcome.failed_submissions.iter().map(|f| (f.submission_id.clone(), f.error_code)).collect::<Vec<_>>(),
-            vec![
-                (sub_bob.as_bytes().to_vec(), SubmissionErrorCode::DeviceMismatch),
-                (sub_unknown.as_bytes().to_vec(), SubmissionErrorCode::InvalidDevice),
-            ]
-        );
+        assert_eq!(plan.outcome.invalid_device_ids, vec![unknown_device]);
     }
 }

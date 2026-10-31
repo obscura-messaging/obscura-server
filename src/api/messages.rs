@@ -1,11 +1,10 @@
 use crate::api::AppState;
 use crate::api::middleware::AuthUser;
-use crate::domain::message::RawSubmission;
+use crate::api::schemas::messaging::parse_send_request;
 use crate::error::{AppError, Result};
 use crate::proto::obscura::v1 as proto;
 use axum::{body::Bytes, extract::State, http::HeaderMap, response::IntoResponse};
 use prost::Message;
-use std::collections::BTreeSet;
 use uuid::Uuid;
 
 /// Sends a batch of encrypted messages.
@@ -29,22 +28,9 @@ pub(crate) async fn send_messages(
         .map_err(|e| AppError::BadRequest(format!("Invalid SendMessageRequest protobuf: {e}")))?;
 
     let batch_limit = usize::try_from(state.config.messaging.send_batch_limit).unwrap_or(0);
-    if request.messages.len() > batch_limit || request.recipient_user_ids.len() > batch_limit {
-        return Err(AppError::PayloadTooLarge);
-    }
+    let recipients = parse_send_request(auth.device_id, batch_limit, request)?;
 
-    let recipient_user_ids = request
-        .recipient_user_ids
-        .iter()
-        .map(|bytes| Uuid::from_slice(bytes))
-        .collect::<std::result::Result<BTreeSet<_>, _>>()
-        .map_err(|_| AppError::BadRequest("Invalid recipient_user_ids UUID bytes (expected 16)".to_string()))?;
-    let submissions: Vec<RawSubmission> = request.messages.into_iter().map(RawSubmission::from).collect();
-
-    let outcome = state
-        .message_service
-        .send(auth.user_id, auth.device_id, idempotency_key, &recipient_user_ids, submissions)
-        .await?;
+    let outcome = state.message_service.send(auth.user_id, auth.device_id, idempotency_key, recipients).await?;
 
     Ok(proto::SendMessageResponse::from(outcome).encode_to_vec())
 }

@@ -72,7 +72,7 @@ async fn message_survives_a_transient_fetch_failure() {
     .await;
     let message_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO messages (id, device_id, sender_id, sender_device_id, submission_id, content, expires_at)
+        "INSERT INTO messages (id, device_id, sender_id, sender_device_id, idempotency_key, content, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '1 day')",
     )
     .bind(message_id)

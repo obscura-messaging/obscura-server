@@ -121,7 +121,7 @@ async fn test_multi_node_disconnect_notification() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200, "Unlink failed: {}", resp.text().await.unwrap());
+    assert_eq!(resp.status(), 204, "Unlink failed: {}", resp.text().await.unwrap());
 
     ws_a.assert_closed().await;
 }
@@ -155,7 +155,7 @@ async fn test_distributed_fan_out_disconnect() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 204);
 
     ws_a1.assert_closed().await;
     ws_b1.assert_closed().await;
@@ -178,7 +178,7 @@ async fn test_multi_node_link_session() {
     let resp = app_a.client.get(format!("{}/v1/link-sessions/{id}", app_a.server_url)).send().await.unwrap();
     assert_eq!(resp.status(), 204);
 
-    assert_eq!(app_b.approve_link_session(&primary.token, &id, b"cross-node").await, 200);
+    assert_eq!(app_b.approve_link_session(&primary.token, &id, b"cross-node").await, 204);
 
     let resp = app_a.client.get(format!("{}/v1/link-sessions/{id}", app_a.server_url)).send().await.unwrap();
     assert_eq!(resp.status(), 200);

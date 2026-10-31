@@ -14,8 +14,8 @@ impl MessageRepository {
         Self {}
     }
 
-    /// Locks the device sets of every user owning one of `target_device_ids`, and returns
-    /// `(device_id, user_id)` for each of their devices.
+    /// Locks the device sets of `recipient_user_ids`, and returns `(device_id, user_id)` for each
+    /// of their devices.
     ///
     /// Invariant: a device is only inserted after `FOR UPDATE` on its user row in the same transaction.
     /// So `FOR SHARE` on the owners' rows (in id order) keeps devices from being added to them until the
@@ -28,18 +28,16 @@ impl MessageRepository {
     pub(crate) async fn lock_device_sets(
         &self,
         conn: &mut PgConnection,
-        target_device_ids: &[Uuid],
         recipient_user_ids: &[Uuid],
     ) -> Result<Vec<(Uuid, Uuid)>> {
         let user_ids: Vec<Uuid> = sqlx::query_scalar(
             r#"
             SELECT id FROM users
-            WHERE id = ANY($2) OR id IN (SELECT user_id FROM devices WHERE id = ANY($1))
+            WHERE id = ANY($1)
             ORDER BY id
             FOR SHARE
             "#,
         )
-        .bind(target_device_ids)
         .bind(recipient_user_ids)
         .fetch_all(&mut *conn)
         .await?;
@@ -54,8 +52,8 @@ impl MessageRepository {
 
     /// Inserts a batch of messages.
     ///
-    /// Ignores duplicate messages (based on `sender_device_id` and `submission_id`) via `ON CONFLICT DO NOTHING`.
-    /// Returns the list of `(device_id, submission_id)` that were successfully inserted.
+    /// Ignores duplicate messages (based on `sender_device_id`, `device_id`, and `idempotency_key`) via
+    /// `ON CONFLICT DO NOTHING`. Returns the list of `device_id`s that were successfully inserted.
     ///
     /// # Errors
     /// Returns `AppError::Database` if the insert fails.
@@ -65,9 +63,10 @@ impl MessageRepository {
         conn: &mut PgConnection,
         sender_id: Uuid,
         sender_device_id: Uuid,
-        messages: Vec<(Uuid, Uuid, Vec<u8>)>,
+        idempotency_key: Uuid,
+        messages: Vec<(Uuid, Vec<u8>)>,
         ttl_days: i64,
-    ) -> Result<Vec<(Uuid, Uuid)>> {
+    ) -> Result<Vec<Uuid>> {
         if messages.is_empty() {
             return Ok(Vec::new());
         }
@@ -75,28 +74,26 @@ impl MessageRepository {
         let expires_at = OffsetDateTime::now_utc() + Duration::days(ttl_days);
 
         let mut device_ids = Vec::with_capacity(messages.len());
-        let mut submission_ids = Vec::with_capacity(messages.len());
         let mut contents = Vec::with_capacity(messages.len());
 
-        for (device_id, submission_id, content) in messages {
+        for (device_id, content) in messages {
             device_ids.push(device_id);
-            submission_ids.push(submission_id);
             contents.push(content);
         }
 
-        let inserted = sqlx::query_as::<_, (Uuid, Uuid)>(
+        let inserted = sqlx::query_scalar::<_, Uuid>(
             r#"
-            INSERT INTO messages (sender_id, sender_device_id, device_id, submission_id, content, expires_at)
-            SELECT $1, $2, u.d_id, u.s_id, u.content, $6
-            FROM UNNEST($3::uuid[], $4::uuid[], $5::bytea[]) AS u(d_id, s_id, content)
-            ON CONFLICT (sender_device_id, submission_id) DO NOTHING
-            RETURNING device_id, submission_id
+            INSERT INTO messages (sender_id, sender_device_id, device_id, idempotency_key, content, expires_at)
+            SELECT $1, $2, u.d_id, $3, u.content, $6
+            FROM UNNEST($4::uuid[], $5::bytea[]) AS u(d_id, content)
+            ON CONFLICT (sender_device_id, device_id, idempotency_key) DO NOTHING
+            RETURNING device_id
             "#,
         )
         .bind(sender_id)
         .bind(sender_device_id)
+        .bind(idempotency_key)
         .bind(device_ids)
-        .bind(submission_ids)
         .bind(contents)
         .bind(expires_at)
         .fetch_all(conn)
