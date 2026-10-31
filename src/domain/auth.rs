@@ -1,6 +1,14 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[derive(Debug, Clone)]
+pub struct AuthSession {
+    pub token: String,
+    pub refresh_token: String,
+    pub expires_at: i64,
+    pub device_id: Uuid,
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct Claims {
     pub sub: Uuid,

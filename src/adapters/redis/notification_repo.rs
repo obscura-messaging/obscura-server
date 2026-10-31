@@ -1,6 +1,6 @@
 use crate::adapters::redis::RedisClient;
 use crate::config::NotificationConfig;
-use crate::domain::notification::{RealtimeNotification, UserEvent};
+use crate::domain::notification::{DeviceEvent, RealtimeNotification};
 use redis::AsyncCommands;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -30,7 +30,7 @@ impl NotificationRepository {
     /// # Errors
     /// Returns an error if the Redis operation fails.
     #[tracing::instrument(level = "debug", skip(self, device_ids), err)]
-    pub async fn publish_realtime(&self, device_ids: &[Uuid], event: UserEvent) -> anyhow::Result<()> {
+    pub async fn publish_realtime(&self, device_ids: &[Uuid], event: DeviceEvent) -> anyhow::Result<()> {
         if device_ids.is_empty() {
             return Ok(());
         }
@@ -66,7 +66,7 @@ impl NotificationRepository {
                         if let Some(device_id_str) = msg.channel.strip_prefix(&prefix)
                             && let Ok(device_id) = Uuid::parse_str(device_id_str)
                             && let Some(payload_byte) = msg.payload.first()
-                            && let Ok(event) = UserEvent::try_from(*payload_byte)
+                            && let Ok(event) = DeviceEvent::try_from(*payload_byte)
                         {
                             let _ = tx.send(RealtimeNotification { device_id, event });
                         }

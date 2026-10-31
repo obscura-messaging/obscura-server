@@ -89,8 +89,6 @@ pub struct Services {
     pub link_session_service: LinkSessionService,
     pub push_token_service: PushTokenService,
     pub rate_limit_service: RateLimitService,
-    pub submission_cache: RedisCache,
-    pub ws_ticket_cache: RedisCache,
 }
 
 #[derive(Debug)]
@@ -272,7 +270,7 @@ impl AppBuilder {
             pool.clone(),
             adapters.message.clone(),
             notifier.clone(),
-            config.messaging.clone(),
+            submission_cache,
             config.ttl_days,
         );
         let device_service = DeviceService::new(
@@ -294,7 +292,9 @@ impl AppBuilder {
         let gateway_service = GatewayService::new(
             message_service.clone(),
             key_service.clone(),
+            device_service.clone(),
             notifier.clone(),
+            ws_ticket_cache,
             config.websocket.clone(),
         );
         let push_token_service = PushTokenService::new(pool.clone(), adapters.push_token.clone());
@@ -325,8 +325,6 @@ impl AppBuilder {
             link_session_service,
             push_token_service,
             rate_limit_service,
-            submission_cache,
-            ws_ticket_cache,
         };
 
         let workers = Self::init_workers(config, &pool, &adapters, notifier);

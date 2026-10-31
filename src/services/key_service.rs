@@ -2,8 +2,8 @@ use crate::adapters::database::DbPool;
 use crate::adapters::database::key_repo::KeyRepository;
 use crate::config::MessagingConfig;
 use crate::domain::crypto::PublicKey;
-use crate::domain::keys::{OneTimePreKey, PreKeyBundle, PreKeyStatus, SignedPreKey};
-use crate::domain::notification::UserEvent;
+use crate::domain::keys::{OneTimePreKey, PreKeyBundle, PreKeyStatus, PreKeyUpload, SignedPreKey};
+use crate::domain::notification::DeviceEvent;
 use crate::error::{AppError, Result};
 use crate::services::crypto_service::CryptoService;
 use crate::services::notification_service::NotificationService;
@@ -36,13 +36,6 @@ pub struct KeyService {
     notifier: NotificationService,
     config: MessagingConfig,
     metrics: Metrics,
-}
-
-#[derive(Debug)]
-pub struct KeyUploadParams {
-    pub device_id: Uuid,
-    pub signed_pre_key: SignedPreKey,
-    pub one_time_pre_keys: Vec<OneTimePreKey>,
 }
 
 impl KeyService {
@@ -83,7 +76,7 @@ impl KeyService {
                     remaining = %status.one_time_pre_key_count,
                     "Pre-keys falling below minimum threshold"
                 );
-                self.notifier.notify(&[bundle.device_id], UserEvent::PreKeyLow).await;
+                self.notifier.notify(&[bundle.device_id], DeviceEvent::PreKeyLow).await;
             }
         }
 
@@ -116,34 +109,33 @@ impl KeyService {
     /// Returns `AppError::BadRequest` if the signature does not verify against the account identity, the signed
     /// pre-key id does not increase, or the batch is too large.
     /// Returns `AppError::Database` if the database operation fails.
-    #[tracing::instrument(skip(self, params), fields(device.id = %params.device_id), err(level = "warn"))]
-    pub(crate) async fn upload_keys(&self, params: KeyUploadParams) -> Result<()> {
+    #[tracing::instrument(skip(self, upload), fields(device.id = %device_id), err(level = "warn"))]
+    pub(crate) async fn upload_keys(&self, device_id: Uuid, upload: PreKeyUpload) -> Result<()> {
         let mut tx = self.pool.begin().await?;
 
-        let identity_key =
-            self.repo.lock_device_identity_key(&mut tx, params.device_id).await?.ok_or(AppError::NotFound)?;
-        self.verify_keys(&identity_key, &params.signed_pre_key)?;
-        self.check_batch_size(&params.one_time_pre_keys)?;
+        let identity_key = self.repo.lock_device_identity_key(&mut tx, device_id).await?.ok_or(AppError::NotFound)?;
+        self.verify_keys(&identity_key, &upload.signed_pre_key)?;
+        self.check_batch_size(&upload.one_time_pre_keys)?;
 
-        let max_id = self.repo.find_max_signed_pre_key_id(&mut tx, params.device_id).await?;
+        let max_id = self.repo.find_max_signed_pre_key_id(&mut tx, device_id).await?;
         if let Some(current_max) = max_id
-            && params.signed_pre_key.key_id <= current_max
+            && upload.signed_pre_key.key_id <= current_max
         {
             return Err(AppError::BadRequest(format!(
                 "Signed Pre-Key ID {} must be greater than current ID {}",
-                params.signed_pre_key.key_id, current_max
+                upload.signed_pre_key.key_id, current_max
             )));
         }
 
-        let current_count = self.repo.count_one_time_pre_keys(&mut tx, params.device_id).await?;
-        let new_keys_count = i64::try_from(params.one_time_pre_keys.len()).unwrap_or(i64::MAX);
+        let current_count = self.repo.count_one_time_pre_keys(&mut tx, device_id).await?;
+        let new_keys_count = i64::try_from(upload.one_time_pre_keys.len()).unwrap_or(i64::MAX);
         if current_count + new_keys_count > self.config.max_pre_keys {
             let to_delete = (current_count + new_keys_count) - self.config.max_pre_keys;
-            self.repo.delete_oldest_one_time_pre_keys(&mut tx, params.device_id, to_delete).await?;
+            self.repo.delete_oldest_one_time_pre_keys(&mut tx, device_id, to_delete).await?;
         }
 
-        self.store_pre_keys(&mut tx, params.device_id, &params.signed_pre_key, &params.one_time_pre_keys).await?;
-        self.repo.delete_signed_pre_keys_older_than(&mut tx, params.device_id, params.signed_pre_key.key_id).await?;
+        self.store_pre_keys(&mut tx, device_id, &upload.signed_pre_key, &upload.one_time_pre_keys).await?;
+        self.repo.delete_signed_pre_keys_older_than(&mut tx, device_id, upload.signed_pre_key.key_id).await?;
 
         tx.commit().await?;
         Ok(())

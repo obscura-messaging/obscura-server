@@ -1,5 +1,6 @@
 use crate::api::AppState;
 use crate::api::middleware::AuthUser;
+use crate::api::schemas::auth::AuthResponse;
 use crate::api::schemas::devices::{CreateDeviceRequest, DeviceListResponse, DeviceResponse};
 use crate::error::{AppError, Result};
 use crate::services::device_service::NewLinkedDevice;
@@ -27,8 +28,7 @@ pub(crate) async fn create_device(
     };
     let session = state.device_service.create_linked_device(device).await?;
 
-    let auth_response = crate::api::auth::map_session(session);
-    Ok((StatusCode::CREATED, Json(auth_response)))
+    Ok((StatusCode::CREATED, Json(AuthResponse::from(session))))
 }
 
 /// Lists all devices for the authenticated user.
@@ -62,9 +62,6 @@ fn device_to_response(d: crate::domain::device::Device) -> DeviceResponse {
         device_id: d.id.to_string(),
         name: d.name,
         is_primary: d.is_primary,
-        created_at: d
-            .created_at
-            .map(|ts| ts.format(&time::format_description::well_known::Rfc3339).unwrap_or_default())
-            .unwrap_or_default(),
+        created_at: d.created_at.format(&time::format_description::well_known::Rfc3339).unwrap_or_default(),
     }
 }

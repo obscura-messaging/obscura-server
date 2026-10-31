@@ -1,6 +1,5 @@
 use regex::Regex;
 use std::sync::LazyLock;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 static USERNAME_REGEX: LazyLock<Regex> =
@@ -57,5 +56,4 @@ pub struct User {
     pub id: Uuid,
     pub username: String,
     pub password_hash: String,
-    pub created_at: Option<OffsetDateTime>,
 }

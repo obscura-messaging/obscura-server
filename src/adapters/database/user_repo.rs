@@ -31,7 +31,7 @@ impl UserRepository {
             r#"
             INSERT INTO users (username, password_hash, identity_key)
             VALUES ($1, $2, $3)
-            RETURNING id, username, password_hash, created_at
+            RETURNING id, username, password_hash
             "#,
         )
         .bind(username.as_str())
@@ -59,7 +59,7 @@ impl UserRepository {
     pub(crate) async fn find_by_username(&self, conn: &mut PgConnection, username: &Username) -> Result<Option<User>> {
         let user = sqlx::query_as::<_, UserRecord>(
             r#"
-            SELECT id, username, password_hash, created_at
+            SELECT id, username, password_hash
             FROM users
             WHERE username = $1
             "#,

@@ -20,12 +20,12 @@ impl FromRequestParts<AppState> for AuthUser {
 
     #[tracing::instrument(err, skip(parts, state))]
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        let auth_header = parts.headers.get(header::AUTHORIZATION).ok_or(AppError::AuthError)?;
+        let auth_header = parts.headers.get(header::AUTHORIZATION).ok_or(AppError::Unauthorized)?;
 
-        let auth_str = auth_header.to_str().map_err(|_| AppError::AuthError)?;
+        let auth_str = auth_header.to_str().map_err(|_| AppError::Unauthorized)?;
 
         if !auth_str.starts_with("Bearer ") {
-            return Err(AppError::AuthError);
+            return Err(AppError::Unauthorized);
         }
 
         let token = &auth_str[7..];

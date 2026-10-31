@@ -25,13 +25,6 @@ pub(crate) async fn send_messages(
         .ok_or_else(|| AppError::BadRequest("Missing idempotency-key header".to_string()))
         .and_then(|s| Uuid::parse_str(s).map_err(|e| AppError::BadRequest(format!("Invalid idempotency-key: {e}"))))?;
 
-    // 1. Check Idempotency Cache
-    if let Ok(Some(cached)) = state.submission_cache.get(&idempotency_key.to_string()).await {
-        tracing::info!(key = %idempotency_key, "Returning cached idempotency response");
-        return Ok(cached);
-    }
-
-    // 2. Protocol Validation & Decoding
     let request = proto::SendMessageRequest::decode(body)
         .map_err(|e| AppError::BadRequest(format!("Invalid SendMessageRequest protobuf: {e}")))?;
 
@@ -40,7 +33,6 @@ pub(crate) async fn send_messages(
         return Err(AppError::PayloadTooLarge);
     }
 
-    // 3. Simple Domain Mapping (canonicalize recipient_user_ids into a deduplicated set)
     let recipient_user_ids = request
         .recipient_user_ids
         .iter()
@@ -49,17 +41,10 @@ pub(crate) async fn send_messages(
         .map_err(|_| AppError::BadRequest("Invalid recipient_user_ids UUID bytes (expected 16)".to_string()))?;
     let submissions: Vec<RawSubmission> = request.messages.into_iter().map(RawSubmission::from).collect();
 
-    // 4. Domain Logic: Call Pure Service
-    let outcome = state.message_service.send(auth.user_id, auth.device_id, &recipient_user_ids, submissions).await?;
+    let outcome = state
+        .message_service
+        .send(auth.user_id, auth.device_id, idempotency_key, &recipient_user_ids, submissions)
+        .await?;
 
-    // 5. Result Mapping
-    let response = proto::SendMessageResponse::from(outcome);
-    let response_bytes = response.encode_to_vec();
-
-    // 6. Infrastructure: Update Idempotency Cache
-    if let Err(e) = state.submission_cache.set(&idempotency_key.to_string(), &response_bytes).await {
-        tracing::error!(error = %e, "Failed to cache idempotency response");
-    }
-
-    Ok(response_bytes)
+    Ok(proto::SendMessageResponse::from(outcome).encode_to_vec())
 }

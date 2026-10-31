@@ -13,7 +13,7 @@ use axum::{
 /// Verifies credentials and creates a link session bound to the account.
 ///
 /// # Errors
-/// Returns `AppError::AuthError` if the credentials are invalid.
+/// Returns `AppError::Unauthorized` if the credentials are invalid.
 pub(crate) async fn create_link_session(
     State(state): State<AppState>,
     Json(payload): Json<CreateLinkSessionRequest>,

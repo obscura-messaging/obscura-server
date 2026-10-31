@@ -3,7 +3,7 @@ CREATE TABLE users (
     username VARCHAR(50) NOT NULL UNIQUE CHECK (username ~ '^[a-z0-9_]{3,50}$'),
     password_hash VARCHAR(255) NOT NULL,
     identity_key BYTEA NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE devices (
@@ -12,7 +12,7 @@ CREATE TABLE devices (
     name VARCHAR(100),
     registration_id INTEGER NOT NULL,
     is_primary BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMPTZ DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_devices_user_id ON devices(user_id);

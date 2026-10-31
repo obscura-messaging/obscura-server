@@ -1,4 +1,5 @@
 use crate::api::schemas::devices::DeviceKeyPayload;
+use crate::domain::auth::AuthSession;
 use crate::domain::user::Username;
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +13,7 @@ pub struct RegistrationRequest {
 }
 
 impl RegistrationRequest {
-    /// Validates the registration payload and returns the canonical [`Username`].
+    /// Validates the registration credentials and returns the canonical [`Username`].
     ///
     /// # Errors
     /// Returns an error if the password is too short or username is invalid.
@@ -22,8 +23,6 @@ impl RegistrationRequest {
         if self.password.len() < 12 {
             return Err("Password must be at least 12 characters long".into());
         }
-
-        self.device.validate()?;
 
         Ok(username)
     }
@@ -134,4 +133,15 @@ pub struct AuthResponse {
     pub refresh_token: String,
     pub expires_at: i64,
     pub device_id: String,
+}
+
+impl From<AuthSession> for AuthResponse {
+    fn from(session: AuthSession) -> Self {
+        Self {
+            token: session.token,
+            refresh_token: session.refresh_token,
+            expires_at: session.expires_at,
+            device_id: session.device_id.to_string(),
+        }
+    }
 }

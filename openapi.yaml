@@ -937,15 +937,6 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
-    PreconditionFailedError:
-      description: Precondition Failed (Version mismatch or resource already exists).
-      headers:
-        x-request-id:
-          $ref: '#/components/headers/x-request-id'
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
     RequestTimeoutError:
       description: Request Timeout (The server timed out waiting for the request).
       headers:

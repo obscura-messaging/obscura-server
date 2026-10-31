@@ -124,18 +124,13 @@ impl AttachmentService {
         fields(attachment_id = %id, attachment_size = tracing::field::Empty)
     )]
     pub(crate) async fn download(&self, id: Uuid) -> Result<(u64, StorageStream)> {
-        // 1. Check Existence & Expiry using Domain Logic
         let mut conn = self.pool.acquire().await?;
-        match self.repo.find_by_id(&mut conn, id).await? {
-            Some(attachment) => {
-                if attachment.is_expired_at(OffsetDateTime::now_utc()) {
-                    return Err(AppError::NotFound);
-                }
-            }
-            None => return Err(AppError::NotFound),
+        if !self.repo.exists_unexpired(&mut conn, id).await? {
+            return Err(AppError::NotFound);
         }
+        drop(conn);
 
-        // 2. Stream from Storage
+        // Stream from Storage
         let key = format!("{}{}", self.attachment_config.prefix, id);
         let (content_length, stream) = self.storage.get(&key).await.map_err(|e| match e {
             StorageError::NotFound => AppError::NotFound,

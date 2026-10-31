@@ -1,5 +1,4 @@
 use crate::Services;
-use crate::adapters::redis::RedisCache;
 use crate::api::rate_limit::log_rate_limit_events;
 use crate::config::Config;
 use crate::services::attachment_service::AttachmentService;
@@ -53,8 +52,6 @@ pub(crate) struct AppState {
     pub(crate) link_session_service: LinkSessionService,
     pub(crate) push_token_service: PushTokenService,
     pub(crate) rate_limit_service: RateLimitService,
-    pub(crate) submission_cache: RedisCache,
-    pub(crate) ws_ticket_cache: RedisCache,
     pub(crate) shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
@@ -71,8 +68,6 @@ impl AppState {
             link_session_service: services.link_session_service,
             push_token_service: services.push_token_service,
             rate_limit_service: services.rate_limit_service,
-            submission_cache: services.submission_cache,
-            ws_ticket_cache: services.ws_ticket_cache,
             shutdown_rx,
         }
     }

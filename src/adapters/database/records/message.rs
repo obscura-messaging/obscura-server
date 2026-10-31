@@ -8,7 +8,7 @@ pub struct MessageRecord {
     pub(crate) sender_id: Uuid,
     pub(crate) sender_device_id: Uuid,
     pub(crate) content: Vec<u8>,
-    pub(crate) created_at: Option<OffsetDateTime>,
+    pub(crate) created_at: OffsetDateTime,
 }
 
 impl From<MessageRecord> for Message {

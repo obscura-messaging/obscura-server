@@ -7,7 +7,7 @@ pub struct DeviceRecord {
     pub(crate) user_id: Uuid,
     pub(crate) name: Option<String>,
     pub(crate) is_primary: bool,
-    pub(crate) created_at: Option<OffsetDateTime>,
+    pub(crate) created_at: OffsetDateTime,
 }
 
 impl From<DeviceRecord> for crate::domain::device::Device {

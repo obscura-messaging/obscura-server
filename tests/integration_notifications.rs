@@ -58,7 +58,7 @@ async fn test_scheduled_push_delivery() {
     }
 
     // 1. Notify MessageReceived
-    app.notifier.notify(&[user_id], obscura_server::domain::notification::UserEvent::MessageReceived).await;
+    app.notifier.notify(&[user_id], obscura_server::domain::notification::DeviceEvent::MessageReceived).await;
 
     // 2. Wait for push
     let start = std::time::Instant::now();
@@ -265,7 +265,7 @@ async fn test_push_coalescing() {
     }
 
     for _ in 0..5 {
-        app.notifier.notify(&[user_id], obscura_server::domain::notification::UserEvent::MessageReceived).await;
+        app.notifier.notify(&[user_id], obscura_server::domain::notification::DeviceEvent::MessageReceived).await;
     }
 
     tokio::time::sleep(Duration::from_secs(5)).await;

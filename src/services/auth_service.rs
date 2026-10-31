@@ -3,17 +3,15 @@ use crate::adapters::database::device_repo::DeviceRepository;
 use crate::adapters::database::refresh_token_repo::RefreshTokenRepository;
 use crate::adapters::database::user_repo::UserRepository;
 use crate::config::AuthConfig;
-use crate::domain::auth::{Claims, Jwt};
-use crate::domain::auth_session::AuthSession;
+use crate::domain::auth::{AuthSession, Claims, Jwt};
+use crate::domain::crypto::{generate_opaque_token, hash_opaque_token};
 use crate::error::{AppError, Result};
 use argon2::{
     Argon2,
     password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash},
 };
-use base64::Engine;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use opentelemetry::{global, metrics::Counter};
-use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -73,10 +71,10 @@ impl AuthService {
         Self { config, pool, user_repo, refresh_repo, device_repo, metrics: Metrics::new() }
     }
 
-    /// Authenticates an existing device of a user and returns a device-scoped session.
+    /// Authenticates an existing device of a user and returns a session.
     ///
     /// # Errors
-    /// Returns `AppError::AuthError` if credentials are invalid.
+    /// Returns `AppError::Unauthorized` if credentials are invalid.
     /// Returns `AppError::Conflict` if `device_id` does not belong to the user.
     #[tracing::instrument(
         skip(self, username, password),
@@ -104,13 +102,13 @@ impl AuthService {
     /// Verifies a username and password and returns the user's id.
     ///
     /// # Errors
-    /// Returns `AppError::AuthError` if credentials are invalid.
+    /// Returns `AppError::Unauthorized` if credentials are invalid.
     pub(crate) async fn verify_credentials(&self, username: &str, password: &str) -> Result<Uuid> {
         let username = crate::domain::user::Username::normalize(username);
         let mut conn = self.pool.acquire().await?;
         let Some(user) = self.user_repo.find_by_username(&mut conn, &username).await? else {
             tracing::warn!("Credentials rejected: user not found");
-            return Err(AppError::AuthError);
+            return Err(AppError::Unauthorized);
         };
         drop(conn);
 
@@ -118,7 +116,7 @@ impl AuthService {
 
         if !self.verify_password(password, &user.password_hash).await? {
             tracing::warn!("Credentials rejected: invalid password");
-            return Err(AppError::AuthError);
+            return Err(AppError::Unauthorized);
         }
         Ok(user.id)
     }
@@ -154,7 +152,7 @@ impl AuthService {
         .map_err(|_| AppError::Internal)?
     }
 
-    /// Creates a device-scoped session with a refresh token.
+    /// Creates a session with a refresh token.
     ///
     /// # Errors
     /// Returns `AppError::Database` if the session cannot be saved.
@@ -166,29 +164,29 @@ impl AuthService {
         device_id: Uuid,
     ) -> Result<AuthSession> {
         let (token, expires_at) = self.issue_access_token(user_id, device_id)?;
-        let refresh_token = Self::generate_opaque_token();
-        let refresh_hash = Self::hash_opaque_token(&refresh_token);
+        let refresh_token = generate_opaque_token();
+        let refresh_hash = hash_opaque_token(&refresh_token);
         self.refresh_repo.create(conn, device_id, &refresh_hash, self.config.refresh_token_ttl_days).await?;
 
         Ok(AuthSession { token, refresh_token, expires_at, device_id })
     }
 
-    /// Refreshes a device-scoped session.
+    /// Refreshes a session.
     ///
     /// # Errors
-    /// Returns `AppError::AuthError` if the refresh token is invalid.
+    /// Returns `AppError::Unauthorized` if the refresh token is invalid.
     #[tracing::instrument(err, skip(self, refresh_token))]
     pub(crate) async fn refresh_session(&self, refresh_token: String) -> Result<AuthSession> {
         let mut conn = self.pool.acquire().await?;
-        let old_hash = Self::hash_opaque_token(&refresh_token);
-        let new_refresh_token = Self::generate_opaque_token();
-        let new_hash = Self::hash_opaque_token(&new_refresh_token);
+        let old_hash = hash_opaque_token(&refresh_token);
+        let new_refresh_token = generate_opaque_token();
+        let new_hash = hash_opaque_token(&new_refresh_token);
 
         let (user_id, device_id) = self
             .refresh_repo
             .rotate_unexpired(&mut conn, &old_hash, &new_hash, self.config.refresh_token_ttl_days)
             .await?
-            .ok_or(AppError::AuthError)?;
+            .ok_or(AppError::Unauthorized)?;
 
         tracing::Span::current().record("user_id", tracing::field::display(user_id));
 
@@ -215,7 +213,7 @@ impl AuthService {
     #[tracing::instrument(err, skip(self, refresh_token), fields(user.id = %user_id))]
     pub(crate) async fn logout(&self, user_id: Uuid, refresh_token: String) -> Result<()> {
         let mut conn = self.pool.acquire().await?;
-        let hash = Self::hash_opaque_token(&refresh_token);
+        let hash = hash_opaque_token(&refresh_token);
         self.refresh_repo.delete_owned(&mut conn, &hash, user_id).await?;
         self.metrics.logout.add(1, &[]);
         Ok(())
@@ -224,13 +222,13 @@ impl AuthService {
     /// Verifies a JWT access token and that its device still exists. Returns (`user_id`, `device_id`).
     ///
     /// # Errors
-    /// Returns `AppError::AuthError` if the token is invalid, expired, or names a deleted device.
+    /// Returns `AppError::Unauthorized` if the token is invalid, expired, or names a deleted device.
     /// Returns `AppError::Database` if the device lookup fails.
     pub(crate) async fn authenticate(&self, jwt: &Jwt) -> Result<(Uuid, Uuid)> {
         let (user_id, device_id) = self.verify_token(jwt)?;
         let mut conn = self.pool.acquire().await?;
         if !self.device_repo.belongs_to_user(&mut conn, device_id, user_id).await? {
-            return Err(AppError::AuthError);
+            return Err(AppError::Unauthorized);
         }
         Ok((user_id, device_id))
     }
@@ -238,14 +236,14 @@ impl AuthService {
     /// Verifies a JWT access token and returns (`user_id`, `device_id`).
     ///
     /// # Errors
-    /// Returns `AppError::AuthError` if the token is invalid or expired.
+    /// Returns `AppError::Unauthorized` if the token is invalid or expired.
     fn verify_token(&self, jwt: &Jwt) -> Result<(Uuid, Uuid)> {
         let token_data = decode::<Claims>(
             jwt.as_str(),
             &DecodingKey::from_secret(self.config.jwt_secret.as_bytes()),
             &Validation::default(),
         )
-        .map_err(|_| AppError::AuthError)?;
+        .map_err(|_| AppError::Unauthorized)?;
 
         Ok((token_data.claims.sub, token_data.claims.device_id))
     }
@@ -255,15 +253,6 @@ impl AuthService {
             .map_err(|_| AppError::Internal)?;
 
         Ok(Jwt(token))
-    }
-
-    pub(crate) fn generate_opaque_token() -> String {
-        let bytes = rand::random::<[u8; 32]>();
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-    }
-
-    pub(crate) fn hash_opaque_token(token: &str) -> [u8; 32] {
-        Sha256::digest(token.as_bytes()).into()
     }
 }
 
@@ -309,17 +298,5 @@ mod tests {
 
         assert!(service.verify_password(password, &hash).await.expect("Failed to verify password"));
         assert!(!service.verify_password("wrong_password", &hash).await.expect("Failed to verify password"));
-    }
-
-    #[tokio::test]
-    async fn test_opaque_token_logic() {
-        let token1 = AuthService::generate_opaque_token();
-        let token2 = AuthService::generate_opaque_token();
-
-        assert_ne!(token1, token2);
-
-        let hash1 = AuthService::hash_opaque_token(&token1);
-        let hash2 = AuthService::hash_opaque_token(&token1);
-        assert_eq!(hash1, hash2);
     }
 }

@@ -49,12 +49,12 @@ For production, set at least the JWT secret and the database, Valkey and storage
 | **Notifications** | | | |
 | `--notifications-cleanup-interval-secs` | `OBSCURA_NOTIFICATIONS_CLEANUP_INTERVAL_SECS` | `60` | Reclaim per-device channels with no listener. |
 | `--notifications-global-channel-capacity` | `OBSCURA_NOTIFICATIONS_GLOBAL_CHANNEL_CAPACITY` | `1024` | Pub/sub dispatcher buffer. |
-| `--notifications-user-channel-capacity` | `OBSCURA_NOTIFICATIONS_USER_CHANNEL_CAPACITY` | `64` | Per-device event buffer. |
+| `--notifications-device-channel-capacity` | `OBSCURA_NOTIFICATIONS_DEVICE_CHANNEL_CAPACITY` | `64` | Per-device event buffer. |
 | `--notifications-push-delay-secs` | `OBSCURA_NOTIFICATIONS_PUSH_DELAY_SECS` | `2` | Push is sent after this unless the device connects or acks first. |
 | `--notifications-worker-interval-secs` | `OBSCURA_NOTIFICATIONS_WORKER_INTERVAL_SECS` | `1` | Push queue poll interval. |
 | `--notifications-worker-concurrency` | `OBSCURA_NOTIFICATIONS_WORKER_CONCURRENCY` | `100` | Concurrent pushes; also jobs leased per poll. |
 | `--notifications-push-queue-key` | `OBSCURA_NOTIFICATIONS_PUSH_QUEUE_KEY` | `jobs:push_notifications` | Push queue key. |
-| `--notifications-channel-prefix` | `OBSCURA_NOTIFICATIONS_CHANNEL_PREFIX` | `user:` | Pub/sub channel prefix (suffix is the device ID). |
+| `--notifications-channel-prefix` | `OBSCURA_NOTIFICATIONS_CHANNEL_PREFIX` | `device:` | Pub/sub channel prefix (suffix is the device ID). |
 | `--notifications-visibility-timeout-secs` | `OBSCURA_NOTIFICATIONS_VISIBILITY_TIMEOUT_SECS` | `30` | Push job lease. |
 | `--notifications-invalid-token-cleanup-interval-secs` | `OBSCURA_NOTIFICATIONS_INVALID_TOKEN_CLEANUP_INTERVAL_SECS` | `5` | Flush tokens FCM rejected. |
 | `--notifications-invalid-token-cleanup-batch-size` | `OBSCURA_NOTIFICATIONS_INVALID_TOKEN_CLEANUP_BATCH_SIZE` | `50` | Tokens deleted per batch. |

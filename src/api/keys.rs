@@ -2,14 +2,12 @@ use crate::api::AppState;
 use crate::api::middleware::AuthUser;
 use crate::api::schemas::keys::{PreKeyBundleResponse, PreKeyUploadRequest};
 use crate::error::{AppError, Result};
-use crate::services::key_service::KeyUploadParams;
 use axum::{
     Json,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
 };
-use std::convert::TryInto;
 use uuid::Uuid;
 
 /// Fetches all pre-key bundles for a user (one per device).
@@ -55,20 +53,7 @@ pub(crate) async fn upload_keys(
     State(state): State<AppState>,
     Json(payload): Json<PreKeyUploadRequest>,
 ) -> Result<impl IntoResponse> {
-    payload.validate().map_err(AppError::BadRequest)?;
-
-    let params = KeyUploadParams {
-        device_id: auth.device_id,
-        signed_pre_key: payload.signed_pre_key.try_into().map_err(AppError::BadRequest)?,
-        one_time_pre_keys: payload
-            .one_time_pre_keys
-            .into_iter()
-            .map(TryInto::try_into)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(AppError::BadRequest)?,
-    };
-
-    state.key_service.upload_keys(params).await?;
-
+    let upload = payload.try_into().map_err(AppError::BadRequest)?;
+    state.key_service.upload_keys(auth.device_id, upload).await?;
     Ok(StatusCode::OK)
 }

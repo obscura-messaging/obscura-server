@@ -135,27 +135,18 @@ impl MessagePump {
         let batch_size = messages.len();
         tracing::Span::current().record("batch.count", batch_size);
 
-        if let Some(last_msg) = messages.last()
-            && let Some(ts) = last_msg.created_at
-        {
-            *cursor = Some((ts, last_msg.id));
+        if let Some(last_msg) = messages.last() {
+            *cursor = Some((last_msg.created_at, last_msg.id));
         }
 
         let envelopes: Vec<proto::Envelope> = messages
             .into_iter()
-            .map(|msg| {
-                let timestamp = msg.created_at.map_or_else(
-                    || u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000).unwrap_or(0),
-                    |ts| u64::try_from(ts.unix_timestamp_nanos() / 1_000_000).unwrap_or(0),
-                );
-
-                proto::Envelope {
-                    id: msg.id.as_bytes().to_vec(),
-                    sender_id: msg.sender_id.as_bytes().to_vec(),
-                    timestamp,
-                    message: msg.content,
-                    sender_device_id: msg.sender_device_id.as_bytes().to_vec(),
-                }
+            .map(|msg| proto::Envelope {
+                id: msg.id.as_bytes().to_vec(),
+                sender_id: msg.sender_id.as_bytes().to_vec(),
+                timestamp: u64::try_from(msg.created_at.unix_timestamp_nanos() / 1_000_000).unwrap_or(0),
+                message: msg.content,
+                sender_device_id: msg.sender_device_id.as_bytes().to_vec(),
             })
             .collect();
 

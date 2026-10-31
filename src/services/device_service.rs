@@ -2,11 +2,11 @@ use crate::adapters::database::DbPool;
 use crate::adapters::database::device_repo::DeviceRepository;
 use crate::adapters::database::link_session_repo::LinkSessionRepository;
 use crate::adapters::database::user_repo::UserRepository;
-use crate::domain::auth_session::AuthSession;
-use crate::domain::crypto::PublicKey;
+use crate::domain::auth::AuthSession;
+use crate::domain::crypto::{PublicKey, hash_opaque_token};
 use crate::domain::device::Device;
 use crate::domain::keys::{OneTimePreKey, SignedPreKey};
-use crate::domain::notification::UserEvent;
+use crate::domain::notification::DeviceEvent;
 use crate::error::{AppError, Result};
 use crate::services::auth_service::AuthService;
 use crate::services::key_service::KeyService;
@@ -144,7 +144,7 @@ impl DeviceService {
         err(level = "warn")
     )]
     pub(crate) async fn create_linked_device(&self, device: NewLinkedDevice) -> Result<AuthSession> {
-        let id_hash = AuthService::hash_opaque_token(&device.link_session_id);
+        let id_hash = hash_opaque_token(&device.link_session_id);
         let mut tx = self.pool.begin().await?;
 
         let user_id = self
@@ -238,7 +238,7 @@ impl DeviceService {
         self.device_repo.delete(&mut tx, device_id, user_id).await?;
         tx.commit().await?;
 
-        self.notifier.notify(&[device_id], UserEvent::Disconnect).await;
+        self.notifier.notify(&[device_id], DeviceEvent::Disconnect).await;
 
         tracing::info!("Device deleted");
         self.metrics.devices_deleted.add(1, &[]);
@@ -250,7 +250,7 @@ impl DeviceService {
     /// a new primary device in one transaction. Authorized by the account password.
     ///
     /// # Errors
-    /// Returns `AppError::AuthError` if the credentials are invalid.
+    /// Returns `AppError::Unauthorized` if the credentials are invalid.
     /// Returns `AppError::BadRequest` if the keys do not verify.
     /// Returns `AppError::Database` if any database operation fails.
     #[tracing::instrument(
@@ -274,7 +274,7 @@ impl DeviceService {
         let session = self.provision_device(&mut tx, user_id, keys, true).await?;
         tx.commit().await?;
 
-        self.notifier.notify(&deleted, UserEvent::Disconnect).await;
+        self.notifier.notify(&deleted, DeviceEvent::Disconnect).await;
 
         tracing::info!(devices = deleted.len(), "Account reset and new primary provisioned");
         self.metrics.account_resets.add(1, &[]);

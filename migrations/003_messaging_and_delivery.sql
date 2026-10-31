@@ -6,7 +6,7 @@ CREATE TABLE messages (
     device_id UUID NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     submission_id UUID NOT NULL,
     content BYTEA NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at TIMESTAMPTZ NOT NULL,
     -- Deduplication constraint: A sending device cannot send the same submission_id twice.
     UNIQUE (sender_device_id, submission_id)

@@ -28,3 +28,9 @@ pub struct PreKeyStatus {
     pub one_time_pre_key_count: i32,
     pub min_threshold: i32,
 }
+
+#[derive(Debug, Clone)]
+pub struct PreKeyUpload {
+    pub signed_pre_key: SignedPreKey,
+    pub one_time_pre_keys: Vec<OneTimePreKey>,
+}

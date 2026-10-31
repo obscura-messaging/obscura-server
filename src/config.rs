@@ -442,9 +442,9 @@ pub struct NotificationConfig {
     #[arg(long = "notifications-global-channel-capacity", env = "OBSCURA_NOTIFICATIONS_GLOBAL_CHANNEL_CAPACITY", default_value_t = NotificationConfig::default().global_channel_capacity)]
     pub global_channel_capacity: usize,
 
-    /// Capacity of the per-user notification channel
-    #[arg(long = "notifications-user-channel-capacity", env = "OBSCURA_NOTIFICATIONS_USER_CHANNEL_CAPACITY", default_value_t = NotificationConfig::default().user_channel_capacity)]
-    pub user_channel_capacity: usize,
+    /// Capacity of the per-device notification channel
+    #[arg(long = "notifications-device-channel-capacity", env = "OBSCURA_NOTIFICATIONS_DEVICE_CHANNEL_CAPACITY", default_value_t = NotificationConfig::default().device_channel_capacity)]
+    pub device_channel_capacity: usize,
 
     /// Delay in seconds before a push notification is sent as a fallback
     #[arg(long = "notifications-push-delay-secs", env = "OBSCURA_NOTIFICATIONS_PUSH_DELAY_SECS", default_value_t = NotificationConfig::default().push_delay_secs)]
@@ -488,12 +488,12 @@ impl Default for NotificationConfig {
         Self {
             cleanup_interval_secs: 60,
             global_channel_capacity: 1024,
-            user_channel_capacity: 64,
+            device_channel_capacity: 64,
             push_delay_secs: 2,
             worker_interval_secs: 1,
             worker_concurrency: 100,
             push_queue_key: "jobs:push_notifications".to_string(),
-            channel_prefix: "user:".to_string(),
+            channel_prefix: "device:".to_string(),
             visibility_timeout_secs: 30,
             invalid_token_cleanup_interval_secs: 5,
             invalid_token_cleanup_batch_size: 50,

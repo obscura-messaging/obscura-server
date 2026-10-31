@@ -1,5 +1,21 @@
+use base64::Engine;
+use sha2::{Digest, Sha256};
+
 /// Prefix byte used by Signal/DJB for Montgomery (X25519) keys.
 pub const DJB_KEY_PREFIX: u8 = 0x05;
+
+/// Generates a 256-bit cryptographically random URL-safe base64 token (no padding).
+#[must_use]
+pub fn generate_opaque_token() -> String {
+    let bytes = rand::random::<[u8; 32]>();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Hashes an opaque token with SHA-256.
+#[must_use]
+pub fn hash_opaque_token(token: &str) -> [u8; 32] {
+    Sha256::digest(token.as_bytes()).into()
+}
 
 /// Strong type for public keys.
 /// We store the full 33-byte wire format (`DJB_KEY_PREFIX` + 32-byte Montgomery key).
@@ -171,5 +187,17 @@ mod tests {
         let vec: Vec<u8> = sig.into();
         assert_eq!(vec.len(), 64);
         assert_eq!(vec[0], 1);
+    }
+
+    #[test]
+    fn test_opaque_token_logic() {
+        let token1 = generate_opaque_token();
+        let token2 = generate_opaque_token();
+
+        assert_ne!(token1, token2);
+
+        let hash1 = hash_opaque_token(&token1);
+        let hash2 = hash_opaque_token(&token1);
+        assert_eq!(hash1, hash2);
     }
 }

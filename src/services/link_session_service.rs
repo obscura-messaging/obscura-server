@@ -1,6 +1,7 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::device_repo::DeviceRepository;
 use crate::adapters::database::link_session_repo::LinkSessionRepository;
+use crate::domain::crypto::{generate_opaque_token, hash_opaque_token};
 use crate::error::{AppError, Result};
 use crate::services::auth_service::AuthService;
 use std::time::Duration;
@@ -42,16 +43,16 @@ impl LinkSessionService {
     /// previous unapproved session of the user and purging expired sessions.
     ///
     /// # Errors
-    /// Returns `AppError::AuthError` if the credentials are invalid.
+    /// Returns `AppError::Unauthorized` if the credentials are invalid.
     /// Returns `AppError::Database` if any database operation fails.
     #[tracing::instrument(skip(self, username, password), fields(user.id = tracing::field::Empty), err(level = "warn"))]
     pub(crate) async fn create(&self, username: &str, password: &str) -> Result<NewLinkSession> {
         let user_id = self.auth_service.verify_credentials(username, password).await?;
-        let id = AuthService::generate_opaque_token();
+        let id = generate_opaque_token();
         let expires_at = OffsetDateTime::now_utc() + LINK_SESSION_TTL;
 
         let mut conn = self.pool.acquire().await?;
-        self.repo.create(&mut conn, &AuthService::hash_opaque_token(&id), user_id, expires_at).await?;
+        self.repo.create(&mut conn, &hash_opaque_token(&id), user_id, expires_at).await?;
 
         Ok(NewLinkSession { id, user_id, expires_at })
     }
@@ -75,7 +76,7 @@ impl LinkSessionService {
             return Err(AppError::PayloadTooLarge);
         }
 
-        let id_hash = AuthService::hash_opaque_token(id);
+        let id_hash = hash_opaque_token(id);
         if self.repo.approve(&mut conn, &id_hash, user_id, body).await? {
             return Ok(());
         }
@@ -91,7 +92,7 @@ impl LinkSessionService {
     /// Returns `AppError::NotFound` if the session is unknown, expired, or consumed.
     #[tracing::instrument(skip(self, id), err(level = "warn"))]
     pub(crate) async fn get_body(&self, id: &str) -> Result<Option<Vec<u8>>> {
-        let id_hash = AuthService::hash_opaque_token(id);
+        let id_hash = hash_opaque_token(id);
         let mut conn = self.pool.acquire().await?;
         self.repo.find_body(&mut conn, &id_hash).await?.ok_or(AppError::NotFound)
     }

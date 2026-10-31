@@ -1,5 +1,6 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::push_token_repo::PushTokenRepository;
+use crate::domain::device::PushToken;
 use crate::error::Result;
 use uuid::Uuid;
 
@@ -19,9 +20,8 @@ impl PushTokenService {
     ///
     /// # Errors
     /// Returns an error if the database operation fails.
-    pub async fn register_token(&self, device_id: Uuid, token: String) -> Result<()> {
-        // Here we could add validation (e.g. token format checks)
+    pub async fn register_token(&self, device_id: Uuid, token: &PushToken) -> Result<()> {
         let mut conn = self.pool.acquire().await?;
-        self.repo.upsert_token(&mut conn, device_id, &token).await
+        self.repo.upsert_token(&mut conn, device_id, token.as_str()).await
     }
 }
