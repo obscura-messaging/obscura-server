@@ -3,7 +3,7 @@ use crate::adapters::database::device_repo::DeviceRepository;
 use crate::adapters::database::link_session_repo::LinkSessionRepository;
 use crate::adapters::database::user_repo::UserRepository;
 use crate::domain::auth::AuthSession;
-use crate::domain::crypto::{PublicKey, hash_opaque_token};
+use crate::domain::crypto::{PublicKey, generate_opaque_token, hash_opaque_token};
 use crate::domain::device::Device;
 use crate::domain::keys::{OneTimePreKey, SignedPreKey};
 use crate::domain::notification::DeviceEvent;
@@ -12,13 +12,18 @@ use crate::services::auth_service::AuthService;
 use crate::services::key_service::KeyService;
 use crate::services::notification_service::NotificationService;
 use opentelemetry::{global, metrics::Counter};
+use std::time::Duration;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 const INVALID_LINK_SESSION: &str = "Invalid link session";
 const IDENTITY_KEY_MISMATCH: &str = "Identity key does not match the account identity";
+const LINK_SESSION_TTL: Duration = Duration::from_secs(600);
+const MAX_LINK_SESSION_BODY_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug)]
 struct Metrics {
+    registered_total: Counter<u64>,
     devices_created: Counter<u64>,
     devices_deleted: Counter<u64>,
     account_resets: Counter<u64>,
@@ -28,6 +33,10 @@ impl Metrics {
     fn new() -> Self {
         let meter = global::meter("obscura-server");
         Self {
+            registered_total: meter
+                .u64_counter("obscura_registrations_total")
+                .with_description("Total number of successful user registrations")
+                .build(),
             devices_created: meter
                 .u64_counter("obscura_devices_created_total")
                 .with_description("Total number of devices provisioned")
@@ -57,6 +66,13 @@ pub struct NewDeviceKeys {
 pub struct NewLinkedDevice {
     pub link_session_id: String,
     pub keys: NewDeviceKeys,
+}
+
+#[derive(Debug)]
+pub struct NewLinkSession {
+    pub id: String,
+    pub user_id: Uuid,
+    pub expires_at: OffsetDateTime,
 }
 
 #[derive(Clone, Debug)]
@@ -115,6 +131,7 @@ impl DeviceService {
         password: String,
         keys: NewDeviceKeys,
     ) -> Result<AuthSession> {
+        self.key_service.check_batch_size(&keys.one_time_pre_keys)?;
         let password_hash = self.auth_service.hash_password(&password).await?;
 
         let mut tx = self.pool.begin().await?;
@@ -125,10 +142,82 @@ impl DeviceService {
         tx.commit().await?;
 
         tracing::info!("Account registered and primary device provisioned");
-        self.auth_service.record_registration();
+        self.metrics.registered_total.add(1, &[]);
         self.metrics.devices_created.add(1, &[]);
 
         Ok(session)
+    }
+
+    /// Verifies the account credentials and creates a link session bound to the user, replacing any
+    /// previous unapproved session of the user and purging expired sessions.
+    ///
+    /// # Errors
+    /// Returns `AppError::Unauthorized` if the credentials are invalid.
+    /// Returns `AppError::Database` if any database operation fails.
+    #[tracing::instrument(skip(self, username, password), fields(user.id = tracing::field::Empty), err(level = "warn"))]
+    pub(crate) async fn create_link_session(&self, username: &str, password: &str) -> Result<NewLinkSession> {
+        let user_id = self.auth_service.verify_credentials(username, password).await?;
+        let id = generate_opaque_token();
+        let expires_at = OffsetDateTime::now_utc() + LINK_SESSION_TTL;
+
+        let mut conn = self.pool.acquire().await?;
+        self.link_session_repo.create(&mut conn, &hash_opaque_token(&id), user_id, expires_at).await?;
+
+        Ok(NewLinkSession { id, user_id, expires_at })
+    }
+
+    /// Approves a link session of the user by storing its body. Only the primary device may approve, and a
+    /// session is approved at most once.
+    ///
+    /// # Errors
+    /// Returns `AppError::Forbidden` if the caller is not the primary device.
+    /// Returns `AppError::PayloadTooLarge` if the body exceeds the size cap.
+    /// Returns `AppError::NotFound` if the session is unknown, expired, or another user's.
+    /// Returns `AppError::Conflict` if the session is already approved.
+    #[tracing::instrument(skip(self, id, body), fields(user.id = %user_id, body.len = body.len()), err(level = "warn"))]
+    pub(crate) async fn approve_link_session(
+        &self,
+        user_id: Uuid,
+        caller_is_primary: bool,
+        id: &str,
+        body: &[u8],
+    ) -> Result<()> {
+        if !caller_is_primary {
+            return Err(AppError::Forbidden("Primary device required".into()));
+        }
+        if body.len() > MAX_LINK_SESSION_BODY_BYTES {
+            return Err(AppError::PayloadTooLarge);
+        }
+
+        let mut conn = self.pool.acquire().await?;
+        let id_hash = hash_opaque_token(id);
+        if self.link_session_repo.approve(&mut conn, &id_hash, user_id, body).await? {
+            return Ok(());
+        }
+        match self.link_session_repo.find_body_for_user(&mut conn, &id_hash, user_id).await? {
+            Some(_) => Err(AppError::Conflict("Link session already approved".into())),
+            None => Err(AppError::NotFound),
+        }
+    }
+
+    /// Returns the body of an approved link session, or `None` if it is not approved yet.
+    ///
+    /// # Errors
+    /// Returns `AppError::NotFound` if the session is unknown, expired, or consumed.
+    #[tracing::instrument(skip(self, id), err(level = "warn"))]
+    pub(crate) async fn get_link_session_body(&self, id: &str) -> Result<Option<Vec<u8>>> {
+        let id_hash = hash_opaque_token(id);
+        let mut conn = self.pool.acquire().await?;
+        self.link_session_repo.find_body(&mut conn, &id_hash).await?.ok_or(AppError::NotFound)
+    }
+
+    /// Deletes all expired link sessions.
+    ///
+    /// # Errors
+    /// Returns `AppError::Database` if the deletion fails.
+    pub async fn cleanup_expired_link_sessions(&self) -> Result<u64> {
+        let mut conn = self.pool.acquire().await?;
+        self.link_session_repo.delete_expired(&mut conn).await
     }
 
     /// Provisions a linked device authorized by an approved link session and returns its session.
@@ -144,6 +233,7 @@ impl DeviceService {
         err(level = "warn")
     )]
     pub(crate) async fn create_linked_device(&self, device: NewLinkedDevice) -> Result<AuthSession> {
+        self.key_service.check_batch_size(&device.keys.one_time_pre_keys)?;
         let id_hash = hash_opaque_token(&device.link_session_id);
         let mut tx = self.pool.begin().await?;
 
@@ -192,13 +282,7 @@ impl DeviceService {
         tracing::Span::current().record("device.id", tracing::field::display(created.id));
 
         self.key_service
-            .store_new_device_keys(
-                &mut *tx,
-                created.id,
-                &keys.identity_key,
-                &keys.signed_pre_key,
-                &keys.one_time_pre_keys,
-            )
+            .store_new_device_keys(&mut *tx, created.id, &keys.signed_pre_key, &keys.one_time_pre_keys)
             .await?;
 
         self.auth_service.create_session(&mut *tx, user_id, created.id).await
@@ -222,18 +306,22 @@ impl DeviceService {
     /// Returns `AppError::NotFound` if the device doesn't exist or isn't owned by the user.
     /// Returns `AppError::Forbidden` if the caller may not delete the device.
     #[tracing::instrument(skip(self), fields(user.id = %user_id, device.id = %device_id), err(level = "warn"))]
-    pub(crate) async fn delete_device(&self, user_id: Uuid, caller_device_id: Uuid, device_id: Uuid) -> Result<()> {
+    pub(crate) async fn delete_device(
+        &self,
+        user_id: Uuid,
+        caller_device_id: Uuid,
+        caller_is_primary: bool,
+        device_id: Uuid,
+    ) -> Result<()> {
+        if caller_device_id != device_id && !caller_is_primary {
+            return Err(AppError::Forbidden("Only the primary device can delete other devices".into()));
+        }
+
         let mut tx = self.pool.begin().await?;
         self.user_repo.lock_identity_key(&mut tx, user_id).await?;
         let target = self.device_repo.find_by_id(&mut tx, device_id, user_id).await?.ok_or(AppError::NotFound)?;
         if target.is_primary {
             return Err(AppError::Forbidden("The primary device cannot be deleted; reset the account instead".into()));
-        }
-        if caller_device_id != device_id {
-            let caller = self.device_repo.find_by_id(&mut tx, caller_device_id, user_id).await?;
-            if !caller.is_some_and(|c| c.is_primary) {
-                return Err(AppError::Forbidden("Only the primary device can delete other devices".into()));
-            }
         }
         self.device_repo.delete(&mut tx, device_id, user_id).await?;
         tx.commit().await?;
@@ -251,7 +339,7 @@ impl DeviceService {
     ///
     /// # Errors
     /// Returns `AppError::Unauthorized` if the credentials are invalid.
-    /// Returns `AppError::BadRequest` if the keys do not verify.
+    /// Returns `AppError::BadRequest` if the batch is too large.
     /// Returns `AppError::Database` if any database operation fails.
     #[tracing::instrument(
         skip(self, username, password, keys),
@@ -264,6 +352,7 @@ impl DeviceService {
         password: &str,
         keys: NewDeviceKeys,
     ) -> Result<AuthSession> {
+        self.key_service.check_batch_size(&keys.one_time_pre_keys)?;
         let user_id = self.auth_service.verify_credentials(username, password).await?;
 
         let mut tx = self.pool.begin().await?;
@@ -282,14 +371,5 @@ impl DeviceService {
         self.metrics.devices_created.add(1, &[]);
 
         Ok(session)
-    }
-
-    /// Checks if a device exists.
-    ///
-    /// # Errors
-    /// Returns `AppError::Database` if the query fails.
-    pub(crate) async fn device_exists(&self, device_id: Uuid) -> Result<bool> {
-        let mut conn = self.pool.acquire().await?;
-        self.device_repo.exists(&mut conn, device_id).await
     }
 }

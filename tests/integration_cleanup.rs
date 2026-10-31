@@ -14,8 +14,12 @@
     clippy::similar_names
 )]
 use obscura_server::adapters::database::message_repo::MessageRepository;
-use obscura_server::config::MessagingConfig;
+use obscura_server::adapters::redis::{NotificationRepository, RedisCache, RedisClient};
+use obscura_server::config::{MessagingConfig, NotificationConfig, PubSubConfig};
+use obscura_server::services::message_service::MessageService;
+use obscura_server::services::notification_service::NotificationService;
 use obscura_server::workers::MessageCleanupWorker;
+use std::sync::Arc;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
@@ -30,7 +34,16 @@ async fn test_message_cleanup_worker_full_orchestration() {
         ..MessagingConfig::default()
     };
 
-    let worker = MessageCleanupWorker::new(pool.clone(), repo.clone(), config);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let pubsub = RedisClient::new(&PubSubConfig::default(), 1024, shutdown_rx).await.unwrap();
+    let notif_config = NotificationConfig::default();
+    let notifier = NotificationService::new(
+        Arc::new(NotificationRepository::new(Arc::clone(&pubsub), &notif_config)),
+        &notif_config,
+    );
+    let submission_cache = RedisCache::new(pubsub, "test:idemp:".to_string(), 60);
+    let service = MessageService::new(pool.clone(), repo, notifier, submission_cache, config.max_inbox_size, 30);
+    let worker = MessageCleanupWorker::new(service, config.cleanup_interval_secs);
 
     // --- Part 1: Overflow Pruning ---
     let user_a = Uuid::new_v4();

@@ -109,24 +109,25 @@ impl DeviceRepository {
         Ok(record.map(Into::into))
     }
 
-    /// Checks if a device belongs to a specific user.
+    /// Returns whether a device owned by `user_id` is the primary device, or `None` if it does not
+    /// belong to `user_id`.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn belongs_to_user(
+    pub(crate) async fn find_is_primary(
         &self,
         conn: &mut PgConnection,
         device_id: Uuid,
         user_id: Uuid,
-    ) -> Result<bool> {
-        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM devices WHERE id = $1 AND user_id = $2)")
+    ) -> Result<Option<bool>> {
+        let is_primary = sqlx::query_scalar("SELECT is_primary FROM devices WHERE id = $1 AND user_id = $2")
             .bind(device_id)
             .bind(user_id)
-            .fetch_one(conn)
+            .fetch_optional(conn)
             .await?;
 
-        Ok(exists)
+        Ok(is_primary)
     }
 
     /// Checks if a device exists.

@@ -1,11 +1,9 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::key_repo::KeyRepository;
 use crate::config::MessagingConfig;
-use crate::domain::crypto::PublicKey;
 use crate::domain::keys::{OneTimePreKey, PreKeyBundle, PreKeyStatus, PreKeyUpload, SignedPreKey};
 use crate::domain::notification::DeviceEvent;
 use crate::error::{AppError, Result};
-use crate::services::crypto_service::CryptoService;
 use crate::services::notification_service::NotificationService;
 use opentelemetry::{global, metrics::Counter};
 use sqlx::PgConnection;
@@ -32,7 +30,6 @@ impl Metrics {
 pub struct KeyService {
     pool: DbPool,
     repo: KeyRepository,
-    crypto_service: CryptoService,
     notifier: NotificationService,
     config: MessagingConfig,
     metrics: Metrics,
@@ -40,14 +37,8 @@ pub struct KeyService {
 
 impl KeyService {
     #[must_use]
-    pub fn new(
-        pool: DbPool,
-        repo: KeyRepository,
-        crypto_service: CryptoService,
-        notifier: NotificationService,
-        config: MessagingConfig,
-    ) -> Self {
-        Self { pool, repo, crypto_service, notifier, config, metrics: Metrics::new() }
+    pub fn new(pool: DbPool, repo: KeyRepository, notifier: NotificationService, config: MessagingConfig) -> Self {
+        Self { pool, repo, notifier, config, metrics: Metrics::new() }
     }
 
     /// Fetches one pre-key bundle for each of a user's devices, or for `device_id` only, consuming a
@@ -111,11 +102,12 @@ impl KeyService {
     /// Returns `AppError::Database` if the database operation fails.
     #[tracing::instrument(skip(self, upload), fields(device.id = %device_id), err(level = "warn"))]
     pub(crate) async fn upload_keys(&self, device_id: Uuid, upload: PreKeyUpload) -> Result<()> {
+        self.check_batch_size(&upload.one_time_pre_keys)?;
+
         let mut tx = self.pool.begin().await?;
 
         let identity_key = self.repo.lock_device_identity_key(&mut tx, device_id).await?.ok_or(AppError::NotFound)?;
-        self.verify_keys(&identity_key, &upload.signed_pre_key)?;
-        self.check_batch_size(&upload.one_time_pre_keys)?;
+        upload.signed_pre_key.verify(&identity_key).map_err(AppError::BadRequest)?;
 
         let max_id = self.repo.find_max_signed_pre_key_id(&mut tx, device_id).await?;
         if let Some(current_max) = max_id
@@ -141,21 +133,19 @@ impl KeyService {
         Ok(())
     }
 
-    /// Stores the first keys of a device created in the same transaction, verified against the account
-    /// identity key.
+    /// Stores the initial pre-keys of a newly provisioned device in the enclosing transaction.
+    /// The signed pre-key signature was already verified against the identity key at parse time.
     ///
     /// # Errors
-    /// Returns `AppError::BadRequest` if the signature does not verify or the batch is too large.
+    /// Returns `AppError::BadRequest` if the batch is too large.
     /// Returns `AppError::Database` if the database operation fails.
     pub(crate) async fn store_new_device_keys(
         &self,
         conn: &mut PgConnection,
         device_id: Uuid,
-        identity_key: &PublicKey,
         signed_pre_key: &SignedPreKey,
         one_time_pre_keys: &[OneTimePreKey],
     ) -> Result<()> {
-        self.verify_keys(identity_key, signed_pre_key)?;
         self.check_batch_size(one_time_pre_keys)?;
         self.store_pre_keys(conn, device_id, signed_pre_key, one_time_pre_keys).await
     }
@@ -179,24 +169,10 @@ impl KeyService {
         self.repo.insert_one_time_pre_keys(&mut *conn, device_id, one_time_pre_keys).await
     }
 
-    fn check_batch_size(&self, one_time_pre_keys: &[OneTimePreKey]) -> Result<()> {
+    pub(crate) fn check_batch_size(&self, one_time_pre_keys: &[OneTimePreKey]) -> Result<()> {
         if i64::try_from(one_time_pre_keys.len()).unwrap_or(i64::MAX) > self.config.max_pre_keys {
             return Err(AppError::BadRequest(format!("Batch too large. Limit is {}", self.config.max_pre_keys)));
         }
         Ok(())
-    }
-
-    fn verify_keys(&self, ik: &PublicKey, signed_pre_key: &SignedPreKey) -> Result<()> {
-        // libsignal-protocol-typescript's generateSignedPreKey signs the 33-byte publicKey ArrayBuffer.
-        // However, some versions or test polyfills might sign the 32-byte raw key.
-        // We try both to be absolutely robust.
-        let raw_32 = signed_pre_key.public_key.as_crypto_bytes();
-        let wire_33 = signed_pre_key.public_key.as_bytes();
-
-        if self.crypto_service.verify_signature(ik, wire_33, &signed_pre_key.signature).is_ok() {
-            return Ok(());
-        }
-
-        self.crypto_service.verify_signature(ik, raw_32, &signed_pre_key.signature)
     }
 }

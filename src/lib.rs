@@ -22,16 +22,13 @@ use crate::adapters::storage::S3Storage;
 use crate::config::{Config, StorageConfig};
 use crate::services::attachment_service::AttachmentService;
 use crate::services::auth_service::AuthService;
-use crate::services::crypto_service::CryptoService;
 use crate::services::device_service::DeviceService;
 use crate::services::gateway::GatewayService;
 use crate::services::health_service::HealthService;
 use crate::services::key_service::KeyService;
-use crate::services::link_session_service::LinkSessionService;
 use crate::services::message_service::MessageService;
 use crate::services::notification_service::NotificationService;
 use crate::services::push_token_service::PushTokenService;
-use crate::services::rate_limit_service::RateLimitService;
 use crate::workers::{
     AttachmentCleanupWorker, MessageCleanupWorker, NotificationWorker, PushNotificationWorker,
     RefreshTokenCleanupWorker,
@@ -46,49 +43,16 @@ pub struct Resources {
     pub s3_client: aws_sdk_s3::Client,
 }
 
-#[derive(Clone)]
-pub struct Adapters {
-    pub device: DeviceRepository,
-    pub key: KeyRepository,
-    pub link_session: LinkSessionRepository,
-    pub message: MessageRepository,
-    pub user: UserRepository,
-    pub refresh: RefreshTokenRepository,
-    pub attachment: AttachmentRepository,
-    pub push_token: PushTokenRepository,
-    pub notification: Arc<adapters::redis::NotificationRepository>,
-    pub storage: Arc<dyn adapters::storage::ObjectStorage>,
-    pub push: Arc<dyn PushProvider>,
-}
-
-impl std::fmt::Debug for Adapters {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Adapters")
-            .field("device", &self.device)
-            .field("key", &self.key)
-            .field("link_session", &self.link_session)
-            .field("message", &self.message)
-            .field("user", &self.user)
-            .field("refresh", &self.refresh)
-            .field("attachment", &self.attachment)
-            .field("push_token", &self.push_token)
-            .field("notification", &self.notification)
-            .finish_non_exhaustive()
-    }
-}
-
 #[derive(Debug)]
 pub struct Services {
     pub key_service: KeyService,
     pub attachment_service: AttachmentService,
     pub device_service: DeviceService,
     pub auth_service: AuthService,
-    pub(crate) message_service: MessageService,
+    pub message_service: MessageService,
     pub(crate) gateway_service: GatewayService,
     pub notification_service: NotificationService,
-    pub link_session_service: LinkSessionService,
     pub push_token_service: PushTokenService,
-    pub rate_limit_service: RateLimitService,
 }
 
 #[derive(Debug)]
@@ -224,40 +188,24 @@ impl AppBuilder {
 
         let resources = Resources { pool: pool.clone(), pubsub: Arc::clone(&pubsub), s3_client: s3_client.clone() };
 
-        // Initialize Adapters (Trait implementations and Repositories)
-        let adapters = Adapters {
-            device: DeviceRepository::new(),
-            key: KeyRepository::new(),
-            link_session: LinkSessionRepository::new(),
-            message: MessageRepository::new(),
-            user: UserRepository::new(),
-            refresh: RefreshTokenRepository::new(),
-            attachment: AttachmentRepository::new(),
-            push_token: PushTokenRepository::new(),
-            notification: Arc::new(adapters::redis::NotificationRepository::new(
-                Arc::clone(&pubsub),
-                &config.notifications,
-            )),
-            storage: Arc::new(S3Storage::new(s3_client.clone(), config.storage.bucket.clone())),
-            push: push_provider,
-        };
+        let device_repo = DeviceRepository::new();
+        let link_session_repo = LinkSessionRepository::new();
+        let user_repo = UserRepository::new();
+        let notification_repo =
+            Arc::new(adapters::redis::NotificationRepository::new(Arc::clone(&pubsub), &config.notifications));
+        let storage: Arc<dyn adapters::storage::ObjectStorage> =
+            Arc::new(S3Storage::new(s3_client.clone(), config.storage.bucket.clone()));
 
         // Initialize Core Services
-        let crypto_service = CryptoService::new();
-        let notifier = NotificationService::new(Arc::clone(&adapters.notification), &config.notifications);
-        let key_service = KeyService::new(
-            pool.clone(),
-            adapters.key.clone(),
-            crypto_service,
-            notifier.clone(),
-            config.messaging.clone(),
-        );
+        let notifier = NotificationService::new(notification_repo, &config.notifications);
+        let key_service =
+            KeyService::new(pool.clone(), KeyRepository::new(), notifier.clone(), config.messaging.clone());
         let auth_service = AuthService::new(
             config.auth.clone(),
             pool.clone(),
-            adapters.user.clone(),
-            adapters.refresh.clone(),
-            adapters.device.clone(),
+            user_repo.clone(),
+            RefreshTokenRepository::new(),
+            device_repo.clone(),
         );
         let submission_cache = RedisCache::new(
             Arc::clone(&pubsub),
@@ -268,46 +216,40 @@ impl AppBuilder {
             RedisCache::new(Arc::clone(&pubsub), "ws:ticket:".to_string(), config.websocket.ticket_ttl_secs);
         let message_service = MessageService::new(
             pool.clone(),
-            adapters.message.clone(),
+            MessageRepository::new(),
             notifier.clone(),
             submission_cache,
+            config.messaging.max_inbox_size,
             config.ttl_days,
         );
         let device_service = DeviceService::new(
             pool.clone(),
-            adapters.device.clone(),
-            adapters.user.clone(),
-            adapters.link_session.clone(),
+            device_repo,
+            user_repo,
+            link_session_repo,
             key_service.clone(),
             auth_service.clone(),
             notifier.clone(),
             config.auth.max_devices_per_user,
         );
-        let link_session_service = LinkSessionService::new(
-            pool.clone(),
-            auth_service.clone(),
-            adapters.device.clone(),
-            adapters.link_session.clone(),
-        );
         let gateway_service = GatewayService::new(
             message_service.clone(),
             key_service.clone(),
-            device_service.clone(),
+            auth_service.clone(),
             notifier.clone(),
             ws_ticket_cache,
             config.websocket.clone(),
         );
-        let push_token_service = PushTokenService::new(pool.clone(), adapters.push_token.clone());
+        let push_token_service = PushTokenService::new(pool.clone(), PushTokenRepository::new());
         let attachment_service = AttachmentService::new(
             pool.clone(),
-            adapters.attachment.clone(),
-            Arc::clone(&adapters.storage),
+            AttachmentRepository::new(),
+            storage,
             config.attachment.clone(),
             config.ttl_days,
         );
-        let rate_limit_service = RateLimitService::new(config.server.trusted_proxies.clone());
         let health_service = HealthService::new(
-            pool.clone(),
+            pool,
             s3_client,
             Arc::clone(&pubsub),
             config.storage.bucket.clone(),
@@ -321,47 +263,38 @@ impl AppBuilder {
             auth_service,
             message_service,
             gateway_service,
-            notification_service: notifier.clone(),
-            link_session_service,
+            notification_service: notifier,
             push_token_service,
-            rate_limit_service,
         };
 
-        let workers = Self::init_workers(config, &pool, &adapters, notifier);
+        let workers = Self::init_workers(config, &services, push_provider);
 
         Ok(App { resources, services, health_service, workers })
     }
 
-    fn init_workers(
-        config: &Config,
-        pool: &adapters::database::DbPool,
-        adapters: &Adapters,
-        notifier: NotificationService,
-    ) -> Workers {
+    fn init_workers(config: &Config, services: &Services, push_provider: Arc<dyn PushProvider>) -> Workers {
         Workers {
-            message_worker: MessageCleanupWorker::new(pool.clone(), adapters.message.clone(), config.messaging.clone()),
+            message_worker: MessageCleanupWorker::new(
+                services.message_service.clone(),
+                config.messaging.cleanup_interval_secs,
+            ),
             attachment_worker: AttachmentCleanupWorker::new(
-                pool.clone(),
-                adapters.attachment.clone(),
-                Arc::clone(&adapters.storage),
-                config.attachment.clone(),
+                services.attachment_service.clone(),
+                config.attachment.cleanup_interval_secs,
             ),
             push_worker: PushNotificationWorker::new(
-                pool.clone(),
-                Arc::clone(&adapters.notification),
-                Arc::clone(&adapters.push),
-                adapters.push_token.clone(),
+                services.notification_service.clone(),
+                services.push_token_service.clone(),
+                push_provider,
                 &config.notifications,
             ),
             notification_worker: NotificationWorker::new(
-                notifier,
-                Arc::clone(&adapters.notification),
+                services.notification_service.clone(),
                 config.notifications.cleanup_interval_secs,
             ),
             refresh_token_worker: RefreshTokenCleanupWorker::new(
-                pool.clone(),
-                adapters.refresh.clone(),
-                adapters.link_session.clone(),
+                services.auth_service.clone(),
+                services.device_service.clone(),
                 config.auth.refresh_token_cleanup_interval_secs,
             ),
         }

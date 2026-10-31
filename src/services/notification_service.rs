@@ -160,6 +160,32 @@ impl NotificationService {
             tracing::error!(error = %e, "Failed to cancel pending push notification");
         }
     }
+
+    /// Subscribes to cross-node real-time notifications from `PubSub`.
+    ///
+    /// # Errors
+    /// Returns an error if the `PubSub` subscription cannot be created.
+    pub async fn subscribe_realtime(
+        &self,
+    ) -> anyhow::Result<broadcast::Receiver<crate::domain::notification::RealtimeNotification>> {
+        self.repo.subscribe_realtime().await
+    }
+
+    /// Leases a batch of due push notification jobs from the scheduler queue.
+    ///
+    /// # Errors
+    /// Returns an error if the Redis operation fails.
+    pub async fn lease_due_push_jobs(&self, limit: isize, timeout_secs: u64) -> anyhow::Result<Vec<Uuid>> {
+        self.repo.lease_due_jobs(limit, timeout_secs).await
+    }
+
+    /// Removes a completed or permanently failed push notification job from the queue.
+    ///
+    /// # Errors
+    /// Returns an error if the Redis operation fails.
+    pub async fn complete_push_job(&self, device_id: Uuid) -> anyhow::Result<()> {
+        self.repo.delete_job(device_id).await
+    }
 }
 
 #[cfg(test)]

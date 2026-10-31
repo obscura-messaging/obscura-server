@@ -1,5 +1,5 @@
 use crate::Services;
-use crate::api::rate_limit::log_rate_limit_events;
+use crate::api::rate_limit::{IpKeyExtractor, RateLimiter, log_rate_limit_events};
 use crate::config::Config;
 use crate::services::attachment_service::AttachmentService;
 use crate::services::auth_service::AuthService;
@@ -7,10 +7,8 @@ use crate::services::device_service::DeviceService;
 use crate::services::gateway::GatewayService;
 use crate::services::health_service::HealthService;
 use crate::services::key_service::KeyService;
-use crate::services::link_session_service::LinkSessionService;
 use crate::services::message_service::MessageService;
 use crate::services::push_token_service::PushTokenService;
-use crate::services::rate_limit_service::RateLimitService;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::{
@@ -33,7 +31,6 @@ pub mod docs;
 pub mod gateway;
 pub mod health;
 pub mod keys;
-pub mod link_sessions;
 pub mod messages;
 pub mod middleware;
 pub mod push_tokens;
@@ -49,14 +46,18 @@ pub(crate) struct AppState {
     pub(crate) auth_service: AuthService,
     pub(crate) message_service: MessageService,
     pub(crate) gateway_service: GatewayService,
-    pub(crate) link_session_service: LinkSessionService,
     pub(crate) push_token_service: PushTokenService,
-    pub(crate) rate_limit_service: RateLimitService,
+    pub(crate) rate_limiter: RateLimiter,
     pub(crate) shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 impl AppState {
-    pub(crate) fn new(config: &Config, services: Services, shutdown_rx: tokio::sync::watch::Receiver<bool>) -> Self {
+    pub(crate) fn new(
+        config: &Config,
+        services: Services,
+        rate_limiter: RateLimiter,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> Self {
         Self {
             config: config.clone(),
             key_service: services.key_service,
@@ -65,9 +66,8 @@ impl AppState {
             auth_service: services.auth_service,
             message_service: services.message_service,
             gateway_service: services.gateway_service,
-            link_session_service: services.link_session_service,
             push_token_service: services.push_token_service,
-            rate_limit_service: services.rate_limit_service,
+            rate_limiter,
             shutdown_rx,
         }
     }
@@ -78,10 +78,7 @@ pub struct MgmtState {
     pub health_service: HealthService,
 }
 
-fn auth_router(
-    config: &Config,
-    rate_limit_extractor: crate::services::rate_limit_service::IpKeyExtractor,
-) -> Router<AppState> {
+fn auth_router(config: &Config, rate_limit_extractor: IpKeyExtractor) -> Router<AppState> {
     // Auth Tier: Stricter limits for expensive/sensitive registration & login
     let auth_interval_ns = 1_000_000_000 / config.rate_limit.auth_per_second.max(1);
     let auth_conf = Arc::new(
@@ -99,20 +96,17 @@ fn auth_router(
     );
 
     Router::new()
-        .route("/users", post(auth::register))
+        .route("/users", post(devices::register))
         .route("/sessions", post(auth::login))
         .route("/sessions", delete(auth::logout))
         .route("/sessions/refresh", post(auth::refresh))
-        .route("/account/reset", post(auth::reset_account))
-        .route("/link-sessions", post(link_sessions::create_link_session))
+        .route("/account/reset", post(devices::reset_account))
+        .route("/link-sessions", post(devices::create_link_session))
         .layer(GovernorLayer::new(auth_conf))
         .layer(standard_timeout)
 }
 
-fn api_router(
-    config: &Config,
-    rate_limit_extractor: crate::services::rate_limit_service::IpKeyExtractor,
-) -> Router<AppState> {
+fn api_router(config: &Config, rate_limit_extractor: IpKeyExtractor) -> Router<AppState> {
     let std_interval_ns = 1_000_000_000 / config.rate_limit.per_second.max(1);
     let standard_conf = Arc::new(
         GovernorConfigBuilder::default()
@@ -128,7 +122,7 @@ fn api_router(
         .route("/devices", get(devices::list_devices))
         .route("/devices/{deviceId}", delete(devices::delete_device))
         .route("/devices/keys", post(keys::upload_keys))
-        .route("/link-sessions/{id}", put(link_sessions::approve_link_session).get(link_sessions::get_link_session))
+        .route("/link-sessions/{id}", put(devices::approve_link_session).get(devices::get_link_session))
         .route("/users/{userId}", get(keys::get_pre_key_bundles))
         .route("/users/{userId}/devices/{deviceId}", get(keys::get_device_pre_key_bundle))
         .route("/messages", post(messages::send_messages))
@@ -226,8 +220,9 @@ fn apply_middleware(router: Router<AppState>, config: &Config, state: AppState) 
 /// # Panics
 /// Panics if the rate limiter configuration cannot be constructed.
 pub fn app_router(config: &Config, services: Services, shutdown_rx: tokio::sync::watch::Receiver<bool>) -> Router {
-    let extractor = services.rate_limit_service.extractor.clone();
-    let state = AppState::new(config, services, shutdown_rx);
+    let rate_limiter = RateLimiter::new(config.server.trusted_proxies.clone());
+    let extractor = rate_limiter.extractor.clone();
+    let state = AppState::new(config, services, rate_limiter, shutdown_rx);
 
     let routes = Router::new().route("/openapi.yaml", get(docs::openapi_yaml)).nest(
         "/v1",

@@ -8,7 +8,7 @@ use crate::adapters::redis::RedisCache;
 use crate::config::WsConfig;
 use crate::error::{AppError, Result};
 use crate::proto::obscura::v1 as proto;
-use crate::services::device_service::DeviceService;
+use crate::services::auth_service::AuthService;
 use crate::services::gateway::session::Session;
 use crate::services::key_service::KeyService;
 use crate::services::message_service::MessageService;
@@ -69,7 +69,7 @@ impl Default for Metrics {
 pub(crate) struct GatewayService {
     message_service: MessageService,
     key_service: KeyService,
-    device_service: DeviceService,
+    auth_service: AuthService,
     notifier: NotificationService,
     ticket_cache: RedisCache,
     config: WsConfig,
@@ -81,12 +81,12 @@ impl GatewayService {
     pub(crate) fn new(
         message_service: MessageService,
         key_service: KeyService,
-        device_service: DeviceService,
+        auth_service: AuthService,
         notifier: NotificationService,
         ticket_cache: RedisCache,
         config: WsConfig,
     ) -> Self {
-        Self { message_service, key_service, device_service, notifier, ticket_cache, config, metrics: Metrics::new() }
+        Self { message_service, key_service, auth_service, notifier, ticket_cache, config, metrics: Metrics::new() }
     }
 
     /// Generates and caches a single-use connection ticket for `device_id`.
@@ -114,7 +114,7 @@ impl GatewayService {
         };
         let id_str = String::from_utf8(bytes).map_err(|_| "Invalid UTF-8 in cache".to_string())?;
         let device_id = Uuid::parse_str(&id_str).map_err(|_| "Invalid device ID format in cache".to_string())?;
-        match self.device_service.device_exists(device_id).await {
+        match self.auth_service.device_exists(device_id).await {
             Ok(true) => Ok(device_id),
             Ok(false) => Err("Ticket device no longer exists".to_string()),
             Err(e) => {

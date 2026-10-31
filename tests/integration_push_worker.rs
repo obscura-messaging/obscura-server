@@ -75,11 +75,16 @@ async fn test_push_worker_invalidates_unregistered_tokens() {
     let _: anyhow::Result<()> = notification_repo.push_jobs(&[user_id], 0).await;
 
     // 3. Setup Worker with FAILING provider and START it
-    let worker = PushNotificationWorker::new(
-        pool.clone(),
+    let notification_service = obscura_server::services::notification_service::NotificationService::new(
         notification_repo,
+        &config.notifications,
+    );
+    let push_token_service =
+        obscura_server::services::push_token_service::PushTokenService::new(pool.clone(), PushTokenRepository::new());
+    let worker = PushNotificationWorker::new(
+        notification_service,
+        push_token_service,
         Arc::new(FailingPushProvider),
-        PushTokenRepository::new(),
         &config.notifications,
     );
 
@@ -158,11 +163,16 @@ async fn test_push_worker_removes_job_when_user_has_no_token() {
     notification_repo.push_jobs(&[user_id], 0).await.unwrap();
 
     // 3. Start Worker
-    let worker = PushNotificationWorker::new(
-        pool.clone(),
+    let notification_service = obscura_server::services::notification_service::NotificationService::new(
         notification_repo.clone(),
+        &config.notifications,
+    );
+    let push_token_service =
+        obscura_server::services::push_token_service::PushTokenService::new(pool.clone(), PushTokenRepository::new());
+    let worker = PushNotificationWorker::new(
+        notification_service,
+        push_token_service,
         Arc::new(MockPushProvider),
-        PushTokenRepository::new(),
         &config.notifications,
     );
 

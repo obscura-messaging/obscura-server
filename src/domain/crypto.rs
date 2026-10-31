@@ -1,5 +1,7 @@
 use base64::Engine;
+use ed25519_dalek::Verifier;
 use sha2::{Digest, Sha256};
+use xeddsa::ConvertMont;
 
 /// Prefix byte used by Signal/DJB for Montgomery (X25519) keys.
 pub const DJB_KEY_PREFIX: u8 = 0x05;
@@ -40,6 +42,33 @@ impl PublicKey {
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 33] {
         &self.0
+    }
+
+    /// Verifies an `XEdDSA` signature against this Montgomery (Curve25519) public key.
+    ///
+    /// Because a Montgomery X-coordinate corresponds to two Edwards points (sign bit 0 and 1),
+    /// both are tried for compatibility across client implementations.
+    ///
+    /// # Errors
+    /// Returns an error if the signature is invalid.
+    pub fn verify_signature(&self, message: &[u8], signature: &Signature) -> Result<(), String> {
+        let pk = xeddsa::xed25519::PublicKey(*self.as_crypto_bytes());
+
+        // Clear the 255th bit of 's' for standard Ed25519 libraries (XEdDSA uses it for the sign bit).
+        let mut sig_canonical = *signature.as_bytes();
+        sig_canonical[63] &= 0x7F;
+        let sig_obj = ed25519_dalek::Signature::from_bytes(&sig_canonical);
+
+        for sign_bit in [0, 1] {
+            if let Ok(ed_pk_bytes) = pk.convert_mont(sign_bit)
+                && let Ok(ed_pk) = ed25519_dalek::VerifyingKey::from_bytes(&ed_pk_bytes)
+                && ed_pk.verify(message, &sig_obj).is_ok()
+            {
+                return Ok(());
+            }
+        }
+
+        Err("Invalid signature".into())
     }
 
     /// Tries to create a `PublicKey` from wire bytes (MUST be 33 bytes with 0x05 prefix).
@@ -199,5 +228,43 @@ mod tests {
         let hash1 = hash_opaque_token(&token1);
         let hash2 = hash_opaque_token(&token1);
         assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_verify_signature_exhaustive_robustness() {
+        use curve25519_dalek::edwards::CompressedEdwardsY;
+        use rand::Rng;
+        use xeddsa::xed25519::PrivateKey;
+        use xeddsa::{CalculateKeyPair, Sign};
+
+        let mut rng = rand::rng();
+        let mut seed = [0u8; 32];
+        rng.fill_bytes(&mut seed);
+        let xed_priv = PrivateKey(seed);
+
+        for ik_sign in [0, 1] {
+            let (_, ed_pub) = xed_priv.calculate_key_pair(ik_sign);
+            let mont_pub = CompressedEdwardsY(ed_pub)
+                .decompress()
+                .expect("Failed to decompress Edwards public key")
+                .to_montgomery()
+                .to_bytes();
+
+            let mut ik_wire = [0u8; 33];
+            ik_wire[0] = DJB_KEY_PREFIX;
+            ik_wire[1..].copy_from_slice(&mont_pub);
+            let ik_pub = PublicKey::new(ik_wire);
+
+            let msg_32 = [0x42u8; 32];
+            let mut msg_33 = [0x00u8; 33];
+            msg_33[0] = DJB_KEY_PREFIX;
+            msg_33[1..].copy_from_slice(&msg_32);
+
+            let sig_32 = Signature::new(xed_priv.sign(&msg_32, &mut rng));
+            let sig_33 = Signature::new(xed_priv.sign(&msg_33, &mut rng));
+
+            assert!(ik_pub.verify_signature(&msg_32, &sig_32).is_ok(), "Failed 32-byte msg for ik_sign={ik_sign}");
+            assert!(ik_pub.verify_signature(&msg_33, &sig_33).is_ok(), "Failed 33-byte msg for ik_sign={ik_sign}");
+        }
     }
 }

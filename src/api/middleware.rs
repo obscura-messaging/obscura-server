@@ -13,6 +13,7 @@ use uuid::Uuid;
 pub struct AuthUser {
     pub(crate) user_id: Uuid,
     pub(crate) device_id: Uuid,
+    pub(crate) is_primary: bool,
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -31,12 +32,12 @@ impl FromRequestParts<AppState> for AuthUser {
         let token = &auth_str[7..];
         let jwt = Jwt::new(token.to_string());
 
-        let (user_id, device_id) = state.auth_service.authenticate(&jwt).await?;
+        let (user_id, device_id, is_primary) = state.auth_service.authenticate(&jwt).await?;
 
         tracing::Span::current().record("user.id", tracing::field::display(user_id));
         tracing::Span::current().record("device.id", tracing::field::display(device_id));
 
-        Ok(Self { user_id, device_id })
+        Ok(Self { user_id, device_id, is_primary })
     }
 }
 

@@ -102,7 +102,7 @@ mod tests {
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
-    pub device_id: String,
+    pub device_id: uuid::Uuid,
 }
 
 #[derive(Debug, Deserialize)]

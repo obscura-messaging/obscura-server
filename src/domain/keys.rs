@@ -8,6 +8,20 @@ pub struct SignedPreKey {
     pub signature: Signature,
 }
 
+impl SignedPreKey {
+    /// Verifies that this signed pre-key was signed by `identity_key` (accepting either 33-byte wire
+    /// format or 32-byte raw key bytes).
+    ///
+    /// # Errors
+    /// Returns an error if the signature does not verify against `identity_key`.
+    pub fn verify(&self, identity_key: &PublicKey) -> Result<(), String> {
+        if identity_key.verify_signature(self.public_key.as_bytes(), &self.signature).is_ok() {
+            return Ok(());
+        }
+        identity_key.verify_signature(self.public_key.as_crypto_bytes(), &self.signature)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OneTimePreKey {
     pub key_id: i32,

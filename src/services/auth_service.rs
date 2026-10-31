@@ -18,7 +18,6 @@ use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 struct Metrics {
-    registered_total: Counter<u64>,
     login: Counter<u64>,
     refresh: Counter<u64>,
     logout: Counter<u64>,
@@ -29,10 +28,6 @@ impl Metrics {
     fn new() -> Self {
         let meter = global::meter("obscura-server");
         Self {
-            registered_total: meter
-                .u64_counter("obscura_registrations_total")
-                .with_description("Total number of successful user registrations")
-                .build(),
             login: meter
                 .u64_counter("obscura_logins_total")
                 .with_description("Total number of successful login attempts")
@@ -85,7 +80,7 @@ impl AuthService {
         let user_id = self.verify_credentials(username, &password).await?;
 
         let mut conn = self.pool.acquire().await?;
-        if !self.device_repo.belongs_to_user(&mut conn, device_id, user_id).await? {
+        if self.device_repo.find_is_primary(&mut conn, device_id, user_id).await?.is_none() {
             tracing::warn!(device_id = %device_id, "Login rejected: device does not belong to user");
             return Err(AppError::Conflict("Device does not belong to this account".into()));
         }
@@ -93,10 +88,6 @@ impl AuthService {
         let session = self.create_session(&mut conn, user_id, device_id).await?;
         self.metrics.login.add(1, &[]);
         Ok(session)
-    }
-
-    pub(crate) fn record_registration(&self) {
-        self.metrics.registered_total.add(1, &[]);
     }
 
     /// Verifies a username and password and returns the user's id.
@@ -219,18 +210,35 @@ impl AuthService {
         Ok(())
     }
 
-    /// Verifies a JWT access token and that its device still exists. Returns (`user_id`, `device_id`).
+    /// Deletes all expired refresh tokens.
+    ///
+    /// # Errors
+    /// Returns `AppError::Database` if the deletion fails.
+    pub async fn cleanup_expired_refresh_tokens(&self) -> Result<u64> {
+        let mut conn = self.pool.acquire().await?;
+        self.refresh_repo.delete_expired(&mut conn).await
+    }
+
+    /// Verifies a JWT access token and that its device still exists. Returns (`user_id`, `device_id`, `is_primary`).
     ///
     /// # Errors
     /// Returns `AppError::Unauthorized` if the token is invalid, expired, or names a deleted device.
     /// Returns `AppError::Database` if the device lookup fails.
-    pub(crate) async fn authenticate(&self, jwt: &Jwt) -> Result<(Uuid, Uuid)> {
+    pub(crate) async fn authenticate(&self, jwt: &Jwt) -> Result<(Uuid, Uuid, bool)> {
         let (user_id, device_id) = self.verify_token(jwt)?;
         let mut conn = self.pool.acquire().await?;
-        if !self.device_repo.belongs_to_user(&mut conn, device_id, user_id).await? {
-            return Err(AppError::Unauthorized);
-        }
-        Ok((user_id, device_id))
+        let is_primary =
+            self.device_repo.find_is_primary(&mut conn, device_id, user_id).await?.ok_or(AppError::Unauthorized)?;
+        Ok((user_id, device_id, is_primary))
+    }
+
+    /// Checks whether a device still exists.
+    ///
+    /// # Errors
+    /// Returns `AppError::Database` if the query fails.
+    pub(crate) async fn device_exists(&self, device_id: Uuid) -> Result<bool> {
+        let mut conn = self.pool.acquire().await?;
+        self.device_repo.exists(&mut conn, device_id).await
     }
 
     /// Verifies a JWT access token and returns (`user_id`, `device_id`).

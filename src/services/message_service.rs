@@ -18,6 +18,7 @@ use uuid::Uuid;
 pub(crate) struct Metrics {
     pub(crate) sent_total: Counter<u64>,
     pub(crate) fetch_batch_size: Histogram<u64>,
+    pub(crate) inbox_overflow: Counter<u64>,
 }
 
 impl Metrics {
@@ -31,6 +32,10 @@ impl Metrics {
             fetch_batch_size: meter
                 .u64_histogram("obscura_message_fetch_batch_size")
                 .with_description("Number of messages fetched in a single batch")
+                .build(),
+            inbox_overflow: meter
+                .u64_counter("obscura_messages_overflow_total")
+                .with_description("Total messages deleted due to inbox overflow")
                 .build(),
         }
     }
@@ -157,25 +162,27 @@ fn resolve_delivery(
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct MessageService {
+pub struct MessageService {
     pool: DbPool,
     repo: MessageRepository,
     notifier: NotificationService,
     submission_cache: RedisCache,
+    max_inbox_size: i64,
     ttl_days: i64,
     metrics: Metrics,
 }
 
 impl MessageService {
     #[must_use]
-    pub(crate) fn new(
+    pub fn new(
         pool: DbPool,
         repo: MessageRepository,
         notifier: NotificationService,
         submission_cache: RedisCache,
+        max_inbox_size: i64,
         ttl_days: i64,
     ) -> Self {
-        Self { pool, repo, notifier, submission_cache, ttl_days, metrics: Metrics::new() }
+        Self { pool, repo, notifier, submission_cache, max_inbox_size, ttl_days, metrics: Metrics::new() }
     }
 
     /// Processes an idempotent batch of raw submissions.
@@ -279,6 +286,52 @@ impl MessageService {
     pub(crate) async fn delete_batch(&self, device_id: Uuid, message_ids: &[Uuid]) -> Result<()> {
         let mut conn = self.pool.acquire().await?;
         self.repo.delete_batch(&mut conn, device_id, message_ids).await
+    }
+
+    /// Deletes expired messages and prunes per-device queues exceeding `max_inbox_size`.
+    ///
+    /// # Errors
+    /// Returns `AppError::Database` if a database operation fails.
+    #[tracing::instrument(
+        skip(self),
+        err,
+        fields(expired_deleted = tracing::field::Empty, overflow_deleted = tracing::field::Empty)
+    )]
+    pub async fn cleanup_expired_and_overflow(&self) -> Result<()> {
+        let res_expiry = if let Ok(mut conn) = self.pool.acquire().await {
+            self.repo.delete_expired(&mut conn).await
+        } else {
+            Err(crate::error::AppError::Internal)
+        };
+
+        match res_expiry {
+            Ok(count) => {
+                if count > 0 {
+                    tracing::info!(count = %count, "Deleted expired messages");
+                    tracing::Span::current().record("expired_deleted", count);
+                }
+            }
+            Err(e) => tracing::error!(error = ?e, "Cleanup error (expiry)"),
+        }
+
+        let res_overflow = if let Ok(mut conn) = self.pool.acquire().await {
+            self.repo.delete_global_overflow(&mut conn, self.max_inbox_size).await
+        } else {
+            Err(crate::error::AppError::Internal)
+        };
+
+        match res_overflow {
+            Ok(count) => {
+                if count > 0 {
+                    tracing::info!(count = %count, "Pruned overflow messages");
+                    self.metrics.inbox_overflow.add(count, &[]);
+                    tracing::Span::current().record("overflow_deleted", count);
+                }
+            }
+            Err(e) => tracing::error!(error = ?e, "Cleanup error (overflow)"),
+        }
+
+        Ok(())
     }
 }
 

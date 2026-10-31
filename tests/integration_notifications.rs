@@ -201,12 +201,19 @@ async fn test_delivery_exactly_once_under_competition() {
         Arc::new(NotificationRepository::new(app.resources.pubsub.clone(), &app.config.notifications));
 
     // Spawn 10 competing workers
+    let notification_service = obscura_server::services::notification_service::NotificationService::new(
+        notification_repo.clone(),
+        &app.config.notifications,
+    );
+    let push_token_service = obscura_server::services::push_token_service::PushTokenService::new(
+        app.pool.clone(),
+        obscura_server::adapters::database::push_token_repo::PushTokenRepository::new(),
+    );
     for i in 0..10 {
         let worker = PushNotificationWorker::new(
-            app.pool.clone(),
-            notification_repo.clone(),
+            notification_service.clone(),
+            push_token_service.clone(),
             Arc::new(SharedMockPushProvider),
-            obscura_server::adapters::database::push_token_repo::PushTokenRepository::new(),
             &app.config.notifications,
         );
         let rx = shutdown_rx.clone();
@@ -318,11 +325,18 @@ async fn test_notification_worker_concurrency_limit() {
     let notification_repo =
         Arc::new(NotificationRepository::new(app.resources.pubsub.clone(), &app.config.notifications));
 
-    let worker = PushNotificationWorker::new(
-        app.pool.clone(),
+    let notification_service = obscura_server::services::notification_service::NotificationService::new(
         notification_repo.clone(),
-        Arc::new(ConcurrencyMockProvider),
+        &app.config.notifications,
+    );
+    let push_token_service = obscura_server::services::push_token_service::PushTokenService::new(
+        app.pool.clone(),
         obscura_server::adapters::database::push_token_repo::PushTokenRepository::new(),
+    );
+    let worker = PushNotificationWorker::new(
+        notification_service,
+        push_token_service,
+        Arc::new(ConcurrencyMockProvider),
         &app.config.notifications,
     );
 
