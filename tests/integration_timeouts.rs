@@ -127,9 +127,9 @@ async fn test_global_safety_timeout() {
 async fn test_attachment_timeout_independence() {
     let mut config = common::get_test_config();
 
-    // Set Attachment Timeout LONGER than Standard Request Timeout (1s)
+    // Set Attachment Timeout LONGER than Standard Request Timeout (2s)
     config.attachment.request_timeout_secs = 5;
-    config.server.request_timeout_secs = 1;
+    config.server.request_timeout_secs = 2;
 
     let app = common::TestApp::spawn_with_config(config.clone()).await;
     common::ensure_storage_bucket(&app.s3_client, &config.storage.bucket).await;
@@ -137,10 +137,10 @@ async fn test_attachment_timeout_independence() {
     let username = common::generate_username("timeout_indep");
     let user = app.register_user(&username).await;
 
-    // Create a stream that takes 2 seconds (Longer than standard 1s, shorter than Attachment's 5s)
+    // Create a stream that takes 3 seconds (Longer than standard 2s, shorter than Attachment's 5s)
     let delayed_stream = stream::unfold(0, |state| async move {
         if state == 0 {
-            tokio::time::sleep(Duration::from_millis(2000)).await;
+            tokio::time::sleep(Duration::from_millis(3000)).await;
             Some((Ok::<_, std::io::Error>(bytes::Bytes::from("slow data")), 1))
         } else {
             None
