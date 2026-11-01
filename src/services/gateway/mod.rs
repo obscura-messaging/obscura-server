@@ -4,8 +4,11 @@ pub(crate) mod message_pump;
 pub(crate) mod prekey_pump;
 pub(crate) mod session;
 
+use crate::adapters::redis::RedisCache;
 use crate::config::WsConfig;
+use crate::error::{AppError, Result};
 use crate::proto::obscura::v1 as proto;
+use crate::services::auth_service::AuthService;
 use crate::services::gateway::session::Session;
 use crate::services::key_service::KeyService;
 use crate::services::message_service::MessageService;
@@ -66,7 +69,9 @@ impl Default for Metrics {
 pub(crate) struct GatewayService {
     message_service: MessageService,
     key_service: KeyService,
+    auth_service: AuthService,
     notifier: NotificationService,
+    ticket_cache: RedisCache,
     config: WsConfig,
     metrics: Metrics,
 }
@@ -76,10 +81,47 @@ impl GatewayService {
     pub(crate) fn new(
         message_service: MessageService,
         key_service: KeyService,
+        auth_service: AuthService,
         notifier: NotificationService,
+        ticket_cache: RedisCache,
         config: WsConfig,
     ) -> Self {
-        Self { message_service, key_service, notifier, config, metrics: Metrics::new() }
+        Self { message_service, key_service, auth_service, notifier, ticket_cache, config, metrics: Metrics::new() }
+    }
+
+    /// Generates and caches a single-use connection ticket for `device_id`.
+    ///
+    /// # Errors
+    /// Returns `AppError::Internal` if the ticket cannot be cached.
+    pub(crate) async fn issue_ticket(&self, device_id: Uuid) -> Result<String> {
+        let ticket = Uuid::new_v4().to_string();
+        self.ticket_cache.set(&ticket, device_id.to_string().as_bytes()).await.map_err(|e| {
+            tracing::error!(error = %e, "Failed to cache websocket ticket");
+            AppError::Internal
+        })?;
+        Ok(ticket)
+    }
+
+    /// Consumes a single-use ticket and returns its device if that device still exists.
+    pub(crate) async fn redeem_ticket(&self, ticket: &str) -> std::result::Result<Uuid, String> {
+        let bytes = match self.ticket_cache.take(ticket).await {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return Err("Ticket not found or expired".to_string()),
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to read ticket from cache");
+                return Err("Internal server error".to_string());
+            }
+        };
+        let id_str = String::from_utf8(bytes).map_err(|_| "Invalid UTF-8 in cache".to_string())?;
+        let device_id = Uuid::parse_str(&id_str).map_err(|_| "Invalid device ID format in cache".to_string())?;
+        match self.auth_service.device_exists(device_id).await {
+            Ok(true) => Ok(device_id),
+            Ok(false) => Err("Ticket device no longer exists".to_string()),
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to check the ticket's device");
+                Err("Internal server error".to_string())
+            }
+        }
     }
 
     pub async fn handle_socket(

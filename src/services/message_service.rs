@@ -1,20 +1,22 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::message_repo::MessageRepository;
-use crate::config::MessagingConfig;
-use crate::domain::message::{FailedSubmission, Message, RawSubmission, SubmissionErrorCode, SubmissionOutcome};
-use crate::domain::notification::UserEvent;
+use crate::adapters::redis::RedisCache;
+use crate::domain::message::{DeviceMismatch, Message, RecipientSubmissions, SubmissionOutcome};
+use crate::domain::notification::DeviceEvent;
 use crate::error::Result;
 use crate::services::notification_service::NotificationService;
 use opentelemetry::{
     KeyValue, global,
     metrics::{Counter, Histogram},
 };
+use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Metrics {
     pub(crate) sent_total: Counter<u64>,
     pub(crate) fetch_batch_size: Histogram<u64>,
+    pub(crate) inbox_overflow: Counter<u64>,
 }
 
 impl Metrics {
@@ -29,121 +31,148 @@ impl Metrics {
                 .u64_histogram("obscura_message_fetch_batch_size")
                 .with_description("Number of messages fetched in a single batch")
                 .build(),
+            inbox_overflow: meter
+                .u64_counter("obscura_messages_overflow_total")
+                .with_description("Total messages deleted due to inbox overflow")
+                .build(),
         }
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct DeliveryPlan {
+    to_insert: Vec<(Uuid, Vec<u8>)>,
+    outcome: SubmissionOutcome,
+}
+
+/// Pure complete-delivery evaluation against the locked `(device_id, user_id)` pairs from the database.
+fn resolve_delivery(
+    sender_device_id: Uuid,
+    recipients: Vec<RecipientSubmissions>,
+    locked_devices: Vec<(Uuid, Uuid)>,
+) -> DeliveryPlan {
+    let mut current_devices: HashMap<Uuid, BTreeSet<Uuid>> = HashMap::new();
+    for (device_id, user_id) in locked_devices {
+        if device_id != sender_device_id {
+            current_devices.entry(user_id).or_default().insert(device_id);
+        }
+    }
+
+    let mut invalid_device_ids = Vec::new();
+    let mut device_mismatches = Vec::new();
+    let mut to_insert = Vec::new();
+
+    for recipient in recipients {
+        let current = current_devices.remove(&recipient.user_id).unwrap_or_default();
+        let mut targeted_valid = BTreeSet::new();
+        let mut valid_subs = Vec::with_capacity(recipient.submissions.len());
+
+        for sub in recipient.submissions {
+            if current.contains(&sub.device_id) {
+                targeted_valid.insert(sub.device_id);
+                valid_subs.push((sub.device_id, sub.message));
+            } else {
+                invalid_device_ids.push(sub.device_id);
+            }
+        }
+
+        let missing_device_ids: Vec<Uuid> = current.difference(&targeted_valid).copied().collect();
+        if missing_device_ids.is_empty() {
+            to_insert.extend(valid_subs);
+        } else {
+            device_mismatches.push(DeviceMismatch { user_id: recipient.user_id, missing_device_ids });
+        }
+    }
+
+    DeliveryPlan { to_insert, outcome: SubmissionOutcome { invalid_device_ids, device_mismatches } }
+}
+
 #[derive(Clone, Debug)]
-pub(crate) struct MessageService {
+pub struct MessageService {
     pool: DbPool,
     repo: MessageRepository,
     notifier: NotificationService,
+    submission_cache: RedisCache,
+    max_inbox_size: i64,
     ttl_days: i64,
     metrics: Metrics,
 }
 
 impl MessageService {
     #[must_use]
-    pub(crate) fn new(
+    pub fn new(
         pool: DbPool,
         repo: MessageRepository,
         notifier: NotificationService,
-        _config: MessagingConfig,
+        submission_cache: RedisCache,
+        max_inbox_size: i64,
         ttl_days: i64,
     ) -> Self {
-        Self { pool, repo, notifier, ttl_days, metrics: Metrics::new() }
+        Self { pool, repo, notifier, submission_cache, max_inbox_size, ttl_days, metrics: Metrics::new() }
     }
 
-    /// Processes a batch of raw submissions.
-    /// Performs structural validation, device checking, and bulk insertion.
+    /// Processes an idempotent batch of recipient submissions.
+    /// Evaluates device membership and complete delivery per target user, and bulk-inserts valid
+    /// messages with the target users' device sets locked from the check to the commit.
     ///
     /// # Errors
     /// Returns `AppError::Database` if any database operation fails.
     #[tracing::instrument(
         err(level = "warn"),
-        skip(self, submissions),
-        fields(sender_id = %sender_id, sender_device_id = %sender_device_id, count = submissions.len())
+        skip(self, recipients),
+        fields(sender_user_id = %sender_user_id, sender_device_id = %sender_device_id, recipients = recipients.len())
     )]
     pub(crate) async fn send(
         &self,
-        sender_id: Uuid,
+        sender_user_id: Uuid,
         sender_device_id: Uuid,
-        submissions: Vec<RawSubmission>,
+        idempotency_key: Uuid,
+        recipients: Vec<RecipientSubmissions>,
     ) -> Result<SubmissionOutcome> {
-        let mut failed_submissions = Vec::new();
-        let mut potential_valid = Vec::with_capacity(submissions.len());
-        let mut device_ids_to_check = std::collections::HashSet::new();
-
-        // Pass 1: Structural Validation
-        for raw in submissions {
-            let Ok(submission_id) = Uuid::from_slice(&raw.submission_id) else {
-                failed_submissions.push(FailedSubmission {
-                    submission_id: raw.submission_id,
-                    error_code: SubmissionErrorCode::MalformedSubmissionId,
-                    error_message: "Invalid submission_id UUID bytes (expected 16)".to_string(),
-                });
-                continue;
-            };
-
-            let Ok(device_id) = Uuid::from_slice(&raw.device_id) else {
-                failed_submissions.push(FailedSubmission {
-                    submission_id: raw.submission_id,
-                    error_code: SubmissionErrorCode::MalformedDeviceId,
-                    error_message: "Invalid device_id UUID bytes (expected 16)".to_string(),
-                });
-                continue;
-            };
-
-            if raw.message.is_empty() {
-                failed_submissions.push(FailedSubmission {
-                    submission_id: raw.submission_id,
-                    error_code: SubmissionErrorCode::MessageMissing,
-                    error_message: "Missing message payload".to_string(),
-                });
-                continue;
-            }
-
-            device_ids_to_check.insert(device_id);
-            potential_valid.push((device_id, submission_id, raw.message));
+        let cache_key = format!("{sender_device_id}:{idempotency_key}");
+        if let Ok(Some(cached)) = self.submission_cache.get(&cache_key).await
+            && let Ok(outcome) = serde_json::from_slice::<SubmissionOutcome>(&cached)
+        {
+            tracing::info!(key = %idempotency_key, "Returning cached idempotency response");
+            return Ok(outcome);
         }
 
-        if potential_valid.is_empty() {
-            return Ok(SubmissionOutcome { failed_submissions });
+        if recipients.is_empty() {
+            let outcome = SubmissionOutcome { invalid_device_ids: Vec::new(), device_mismatches: Vec::new() };
+            self.cache_outcome(&cache_key, &outcome).await;
+            return Ok(outcome);
         }
 
-        // Pass 2: Business Validation (Device Existence)
+        let recipient_user_ids: Vec<Uuid> = recipients.iter().map(|r| r.user_id).collect();
+
         let mut tx = self.pool.begin().await?;
-        let check_ids: Vec<Uuid> = device_ids_to_check.into_iter().collect();
-        let valid_devices_set: std::collections::HashSet<Uuid> =
-            self.repo.check_devices_exist(&mut tx, &check_ids).await?.into_iter().collect();
+        let locked_devices = self.repo.lock_device_sets(&mut tx, &recipient_user_ids).await?;
+        let plan = resolve_delivery(sender_device_id, recipients, locked_devices);
 
-        let mut to_insert = Vec::with_capacity(potential_valid.len());
-        for (d_id, s_id, msg) in potential_valid {
-            if valid_devices_set.contains(&d_id) {
-                to_insert.push((d_id, s_id, msg));
-            } else {
-                failed_submissions.push(FailedSubmission {
-                    submission_id: s_id.as_bytes().to_vec(),
-                    error_code: SubmissionErrorCode::InvalidDevice,
-                    error_message: "Device not found".to_string(),
-                });
-            }
-        }
-
-        // Pass 3: Bulk Insert
-        if !to_insert.is_empty() {
-            let inserted =
-                self.repo.create_batch(&mut tx, sender_id, sender_device_id, to_insert, self.ttl_days).await?;
+        if plan.to_insert.is_empty() {
+            tx.commit().await?;
+        } else {
+            let inserted = self
+                .repo
+                .create_batch(&mut tx, sender_user_id, sender_device_id, idempotency_key, plan.to_insert, self.ttl_days)
+                .await?;
             tx.commit().await?;
 
             self.metrics.sent_total.add(inserted.len() as u64, &[KeyValue::new("status", "success")]);
 
-            // Notify target devices
-            let inserted_device_ids: Vec<Uuid> = inserted.into_iter().map(|(id, _)| id).collect();
-            self.notifier.notify(&inserted_device_ids, UserEvent::MessageReceived).await;
+            self.notifier.notify(&inserted, DeviceEvent::MessageReceived).await;
         }
 
-        Ok(SubmissionOutcome { failed_submissions })
+        self.cache_outcome(&cache_key, &plan.outcome).await;
+        Ok(plan.outcome)
+    }
+
+    async fn cache_outcome(&self, key: &str, outcome: &SubmissionOutcome) {
+        if let Ok(bytes) = serde_json::to_vec(outcome)
+            && let Err(e) = self.submission_cache.set(key, &bytes).await
+        {
+            tracing::error!(error = %e, "Failed to cache idempotency response");
+        }
     }
 
     /// Fetches a batch of pending messages for a device.
@@ -181,5 +210,153 @@ impl MessageService {
     pub(crate) async fn delete_batch(&self, device_id: Uuid, message_ids: &[Uuid]) -> Result<()> {
         let mut conn = self.pool.acquire().await?;
         self.repo.delete_batch(&mut conn, device_id, message_ids).await
+    }
+
+    /// Deletes expired messages and prunes per-device queues exceeding `max_inbox_size`.
+    ///
+    /// # Errors
+    /// Returns `AppError::Database` if a database operation fails.
+    #[tracing::instrument(
+        skip(self),
+        err,
+        fields(expired_deleted = tracing::field::Empty, overflow_deleted = tracing::field::Empty)
+    )]
+    pub async fn cleanup_expired_and_overflow(&self) -> Result<()> {
+        let res_expiry = if let Ok(mut conn) = self.pool.acquire().await {
+            self.repo.delete_expired(&mut conn).await
+        } else {
+            Err(crate::error::AppError::Internal)
+        };
+
+        match res_expiry {
+            Ok(count) => {
+                if count > 0 {
+                    tracing::info!(count = %count, "Deleted expired messages");
+                    tracing::Span::current().record("expired_deleted", count);
+                }
+            }
+            Err(e) => tracing::error!(error = ?e, "Cleanup error (expiry)"),
+        }
+
+        let res_overflow = if let Ok(mut conn) = self.pool.acquire().await {
+            self.repo.delete_global_overflow(&mut conn, self.max_inbox_size).await
+        } else {
+            Err(crate::error::AppError::Internal)
+        };
+
+        match res_overflow {
+            Ok(count) => {
+                if count > 0 {
+                    tracing::info!(count = %count, "Pruned overflow messages");
+                    self.metrics.inbox_overflow.add(count, &[]);
+                    tracing::Span::current().record("overflow_deleted", count);
+                }
+            }
+            Err(e) => tracing::error!(error = ?e, "Cleanup error (overflow)"),
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::schemas::messaging::parse_send_request;
+    use crate::domain::message::DeviceSubmission;
+    use crate::error::AppError;
+    use crate::proto::obscura::v1 as proto;
+
+    #[test]
+    fn test_parse_send_request_rejects_structural_errors() {
+        let sender_device = Uuid::new_v4();
+        let user = Uuid::new_v4();
+        let target_device = Uuid::new_v4();
+
+        // Malformed user_id
+        let err = parse_send_request(
+            sender_device,
+            10,
+            proto::SendMessageRequest {
+                recipients: vec![proto::send_message_request::Recipient { user_id: vec![1, 2], submissions: vec![] }],
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)));
+
+        // Self-send
+        let err = parse_send_request(
+            sender_device,
+            10,
+            proto::SendMessageRequest {
+                recipients: vec![proto::send_message_request::Recipient {
+                    user_id: user.as_bytes().to_vec(),
+                    submissions: vec![proto::send_message_request::Submission {
+                        device_id: sender_device.as_bytes().to_vec(),
+                        message: vec![1],
+                    }],
+                }],
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)));
+
+        // Duplicate device_id
+        let err = parse_send_request(
+            sender_device,
+            10,
+            proto::SendMessageRequest {
+                recipients: vec![proto::send_message_request::Recipient {
+                    user_id: user.as_bytes().to_vec(),
+                    submissions: vec![
+                        proto::send_message_request::Submission {
+                            device_id: target_device.as_bytes().to_vec(),
+                            message: vec![1],
+                        },
+                        proto::send_message_request::Submission {
+                            device_id: target_device.as_bytes().to_vec(),
+                            message: vec![2],
+                        },
+                    ],
+                }],
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)));
+    }
+
+    #[test]
+    fn test_resolve_delivery_enforces_complete_delivery_per_user() {
+        let sender_device = Uuid::new_v4();
+        let bob = Uuid::new_v4();
+        let bob_d1 = Uuid::new_v4();
+        let bob_d2 = Uuid::new_v4();
+        let carol = Uuid::new_v4();
+        let carol_d1 = Uuid::new_v4();
+        let unknown_device = Uuid::new_v4();
+
+        let recipients = vec![
+            RecipientSubmissions {
+                user_id: bob,
+                submissions: vec![DeviceSubmission { device_id: bob_d1, message: vec![1] }],
+            },
+            RecipientSubmissions {
+                user_id: carol,
+                submissions: vec![
+                    DeviceSubmission { device_id: carol_d1, message: vec![2] },
+                    DeviceSubmission { device_id: unknown_device, message: vec![3] },
+                ],
+            },
+        ];
+        let locked = vec![(bob_d1, bob), (bob_d2, bob), (carol_d1, carol)];
+
+        let plan = resolve_delivery(sender_device, recipients, locked);
+
+        assert_eq!(plan.to_insert, vec![(carol_d1, vec![2])]);
+        assert_eq!(
+            plan.outcome.device_mismatches,
+            vec![DeviceMismatch { user_id: bob, missing_device_ids: vec![bob_d2] }]
+        );
+        assert_eq!(plan.outcome.invalid_device_ids, vec![unknown_device]);
     }
 }

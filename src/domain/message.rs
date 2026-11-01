@@ -1,40 +1,36 @@
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Message {
     pub id: Uuid,
-    pub sender_id: Uuid,
+    pub sender_user_id: Uuid,
     pub sender_device_id: Uuid,
     pub content: Vec<u8>,
-    pub created_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
 }
 
-impl Message {}
-
-#[derive(Debug, Clone)]
-pub(crate) struct RawSubmission {
-    pub submission_id: Vec<u8>,
-    pub device_id: Vec<u8>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeviceSubmission {
+    pub device_id: Uuid,
     pub message: Vec<u8>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecipientSubmissions {
+    pub user_id: Uuid,
+    pub submissions: Vec<DeviceSubmission>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubmissionOutcome {
-    pub failed_submissions: Vec<FailedSubmission>,
+    pub invalid_device_ids: Vec<Uuid>,
+    pub device_mismatches: Vec<DeviceMismatch>,
 }
 
-#[derive(Debug, Clone)]
-pub struct FailedSubmission {
-    pub submission_id: Vec<u8>, // Use raw bytes to preserve whatever the client sent
-    pub error_code: SubmissionErrorCode,
-    pub error_message: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SubmissionErrorCode {
-    InvalidDevice,
-    MalformedDeviceId,
-    MalformedSubmissionId,
-    MessageMissing,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceMismatch {
+    pub user_id: Uuid,
+    pub missing_device_ids: Vec<Uuid>,
 }

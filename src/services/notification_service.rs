@@ -1,6 +1,6 @@
 use crate::adapters::redis::NotificationRepository;
 use crate::config::NotificationConfig;
-use crate::domain::notification::UserEvent;
+use crate::domain::notification::DeviceEvent;
 use dashmap::DashMap;
 use opentelemetry::{
     KeyValue, global,
@@ -55,8 +55,8 @@ impl Metrics {
 #[derive(Clone, Debug)]
 pub struct NotificationService {
     repo: Arc<NotificationRepository>,
-    channels: Arc<DashMap<Uuid, broadcast::Sender<UserEvent>>>,
-    user_channel_capacity: usize,
+    channels: Arc<DashMap<Uuid, broadcast::Sender<DeviceEvent>>>,
+    device_channel_capacity: usize,
     push_delay_secs: u64,
     metrics: Metrics,
 }
@@ -68,7 +68,7 @@ impl NotificationService {
         Self {
             repo,
             channels: Arc::new(DashMap::new()),
-            user_channel_capacity: config.user_channel_capacity,
+            device_channel_capacity: config.device_channel_capacity,
             push_delay_secs: config.push_delay_secs,
             metrics: Metrics::new(),
         }
@@ -117,13 +117,13 @@ impl NotificationService {
     }
 
     #[tracing::instrument(skip(self), fields(device.id = %device_id))]
-    pub async fn subscribe(&self, device_id: Uuid) -> broadcast::Receiver<UserEvent> {
+    pub async fn subscribe(&self, device_id: Uuid) -> broadcast::Receiver<DeviceEvent> {
         let tx = self
             .channels
             .entry(device_id)
             .or_insert_with(|| {
                 self.metrics.active_channels.add(1, &[]);
-                let (tx, _rx) = broadcast::channel(self.user_channel_capacity);
+                let (tx, _rx) = broadcast::channel(self.device_channel_capacity);
                 tx
             })
             .value()
@@ -133,7 +133,7 @@ impl NotificationService {
     }
 
     #[tracing::instrument(skip(self, recipients), fields(count = recipients.len(), event = ?event))]
-    pub async fn notify(&self, recipients: &[Uuid], event: UserEvent) {
+    pub async fn notify(&self, recipients: &[Uuid], event: DeviceEvent) {
         if recipients.is_empty() {
             return;
         }
@@ -147,7 +147,7 @@ impl NotificationService {
         }
 
         // Slow Path: Scheduled Push Fallback
-        if (event == UserEvent::MessageReceived || event == UserEvent::PreKeyLow)
+        if (event == DeviceEvent::MessageReceived || event == DeviceEvent::PreKeyLow)
             && let Err(e) = self.repo.push_jobs(recipients, self.push_delay_secs).await
         {
             tracing::error!(error = %e, "Failed to batch schedule push notifications");
@@ -159,6 +159,32 @@ impl NotificationService {
         if let Err(e) = self.repo.cancel_job(device_id).await {
             tracing::error!(error = %e, "Failed to cancel pending push notification");
         }
+    }
+
+    /// Subscribes to cross-node real-time notifications from `PubSub`.
+    ///
+    /// # Errors
+    /// Returns an error if the `PubSub` subscription cannot be created.
+    pub async fn subscribe_realtime(
+        &self,
+    ) -> anyhow::Result<broadcast::Receiver<crate::domain::notification::RealtimeNotification>> {
+        self.repo.subscribe_realtime().await
+    }
+
+    /// Leases a batch of due push notification jobs from the scheduler queue.
+    ///
+    /// # Errors
+    /// Returns an error if the Redis operation fails.
+    pub async fn lease_due_push_jobs(&self, limit: isize, timeout_secs: u64) -> anyhow::Result<Vec<Uuid>> {
+        self.repo.lease_due_jobs(limit, timeout_secs).await
+    }
+
+    /// Removes a completed or permanently failed push notification job from the queue.
+    ///
+    /// # Errors
+    /// Returns an error if the Redis operation fails.
+    pub async fn complete_push_job(&self, device_id: Uuid) -> anyhow::Result<()> {
+        self.repo.delete_job(device_id).await
     }
 }
 
@@ -183,14 +209,14 @@ mod tests {
         let service = NotificationService::new(repo, &config);
 
         // 1. Setup channels
-        let user_id_active = Uuid::new_v4();
-        let user_id_stale = Uuid::new_v4();
+        let device_id_active = Uuid::new_v4();
+        let device_id_stale = Uuid::new_v4();
 
         let (tx_active, _rx_active) = broadcast::channel(10);
         let (tx_stale, rx_stale) = broadcast::channel(10);
 
-        service.channels.insert(user_id_active, tx_active);
-        service.channels.insert(user_id_stale, tx_stale);
+        service.channels.insert(device_id_active, tx_active);
+        service.channels.insert(device_id_stale, tx_stale);
 
         // 2. Make one stale by dropping its last receiver
         drop(rx_stale);
@@ -203,7 +229,7 @@ mod tests {
 
         // 4. Verify results
         assert_eq!(service.channels.len(), 1, "Cleanup should have reclaimed exactly 1 channel");
-        assert!(service.channels.contains_key(&user_id_active), "Active channel should remain");
-        assert!(!service.channels.contains_key(&user_id_stale), "Stale channel should be gone");
+        assert!(service.channels.contains_key(&device_id_active), "Active channel should remain");
+        assert!(!service.channels.contains_key(&device_id_stale), "Stale channel should be gone");
     }
 }

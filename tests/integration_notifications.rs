@@ -40,14 +40,14 @@ async fn test_scheduled_push_delivery() {
 
     {
         let mut conn = app.pool.acquire().await.unwrap();
-        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, $2, 'hash')")
+        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
             .bind(user_id)
             .bind(format!("u_{}", &user_id.to_string()[..8]))
             .execute(&mut *conn)
             .await
             .unwrap();
 
-        sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)")
+        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
             .bind(user_id)
             .execute(&mut *conn)
             .await
@@ -58,7 +58,7 @@ async fn test_scheduled_push_delivery() {
     }
 
     // 1. Notify MessageReceived
-    app.notifier.notify(&[user_id], obscura_server::domain::notification::UserEvent::MessageReceived).await;
+    app.notifier.notify(&[user_id], obscura_server::domain::notification::DeviceEvent::MessageReceived).await;
 
     // 2. Wait for push
     let start = std::time::Instant::now();
@@ -84,12 +84,14 @@ async fn test_push_cancellation_on_ack() {
     let app = TestApp::spawn_with_workers(config).await;
     let username = common::generate_username("u_ack");
     let user = app.register_user(&username).await;
+    let sender = app.register_user(&common::generate_username("u_ack_sender")).await;
 
-    // 1. Schedule a push
-    app.send_message(&user.token, user.device_id, b"msg").await;
-
-    // 2. Connect via WebSocket
+    // 1. Connect via WebSocket first so connect itself doesn't cancel the push we are about to schedule
     let mut ws = app.connect_ws(&user.token).await;
+    ws.ensure_subscribed().await;
+
+    // 2. Schedule a push while connected
+    app.send_message(&sender.token, user.device_id, b"msg").await;
     let env = ws.receive_envelope().await.expect("Envelope missing");
 
     // 3. Send an ACK
@@ -102,13 +104,13 @@ async fn test_push_cancellation_on_ack() {
                 let config = app.config.clone();
                 let pubsub_url = config.pubsub.url.clone();
                 let queue_key = config.notifications.push_queue_key;
-                let user_id = user.user_id;
+                let device_id = user.device_id;
                 async move {
                     let client = redis::Client::open(pubsub_url).unwrap();
                     let mut conn = client.get_multiplexed_async_connection().await.unwrap();
                     let score: Option<f64> = redis::cmd("ZSCORE")
                         .arg(&queue_key)
-                        .arg(user_id.to_string())
+                        .arg(device_id.to_string())
                         .query_async(&mut conn)
                         .await
                         .unwrap();
@@ -131,9 +133,10 @@ async fn test_push_cancellation_on_websocket_connect() {
     let app = TestApp::spawn_with_workers(config).await;
     let username = common::generate_username("u_ws");
     let user = app.register_user(&username).await;
+    let sender = app.register_user(&common::generate_username("u_ws_sender")).await;
 
     // 1. Schedule push
-    app.send_message(&user.token, user.device_id, b"msg").await;
+    app.send_message(&sender.token, user.device_id, b"msg").await;
 
     // 2. Connect WS
     let _ws = app.connect_ws(&user.token).await;
@@ -145,13 +148,13 @@ async fn test_push_cancellation_on_websocket_connect() {
                 let config = app.config.clone();
                 let pubsub_url = config.pubsub.url.clone();
                 let queue_key = config.notifications.push_queue_key;
-                let user_id = user.user_id;
+                let device_id = user.device_id;
                 async move {
                     let client = redis::Client::open(pubsub_url).unwrap();
                     let mut conn = client.get_multiplexed_async_connection().await.unwrap();
                     let score: Option<f64> = redis::cmd("ZSCORE")
                         .arg(&queue_key)
-                        .arg(user_id.to_string())
+                        .arg(device_id.to_string())
                         .query_async(&mut conn)
                         .await
                         .unwrap();
@@ -176,14 +179,14 @@ async fn test_delivery_exactly_once_under_competition() {
 
     {
         let mut conn = app.pool.acquire().await.unwrap();
-        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, $2, 'hash')")
+        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
             .bind(user_id)
             .bind(format!("u_comp_{}", &user_id.to_string()[..8]))
             .execute(&mut *conn)
             .await
             .unwrap();
 
-        sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)")
+        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
             .bind(user_id)
             .execute(&mut *conn)
             .await
@@ -199,12 +202,19 @@ async fn test_delivery_exactly_once_under_competition() {
         Arc::new(NotificationRepository::new(app.resources.pubsub.clone(), &app.config.notifications));
 
     // Spawn 10 competing workers
+    let notification_service = obscura_server::services::notification_service::NotificationService::new(
+        notification_repo.clone(),
+        &app.config.notifications,
+    );
+    let push_token_service = obscura_server::services::push_token_service::PushTokenService::new(
+        app.pool.clone(),
+        obscura_server::adapters::database::push_token_repo::PushTokenRepository::new(),
+    );
     for i in 0..10 {
         let worker = PushNotificationWorker::new(
-            app.pool.clone(),
-            notification_repo.clone(),
+            notification_service.clone(),
+            push_token_service.clone(),
             Arc::new(SharedMockPushProvider),
-            obscura_server::adapters::database::push_token_repo::PushTokenRepository::new(),
             &app.config.notifications,
         );
         let rx = shutdown_rx.clone();
@@ -245,14 +255,14 @@ async fn test_push_coalescing() {
 
     {
         let mut conn = app.pool.acquire().await.unwrap();
-        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, $2, 'hash')")
+        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
             .bind(user_id)
             .bind(format!("u_coal_{}", &user_id.to_string()[..8]))
             .execute(&mut *conn)
             .await
             .unwrap();
 
-        sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)")
+        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
             .bind(user_id)
             .execute(&mut *conn)
             .await
@@ -263,7 +273,7 @@ async fn test_push_coalescing() {
     }
 
     for _ in 0..5 {
-        app.notifier.notify(&[user_id], obscura_server::domain::notification::UserEvent::MessageReceived).await;
+        app.notifier.notify(&[user_id], obscura_server::domain::notification::DeviceEvent::MessageReceived).await;
     }
 
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -316,11 +326,18 @@ async fn test_notification_worker_concurrency_limit() {
     let notification_repo =
         Arc::new(NotificationRepository::new(app.resources.pubsub.clone(), &app.config.notifications));
 
-    let worker = PushNotificationWorker::new(
-        app.pool.clone(),
+    let notification_service = obscura_server::services::notification_service::NotificationService::new(
         notification_repo.clone(),
-        Arc::new(ConcurrencyMockProvider),
+        &app.config.notifications,
+    );
+    let push_token_service = obscura_server::services::push_token_service::PushTokenService::new(
+        app.pool.clone(),
         obscura_server::adapters::database::push_token_repo::PushTokenRepository::new(),
+    );
+    let worker = PushNotificationWorker::new(
+        notification_service,
+        push_token_service,
+        Arc::new(ConcurrencyMockProvider),
         &app.config.notifications,
     );
 
@@ -331,14 +348,16 @@ async fn test_notification_worker_concurrency_limit() {
         {
             let mut conn = app.pool.acquire().await.unwrap();
             let username = common::generate_username(&format!("conc_{i}"));
-            sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, $2, 'hash')")
-                .bind(user_id)
-                .bind(username)
-                .execute(&mut *conn)
-                .await
-                .unwrap();
+            sqlx::query(
+                "INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')",
+            )
+            .bind(user_id)
+            .bind(username)
+            .execute(&mut *conn)
+            .await
+            .unwrap();
 
-            sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)")
+            sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
                 .bind(user_id)
                 .execute(&mut *conn)
                 .await
@@ -372,14 +391,14 @@ async fn test_register_push_token() {
 
     let resp = app
         .client
-        .put(format!("{}/v1/push-tokens", app.server_url))
+        .put(format!("{}/v1/push-token", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
         .json(&payload)
         .send()
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 204);
 
     let stored_token: String = sqlx::query_scalar("SELECT token FROM push_tokens WHERE device_id = $1")
         .bind(user.device_id)
@@ -392,14 +411,14 @@ async fn test_register_push_token() {
     let new_token = "updated_fcm_token_456";
     let resp = app
         .client
-        .put(format!("{}/v1/push-tokens", app.server_url))
+        .put(format!("{}/v1/push-token", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
         .json(&json!({ "token": new_token }))
         .send()
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 204);
 
     let stored_token: String = sqlx::query_scalar("SELECT token FROM push_tokens WHERE device_id = $1")
         .bind(user.device_id)
@@ -416,7 +435,7 @@ async fn test_register_push_token_unauthorized() {
 
     let resp = app
         .client
-        .put(format!("{}/v1/push-tokens", app.server_url))
+        .put(format!("{}/v1/push-token", app.server_url))
         .json(&json!({ "token": "some_token" }))
         .send()
         .await

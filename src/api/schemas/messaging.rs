@@ -1,31 +1,62 @@
-use crate::domain::message::{RawSubmission, SubmissionErrorCode, SubmissionOutcome};
+use crate::domain::message::{DeviceSubmission, RecipientSubmissions, SubmissionOutcome};
+use crate::error::{AppError, Result};
 use crate::proto::obscura::v1 as proto;
+use std::collections::HashSet;
+use uuid::Uuid;
 
-impl From<proto::send_message_request::Submission> for RawSubmission {
-    fn from(proto: proto::send_message_request::Submission) -> Self {
-        Self { submission_id: proto.submission_id, device_id: proto.device_id, message: proto.message }
+pub(crate) fn parse_send_request(
+    sender_device_id: Uuid,
+    batch_limit: usize,
+    request: proto::SendMessageRequest,
+) -> Result<Vec<RecipientSubmissions>> {
+    let total_submissions: usize = request.recipients.iter().map(|r| r.submissions.len()).sum();
+    if request.recipients.len() > batch_limit || total_submissions > batch_limit {
+        return Err(AppError::PayloadTooLarge);
     }
+
+    let mut seen_users = HashSet::with_capacity(request.recipients.len());
+    let mut seen_devices = HashSet::with_capacity(total_submissions);
+    let mut recipients = Vec::with_capacity(request.recipients.len());
+
+    for recipient in request.recipients {
+        let user_id = Uuid::from_slice(&recipient.user_id)
+            .map_err(|_| AppError::BadRequest("Invalid recipient user_id UUID bytes (expected 16)".to_string()))?;
+        if !seen_users.insert(user_id) {
+            return Err(AppError::BadRequest("Duplicate recipient user_id".to_string()));
+        }
+
+        let mut submissions = Vec::with_capacity(recipient.submissions.len());
+        for sub in recipient.submissions {
+            let device_id = Uuid::from_slice(&sub.device_id)
+                .map_err(|_| AppError::BadRequest("Invalid device_id UUID bytes (expected 16)".to_string()))?;
+            if device_id == sender_device_id {
+                return Err(AppError::BadRequest("Cannot send to the sending device".to_string()));
+            }
+            if !seen_devices.insert(device_id) {
+                return Err(AppError::BadRequest("Duplicate target device_id".to_string()));
+            }
+            if sub.message.is_empty() {
+                return Err(AppError::BadRequest("Missing message payload".to_string()));
+            }
+            submissions.push(DeviceSubmission { device_id, message: sub.message });
+        }
+
+        recipients.push(RecipientSubmissions { user_id, submissions });
+    }
+
+    Ok(recipients)
 }
 
 impl From<SubmissionOutcome> for proto::SendMessageResponse {
     fn from(outcome: SubmissionOutcome) -> Self {
         Self {
-            failed_submissions: outcome
-                .failed_submissions
+            invalid_device_ids: outcome.invalid_device_ids.into_iter().map(|id| id.as_bytes().to_vec()).collect(),
+            device_mismatches: outcome
+                .device_mismatches
                 .into_iter()
-                .map(|f| proto::send_message_response::FailedSubmission {
-                    submission_id: f.submission_id,
-                    error_code: match f.error_code {
-                        SubmissionErrorCode::InvalidDevice => proto::send_message_response::ErrorCode::InvalidDevice,
-                        SubmissionErrorCode::MalformedDeviceId => {
-                            proto::send_message_response::ErrorCode::MalformedDeviceId
-                        }
-                        SubmissionErrorCode::MalformedSubmissionId => {
-                            proto::send_message_response::ErrorCode::MalformedSubmissionId
-                        }
-                        SubmissionErrorCode::MessageMissing => proto::send_message_response::ErrorCode::MessageMissing,
-                    } as i32,
-                    error_message: f.error_message,
+                .map(|m| proto::send_message_response::DeviceMismatch {
+                    user_id: m.user_id.as_bytes().to_vec(),
+                    missing_device_ids: m.missing_device_ids.iter().map(|id| id.as_bytes().to_vec()).collect(),
                 })
                 .collect(),
         }

@@ -32,7 +32,7 @@ async fn test_concurrent_messages_and_prekeys_no_drops() {
     for i in 0..50 {
         app.send_message(&token, alice_id, format!("msg {i}").as_bytes()).await;
         app.client
-            .get(format!("{}/v1/users/{}", app.server_url, alice.user_id))
+            .get(format!("{}/v1/keys/{}", app.server_url, alice.user_id))
             .header("Authorization", format!("Bearer {token}"))
             .send()
             .await

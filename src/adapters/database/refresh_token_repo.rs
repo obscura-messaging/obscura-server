@@ -12,7 +12,7 @@ impl RefreshTokenRepository {
         Self {}
     }
 
-    /// Creates a new refresh token record.
+    /// Creates a new refresh token record for a device, replacing any prior refresh tokens for that device.
     /// Note: We store the HASH, not the raw token.
     ///
     /// # Errors
@@ -21,16 +21,20 @@ impl RefreshTokenRepository {
     pub(crate) async fn create(
         &self,
         conn: &mut PgConnection,
-        user_id: Uuid,
-        device_id: Option<Uuid>,
-        token_hash: &str,
+        device_id: Uuid,
+        token_hash: &[u8],
         ttl_days: i64,
     ) -> Result<()> {
         let expires_at = OffsetDateTime::now_utc() + time::Duration::days(ttl_days);
 
-        sqlx::query("INSERT INTO refresh_tokens (token_hash, user_id, device_id, expires_at) VALUES ($1, $2, $3, $4)")
+        sqlx::query("DELETE FROM refresh_tokens WHERE device_id = $1")
+            .bind(device_id)
+            .execute(&mut *conn)
+            .await
+            .map_err(AppError::Database)?;
+
+        sqlx::query("INSERT INTO refresh_tokens (token_hash, device_id, expires_at) VALUES ($1, $2, $3)")
             .bind(token_hash)
-            .bind(user_id)
             .bind(device_id)
             .bind(expires_at)
             .execute(conn)
@@ -42,7 +46,8 @@ impl RefreshTokenRepository {
 
     /// Atomically rotates a refresh token.
     /// Deletes the old token and inserts a new one only if the old one was not expired.
-    /// Returns the `(user_id, device_id)` if successful, or None if the old token was invalid or expired.
+    /// Returns the `(user_id, device_id)` of its device if successful, or None if the old token was invalid or
+    /// expired.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the operation fails.
@@ -50,24 +55,26 @@ impl RefreshTokenRepository {
     pub(crate) async fn rotate_unexpired(
         &self,
         conn: &mut PgConnection,
-        old_hash: &str,
-        new_hash: &str,
+        old_hash: &[u8],
+        new_hash: &[u8],
         ttl_days: i64,
-    ) -> Result<Option<(Uuid, Option<Uuid>)>> {
+    ) -> Result<Option<(Uuid, Uuid)>> {
         let expires_at = OffsetDateTime::now_utc() + time::Duration::days(ttl_days);
 
-        let row = sqlx::query_as::<_, (Uuid, Option<Uuid>)>(
+        let row = sqlx::query_as::<_, (Uuid, Uuid)>(
             r#"
             WITH deleted AS (
                 DELETE FROM refresh_tokens
                 WHERE token_hash = $1
-                RETURNING user_id, device_id, expires_at
+                RETURNING device_id, expires_at
+            ), inserted AS (
+                INSERT INTO refresh_tokens (token_hash, device_id, expires_at)
+                SELECT $2, device_id, $3
+                FROM deleted
+                WHERE expires_at > NOW()
+                RETURNING device_id
             )
-            INSERT INTO refresh_tokens (token_hash, user_id, device_id, expires_at)
-            SELECT $2, user_id, device_id, $3
-            FROM deleted
-            WHERE expires_at > NOW()
-            RETURNING user_id, device_id
+            SELECT d.user_id, d.id FROM inserted JOIN devices d ON d.id = inserted.device_id
             "#,
         )
         .bind(old_hash)
@@ -79,15 +86,14 @@ impl RefreshTokenRepository {
         Ok(row)
     }
 
-    /// Revokes a specific refresh token owned by the user (Logout).
+    /// Revokes all refresh tokens for a device (Logout).
     ///
     /// # Errors
     /// Returns `AppError::Database` if the deletion fails.
-    #[tracing::instrument(level = "debug", skip(self, conn, token_hash), err)]
-    pub(crate) async fn delete_owned(&self, conn: &mut PgConnection, token_hash: &str, user_id: Uuid) -> Result<()> {
-        sqlx::query("DELETE FROM refresh_tokens WHERE token_hash = $1 AND user_id = $2")
-            .bind(token_hash)
-            .bind(user_id)
+    #[tracing::instrument(level = "debug", skip(self, conn), err)]
+    pub(crate) async fn delete_for_device(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<()> {
+        sqlx::query("DELETE FROM refresh_tokens WHERE device_id = $1")
+            .bind(device_id)
             .execute(conn)
             .await
             .map_err(AppError::Database)?;
