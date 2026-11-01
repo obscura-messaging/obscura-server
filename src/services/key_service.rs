@@ -106,7 +106,8 @@ impl KeyService {
 
         let mut tx = self.pool.begin().await?;
 
-        let identity_key = self.repo.lock_device_identity_key(&mut tx, device_id).await?.ok_or(AppError::NotFound)?;
+        let identity_key =
+            self.repo.lock_device_identity_key(&mut tx, device_id).await?.ok_or(AppError::Unauthorized)?;
         upload.signed_pre_key.verify(&identity_key).map_err(AppError::BadRequest)?;
 
         let max_id = self.repo.find_max_signed_pre_key_id(&mut tx, device_id).await?;

@@ -24,7 +24,7 @@ paths:
       description: |
         Atomically creates a new user account, sets its account identity key, provisions its
         primary device with the provided prekeys, and returns a session (`token`, `refreshToken`,
-        `expiresAt`, `deviceId`). The signed prekey must verify against `identityKey`.
+        `expiresAt`, `userId`, `deviceId`). The signed prekey must verify against `identityKey`.
       tags: [Users]
       security: []
       requestBody:
@@ -655,12 +655,10 @@ paths:
           $ref: '#/components/responses/BadRequestError'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
-        '403':
-          $ref: '#/components/responses/ForbiddenError'
         '408':
           $ref: '#/components/responses/RequestTimeoutError'
         '413':
-          description: Payload Too Large. The batch contains too many messages or recipient user IDs (exceeds server max).
+          $ref: '#/components/responses/PayloadTooLargeError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         '500':
@@ -709,7 +707,7 @@ paths:
         - **Auth:** Pass a valid ticket in the query string: `ws://.../v1/gateway?ticket=<ticket>`.
         - **Handshake:** Server takes the ticket, ensuring it exists and hasn't expired or been used, and that its device still exists. A ticket is consumed by its first handshake attempt.
         - **Welcome:** Upon successful connection, the server may immediately push a `PreKeyStatus` frame if the device's one-time pre-key count is below the configured threshold.
-        - **Flow:** Server pushes `Envelope` frames. Client MUST respond with `AckMessage` frames. Server batches deletions based on ACKs.
+        - **Flow:** Server pushes `EnvelopeBatch` frames. Client MUST respond with `AckMessage` frames. Server batches deletions based on ACKs.
       tags: [Messaging]
       security:
         - ticketAuth: []
@@ -895,7 +893,7 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     BadRequestError:
-      description: Invalid input, malformed request, or missing required headers (e.g. version or length).
+      description: Invalid input, malformed request, or missing required headers.
       headers:
         x-request-id:
           $ref: '#/components/headers/x-request-id'
@@ -904,7 +902,7 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     ForbiddenError:
-      description: Forbidden (Action not allowed or limit reached).
+      description: Forbidden (Action not allowed, e.g., non-primary device approving a link session).
       headers:
         x-request-id:
           $ref: '#/components/headers/x-request-id'
@@ -922,7 +920,7 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     ConflictError:
-      description: Conflict (e.g., concurrent upload already in progress).
+      description: Conflict (e.g., username taken, link session already approved, or device does not belong to user).
       headers:
         x-request-id:
           $ref: '#/components/headers/x-request-id'

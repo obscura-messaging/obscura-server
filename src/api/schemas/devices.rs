@@ -17,6 +17,11 @@ impl TryFrom<DeviceKeyPayload> for NewDeviceKeys {
     type Error = String;
 
     fn try_from(payload: DeviceKeyPayload) -> Result<Self, Self::Error> {
+        if let Some(ref name) = payload.name
+            && name.chars().count() > 100
+        {
+            return Err("Device name must not exceed 100 characters".to_string());
+        }
         let identity_key: crate::domain::crypto::PublicKey = payload.identity_key.try_into()?;
         let signed_pre_key: crate::domain::keys::SignedPreKey = payload.signed_pre_key.try_into()?;
         signed_pre_key.verify(&identity_key)?;

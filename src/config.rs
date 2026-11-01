@@ -356,7 +356,7 @@ pub struct RateLimitConfig {
     #[arg(long = "rate-limit-burst", env = "OBSCURA_RATE_LIMIT_BURST", default_value_t = RateLimitConfig::default().burst)]
     pub burst: u32,
 
-    /// Stricter rate limit for expensive auth-related endpoints (register/login)
+    /// Stricter rate limit for expensive auth-related endpoints (/v1/users*, /v1/session*, POST /v1/link-sessions)
     #[arg(long = "auth-rate-limit-per-second", env = "OBSCURA_RATE_LIMIT_AUTH_PER_SECOND", default_value_t = RateLimitConfig::default().auth_per_second)]
     pub auth_per_second: u32,
 
@@ -373,7 +373,7 @@ impl Default for RateLimitConfig {
 
 #[derive(Clone, Debug, Args)]
 pub struct MessagingConfig {
-    /// Maximum number of messages in a user's inbox
+    /// Maximum number of messages in a device's inbox
     #[arg(long = "messaging-inbox-max-size", env = "OBSCURA_MESSAGING_INBOX_MAX_SIZE", default_value_t = MessagingConfig::default().max_inbox_size)]
     pub max_inbox_size: i64,
 
@@ -410,7 +410,7 @@ pub struct MessagingConfig {
     )]
     pub pre_key_refill_threshold: i32,
 
-    /// Maximum number of one-time prekeys allowed per user
+    /// Maximum number of one-time prekeys allowed per device
     #[arg(
         long = "messaging-pre-keys-max",
         env = "OBSCURA_PRE_KEYS_MAX",
@@ -462,7 +462,7 @@ pub struct NotificationConfig {
     #[arg(long = "notifications-push-queue-key", env = "OBSCURA_NOTIFICATIONS_PUSH_QUEUE_KEY", default_value_t = NotificationConfig::default().push_queue_key)]
     pub push_queue_key: String,
 
-    /// Redis `PubSub` channel prefix for user notifications
+    /// Redis `PubSub` channel prefix for device notifications
     #[arg(long = "notifications-channel-prefix", env = "OBSCURA_NOTIFICATIONS_CHANNEL_PREFIX", default_value_t = NotificationConfig::default().channel_prefix)]
     pub channel_prefix: String,
 

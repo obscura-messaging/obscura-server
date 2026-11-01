@@ -160,8 +160,9 @@ impl DeviceService {
         let id = generate_opaque_token();
         let expires_at = OffsetDateTime::now_utc() + LINK_SESSION_TTL;
 
-        let mut conn = self.pool.acquire().await?;
-        self.link_session_repo.create(&mut conn, &hash_opaque_token(&id), user_id, expires_at).await?;
+        let mut tx = self.pool.begin().await?;
+        self.link_session_repo.create(&mut tx, &hash_opaque_token(&id), user_id, expires_at).await?;
+        tx.commit().await?;
 
         Ok(NewLinkSession { id, user_id, expires_at })
     }

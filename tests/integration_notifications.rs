@@ -86,11 +86,12 @@ async fn test_push_cancellation_on_ack() {
     let user = app.register_user(&username).await;
     let sender = app.register_user(&common::generate_username("u_ack_sender")).await;
 
-    // 1. Schedule a push
-    app.send_message(&sender.token, user.device_id, b"msg").await;
-
-    // 2. Connect via WebSocket
+    // 1. Connect via WebSocket first so connect itself doesn't cancel the push we are about to schedule
     let mut ws = app.connect_ws(&user.token).await;
+    ws.ensure_subscribed().await;
+
+    // 2. Schedule a push while connected
+    app.send_message(&sender.token, user.device_id, b"msg").await;
     let env = ws.receive_envelope().await.expect("Envelope missing");
 
     // 3. Send an ACK
@@ -103,13 +104,13 @@ async fn test_push_cancellation_on_ack() {
                 let config = app.config.clone();
                 let pubsub_url = config.pubsub.url.clone();
                 let queue_key = config.notifications.push_queue_key;
-                let user_id = user.user_id;
+                let device_id = user.device_id;
                 async move {
                     let client = redis::Client::open(pubsub_url).unwrap();
                     let mut conn = client.get_multiplexed_async_connection().await.unwrap();
                     let score: Option<f64> = redis::cmd("ZSCORE")
                         .arg(&queue_key)
-                        .arg(user_id.to_string())
+                        .arg(device_id.to_string())
                         .query_async(&mut conn)
                         .await
                         .unwrap();
@@ -147,13 +148,13 @@ async fn test_push_cancellation_on_websocket_connect() {
                 let config = app.config.clone();
                 let pubsub_url = config.pubsub.url.clone();
                 let queue_key = config.notifications.push_queue_key;
-                let user_id = user.user_id;
+                let device_id = user.device_id;
                 async move {
                     let client = redis::Client::open(pubsub_url).unwrap();
                     let mut conn = client.get_multiplexed_async_connection().await.unwrap();
                     let score: Option<f64> = redis::cmd("ZSCORE")
                         .arg(&queue_key)
-                        .arg(user_id.to_string())
+                        .arg(device_id.to_string())
                         .query_async(&mut conn)
                         .await
                         .unwrap();
