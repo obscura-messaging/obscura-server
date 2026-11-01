@@ -1,6 +1,6 @@
 [package]
 name = "obscura-server"
-version = "0.9.6"
+version = "0.10.0"
 edition = "2024"
 description = "A server for relaying secure messages using the Signal Protocol"
 license = "GPL-3.0-or-later"
