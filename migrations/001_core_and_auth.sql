@@ -37,4 +37,5 @@ CREATE TABLE link_sessions (
 );
 
 CREATE INDEX idx_link_sessions_user_id ON link_sessions(user_id);
+CREATE UNIQUE INDEX idx_link_sessions_one_pending_per_user ON link_sessions(user_id) WHERE body IS NULL;
 CREATE INDEX idx_link_sessions_expires_at ON link_sessions(expires_at);

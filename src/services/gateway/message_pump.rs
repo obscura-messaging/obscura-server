@@ -143,10 +143,10 @@ impl MessagePump {
             .into_iter()
             .map(|msg| proto::Envelope {
                 id: msg.id.as_bytes().to_vec(),
-                sender_id: msg.sender_id.as_bytes().to_vec(),
+                sender_user_id: msg.sender_user_id.as_bytes().to_vec(),
+                sender_device_id: msg.sender_device_id.as_bytes().to_vec(),
                 timestamp: u64::try_from(msg.created_at.unix_timestamp_nanos() / 1_000_000).unwrap_or(0),
                 message: msg.content,
-                sender_device_id: msg.sender_device_id.as_bytes().to_vec(),
             })
             .collect();
 

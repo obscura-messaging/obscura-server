@@ -260,7 +260,7 @@ async fn test_concurrent_sends_to_the_same_recipient_do_not_block_each_other() {
     let holder_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *holder).await.unwrap();
     sqlx::query(
         r#"
-        INSERT INTO messages (sender_id, sender_device_id, device_id, idempotency_key, content, expires_at)
+        INSERT INTO messages (sender_user_id, sender_device_id, device_id, idempotency_key, content, expires_at)
         VALUES ($1, $2, $3, $4, 'held', NOW() + INTERVAL '1 day')
         "#,
     )

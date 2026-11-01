@@ -120,11 +120,11 @@ impl MessageService {
     #[tracing::instrument(
         err(level = "warn"),
         skip(self, recipients),
-        fields(sender_id = %sender_id, sender_device_id = %sender_device_id, recipients = recipients.len())
+        fields(sender_user_id = %sender_user_id, sender_device_id = %sender_device_id, recipients = recipients.len())
     )]
     pub(crate) async fn send(
         &self,
-        sender_id: Uuid,
+        sender_user_id: Uuid,
         sender_device_id: Uuid,
         idempotency_key: Uuid,
         recipients: Vec<RecipientSubmissions>,
@@ -154,7 +154,7 @@ impl MessageService {
         } else {
             let inserted = self
                 .repo
-                .create_batch(&mut tx, sender_id, sender_device_id, idempotency_key, plan.to_insert, self.ttl_days)
+                .create_batch(&mut tx, sender_user_id, sender_device_id, idempotency_key, plan.to_insert, self.ttl_days)
                 .await?;
             tx.commit().await?;
 

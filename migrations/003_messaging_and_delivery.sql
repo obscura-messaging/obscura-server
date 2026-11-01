@@ -1,6 +1,6 @@
 CREATE TABLE messages (
     id UUID PRIMARY KEY DEFAULT uuidv7(),
-    sender_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    sender_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     -- No foreign key: recipients still need the sender device id after the sender device is deleted.
     sender_device_id UUID NOT NULL,
     device_id UUID NOT NULL REFERENCES devices(id) ON DELETE CASCADE,

@@ -61,7 +61,7 @@ impl MessageRepository {
     pub(crate) async fn create_batch(
         &self,
         conn: &mut PgConnection,
-        sender_id: Uuid,
+        sender_user_id: Uuid,
         sender_device_id: Uuid,
         idempotency_key: Uuid,
         messages: Vec<(Uuid, Vec<u8>)>,
@@ -83,14 +83,14 @@ impl MessageRepository {
 
         let inserted = sqlx::query_scalar::<_, Uuid>(
             r#"
-            INSERT INTO messages (sender_id, sender_device_id, device_id, idempotency_key, content, expires_at)
+            INSERT INTO messages (sender_user_id, sender_device_id, device_id, idempotency_key, content, expires_at)
             SELECT $1, $2, u.d_id, $3, u.content, $6
             FROM UNNEST($4::uuid[], $5::bytea[]) AS u(d_id, content)
             ON CONFLICT (sender_device_id, device_id, idempotency_key) DO NOTHING
             RETURNING device_id
             "#,
         )
-        .bind(sender_id)
+        .bind(sender_user_id)
         .bind(sender_device_id)
         .bind(idempotency_key)
         .bind(device_ids)
@@ -119,7 +119,7 @@ impl MessageRepository {
             Some((last_ts, last_id)) => {
                 sqlx::query_as::<_, MessageRecord>(
                     r#"
-                    SELECT id, sender_id, sender_device_id, content, created_at
+                    SELECT id, sender_user_id, sender_device_id, content, created_at
                     FROM messages
                     WHERE device_id = $1
                       AND expires_at > NOW()
@@ -138,7 +138,7 @@ impl MessageRepository {
             None => {
                 sqlx::query_as::<_, MessageRecord>(
                     r#"
-                    SELECT id, sender_id, sender_device_id, content, created_at
+                    SELECT id, sender_user_id, sender_device_id, content, created_at
                     FROM messages
                     WHERE device_id = $1
                       AND expires_at > NOW()
