@@ -134,12 +134,14 @@ async fn test_attachment_cleanup() {
 
     // 3. Instantiate Worker
     let storage_adapter = Arc::new(S3Storage::new(app.s3_client.clone(), config.storage.bucket.clone()));
-    let worker = AttachmentCleanupWorker::new(
+    let service = obscura_server::services::attachment_service::AttachmentService::new(
         app.pool.clone(),
         AttachmentRepository::new(),
         storage_adapter,
         config.attachment.clone(),
+        config.ttl_days,
     );
+    let worker = AttachmentCleanupWorker::new(service, config.attachment.cleanup_interval_secs);
 
     // 4. Execution
     let deleted_count = worker.cleanup_batch().await.expect("Worker cleanup failed");

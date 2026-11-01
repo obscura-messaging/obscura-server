@@ -49,14 +49,18 @@ async fn test_push_worker_invalidates_unregistered_tokens() {
 
     // 1. Setup DB state
     {
-        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, $2, 'hash')")
+        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
             .bind(user_id)
             .bind(format!("fail_{}", &user_id.to_string()[..8]))
             .execute(&pool)
             .await
             .unwrap();
 
-        sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)").bind(user_id).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let repo = PushTokenRepository::new();
         let mut conn = pool.acquire().await.unwrap();
@@ -71,11 +75,16 @@ async fn test_push_worker_invalidates_unregistered_tokens() {
     let _: anyhow::Result<()> = notification_repo.push_jobs(&[user_id], 0).await;
 
     // 3. Setup Worker with FAILING provider and START it
-    let worker = PushNotificationWorker::new(
-        pool.clone(),
+    let notification_service = obscura_server::services::notification_service::NotificationService::new(
         notification_repo,
+        &config.notifications,
+    );
+    let push_token_service =
+        obscura_server::services::push_token_service::PushTokenService::new(pool.clone(), PushTokenRepository::new());
+    let worker = PushNotificationWorker::new(
+        notification_service,
+        push_token_service,
         Arc::new(FailingPushProvider),
-        PushTokenRepository::new(),
         &config.notifications,
     );
 
@@ -130,14 +139,18 @@ async fn test_push_worker_removes_job_when_user_has_no_token() {
 
     // 1. Setup DB state (User ONLY, NO token)
     {
-        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, $2, 'hash')")
+        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
             .bind(user_id)
             .bind(format!("user_{}", &user_id.to_string()[..8]))
             .execute(&pool)
             .await
             .unwrap();
 
-        sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)").bind(user_id).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 
     // 2. Schedule a push job
@@ -150,11 +163,16 @@ async fn test_push_worker_removes_job_when_user_has_no_token() {
     notification_repo.push_jobs(&[user_id], 0).await.unwrap();
 
     // 3. Start Worker
-    let worker = PushNotificationWorker::new(
-        pool.clone(),
+    let notification_service = obscura_server::services::notification_service::NotificationService::new(
         notification_repo.clone(),
+        &config.notifications,
+    );
+    let push_token_service =
+        obscura_server::services::push_token_service::PushTokenService::new(pool.clone(), PushTokenRepository::new());
+    let worker = PushNotificationWorker::new(
+        notification_service,
+        push_token_service,
         Arc::new(MockPushProvider),
-        PushTokenRepository::new(),
         &config.notifications,
     );
 

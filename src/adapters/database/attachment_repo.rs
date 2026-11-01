@@ -1,5 +1,3 @@
-use crate::adapters::database::records::AttachmentRecord;
-use crate::domain::attachment::Attachment;
 use crate::error::Result;
 use sqlx::PgConnection;
 use time::OffsetDateTime;
@@ -28,18 +26,19 @@ impl AttachmentRepository {
         Ok(())
     }
 
-    /// Finds an attachment by its ID.
+    /// Checks whether an unexpired attachment with the given ID exists.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn find_by_id(&self, conn: &mut PgConnection, id: Uuid) -> Result<Option<Attachment>> {
-        let record = sqlx::query_as::<_, AttachmentRecord>("SELECT id, expires_at FROM attachments WHERE id = $1")
-            .bind(id)
-            .fetch_optional(conn)
-            .await?;
+    pub(crate) async fn exists_unexpired(&self, conn: &mut PgConnection, id: Uuid) -> Result<bool> {
+        let exists =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM attachments WHERE id = $1 AND expires_at > NOW())")
+                .bind(id)
+                .fetch_one(conn)
+                .await?;
 
-        Ok(record.map(Into::into))
+        Ok(exists)
     }
 
     /// Deletes an attachment record.
@@ -58,13 +57,11 @@ impl AttachmentRepository {
     /// Returns `sqlx::Error` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn fetch_expired(&self, conn: &mut PgConnection, limit: i64) -> Result<Vec<Uuid>> {
-        let rows = sqlx::query_as::<_, AttachmentRecord>(
-            "SELECT id, expires_at FROM attachments WHERE expires_at < NOW() LIMIT $1",
-        )
-        .bind(limit)
-        .fetch_all(conn)
-        .await?;
+        let ids = sqlx::query_scalar("SELECT id FROM attachments WHERE expires_at < NOW() LIMIT $1")
+            .bind(limit)
+            .fetch_all(conn)
+            .await?;
 
-        Ok(rows.into_iter().map(|r| r.id).collect())
+        Ok(ids)
     }
 }

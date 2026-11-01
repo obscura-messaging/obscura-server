@@ -12,7 +12,8 @@ use uuid::Uuid;
 #[derive(Debug)]
 pub struct AuthUser {
     pub(crate) user_id: Uuid,
-    pub(crate) device_id: Option<Uuid>,
+    pub(crate) device_id: Uuid,
+    pub(crate) is_primary: bool,
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -20,25 +21,23 @@ impl FromRequestParts<AppState> for AuthUser {
 
     #[tracing::instrument(err, skip(parts, state))]
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        let auth_header = parts.headers.get(header::AUTHORIZATION).ok_or(AppError::AuthError)?;
+        let auth_header = parts.headers.get(header::AUTHORIZATION).ok_or(AppError::Unauthorized)?;
 
-        let auth_str = auth_header.to_str().map_err(|_| AppError::AuthError)?;
+        let auth_str = auth_header.to_str().map_err(|_| AppError::Unauthorized)?;
 
         if !auth_str.starts_with("Bearer ") {
-            return Err(AppError::AuthError);
+            return Err(AppError::Unauthorized);
         }
 
         let token = &auth_str[7..];
         let jwt = Jwt::new(token.to_string());
 
-        let (user_id, device_id) = state.auth_service.verify_token(&jwt).map_err(|_| AppError::AuthError)?;
+        let (user_id, device_id, is_primary) = state.auth_service.authenticate(&jwt).await?;
 
         tracing::Span::current().record("user.id", tracing::field::display(user_id));
-        if let Some(did) = device_id {
-            tracing::Span::current().record("device.id", tracing::field::display(did));
-        }
+        tracing::Span::current().record("device.id", tracing::field::display(device_id));
 
-        Ok(Self { user_id, device_id })
+        Ok(Self { user_id, device_id, is_primary })
     }
 }
 

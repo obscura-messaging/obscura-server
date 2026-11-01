@@ -1,7 +1,5 @@
-use crate::adapters::redis::NotificationRepository;
 use crate::services::notification_service::NotificationService;
 use opentelemetry::{global, metrics::Counter};
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
@@ -27,26 +25,21 @@ impl Metrics {
 #[derive(Debug)]
 pub struct NotificationWorker {
     service: NotificationService,
-    repo: Arc<NotificationRepository>,
     cleanup_interval_secs: u64,
     metrics: Option<Metrics>,
 }
 
 impl NotificationWorker {
     #[must_use]
-    pub const fn new(
-        service: NotificationService,
-        repo: Arc<NotificationRepository>,
-        cleanup_interval_secs: u64,
-    ) -> Self {
-        Self { service, repo, cleanup_interval_secs, metrics: None }
+    pub const fn new(service: NotificationService, cleanup_interval_secs: u64) -> Self {
+        Self { service, cleanup_interval_secs, metrics: None }
     }
 
     pub async fn run(mut self, mut shutdown: watch::Receiver<bool>) {
         self.metrics = Some(Metrics::new());
         let mut cleanup_interval = tokio::time::interval(Duration::from_secs(self.cleanup_interval_secs));
 
-        let mut notification_rx = match self.repo.subscribe_realtime().await {
+        let mut notification_rx = match self.service.subscribe_realtime().await {
             Ok(rx) => rx,
             Err(e) => {
                 tracing::error!(error = %e, "Failed to subscribe to real-time notifications, worker exiting");

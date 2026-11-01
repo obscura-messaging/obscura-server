@@ -1,6 +1,6 @@
 # Obscura Server
 
-Relay server for Obscura, an end-to-end encrypted messenger built on the Signal Protocol. It stores public keys and queues opaque encrypted messages, attachments and backups; it never holds private keys or plaintext.
+Relay server for Obscura, an end-to-end encrypted messenger built on the Signal Protocol. It stores public keys and queues opaque encrypted messages and attachments; it never holds private keys or plaintext.
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![CI](https://github.com/obscura-messaging/obscura-server/actions/workflows/ci.yml/badge.svg)](https://github.com/obscura-messaging/obscura-server/actions/workflows/ci.yml)
@@ -10,7 +10,7 @@ Relay server for Obscura, an end-to-end encrypted messenger built on the Signal 
 Content stays confidential even if the server is fully compromised.
 
 - **Server sees:** usernames, user and device IDs, public keys, push tokens, IP addresses, and per-message metadata (sender user and device, recipient device, time, size). The account password reaches the server at login and is stored Argon2-hashed.
-- **Server cannot see:** message, attachment or backup plaintext; private keys.
+- **Server cannot see:** message or attachment plaintext; private keys.
 - **Not addressed:** traffic analysis. There is no padding, mixing or sealed sender.
 
 ## Quick start
