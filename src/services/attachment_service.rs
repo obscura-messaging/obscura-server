@@ -15,6 +15,8 @@ use uuid::Uuid;
 pub(crate) struct Metrics {
     pub(crate) uploaded_bytes: Counter<u64>,
     pub(crate) upload_size_bytes: Histogram<u64>,
+    pub(crate) deleted: Counter<u64>,
+    pub(crate) cleanup_errors: Counter<u64>,
 }
 
 impl Metrics {
@@ -28,6 +30,14 @@ impl Metrics {
             upload_size_bytes: meter
                 .u64_histogram("obscura_attachment_upload_size_bytes")
                 .with_description("Distribution of attachment upload sizes")
+                .build(),
+            deleted: meter
+                .u64_counter("obscura_attachments_deleted_total")
+                .with_description("Total number of expired attachments deleted from storage")
+                .build(),
+            cleanup_errors: meter
+                .u64_counter("obscura_attachment_cleanup_errors_total")
+                .with_description("Total number of errors encountered during attachment cleanup")
                 .build(),
         }
     }
@@ -124,18 +134,13 @@ impl AttachmentService {
         fields(attachment_id = %id, attachment_size = tracing::field::Empty)
     )]
     pub(crate) async fn download(&self, id: Uuid) -> Result<(u64, StorageStream)> {
-        // 1. Check Existence & Expiry using Domain Logic
         let mut conn = self.pool.acquire().await?;
-        match self.repo.find_by_id(&mut conn, id).await? {
-            Some(attachment) => {
-                if attachment.is_expired_at(OffsetDateTime::now_utc()) {
-                    return Err(AppError::NotFound);
-                }
-            }
-            None => return Err(AppError::NotFound),
+        if !self.repo.exists_unexpired(&mut conn, id).await? {
+            return Err(AppError::NotFound);
         }
+        drop(conn);
 
-        // 2. Stream from Storage
+        // Stream from Storage
         let key = format!("{}{}", self.attachment_config.prefix, id);
         let (content_length, stream) = self.storage.get(&key).await.map_err(|e| match e {
             StorageError::NotFound => AppError::NotFound,
@@ -146,5 +151,69 @@ impl AttachmentService {
 
         tracing::debug!("Attachment download successful");
         Ok((content_length, stream))
+    }
+
+    /// Deletes expired attachments in batches, removing each object from storage before deleting its
+    /// database row so failed storage deletes are retried rather than orphaned.
+    ///
+    /// # Errors
+    /// Returns an error if a database operation fails.
+    #[tracing::instrument(err, skip(self), fields(total_deleted = tracing::field::Empty))]
+    pub async fn cleanup_expired(&self) -> Result<u64> {
+        use tracing::Instrument;
+
+        let mut total_deleted = 0;
+        let batch_limit = i64::try_from(self.attachment_config.cleanup_batch_size).unwrap_or(i64::MAX);
+
+        loop {
+            let ids = {
+                let mut conn = self.pool.acquire().await.inspect_err(|_| {
+                    self.metrics.cleanup_errors.add(1, &[]);
+                })?;
+                self.repo.fetch_expired(&mut conn, batch_limit).await.inspect_err(|_| {
+                    self.metrics.cleanup_errors.add(1, &[]);
+                })?
+            };
+
+            if ids.is_empty() {
+                break;
+            }
+
+            tracing::info!(count = %ids.len(), "Found expired attachments to delete");
+
+            let count = ids.len();
+            for id in ids {
+                let key = format!("{}{}", self.attachment_config.prefix, id);
+                let res: Result<bool> = async {
+                    if let Err(e) = self.storage.delete(&key).await {
+                        tracing::warn!(error = ?e, key = %key, "Storage delete error");
+                        return Ok(false);
+                    }
+
+                    let mut conn = self.pool.acquire().await?;
+                    self.repo.delete(&mut conn, id).await?;
+                    Ok(true)
+                }
+                .instrument(tracing::debug_span!("delete_attachment", attachment_id = %id))
+                .await;
+
+                match res {
+                    Ok(true) => total_deleted += 1,
+                    Ok(false) => {}
+                    Err(e) => {
+                        self.metrics.cleanup_errors.add(1, &[]);
+                        return Err(e);
+                    }
+                }
+            }
+            tracing::info!(deleted_count = %count, "Attachment cleanup batch completed successfully");
+        }
+
+        if total_deleted > 0 {
+            self.metrics.deleted.add(total_deleted, &[]);
+            tracing::Span::current().record("total_deleted", total_deleted);
+        }
+
+        Ok(total_deleted)
     }
 }

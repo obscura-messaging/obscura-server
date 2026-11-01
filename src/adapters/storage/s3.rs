@@ -156,25 +156,6 @@ impl ObjectStorage for S3Storage {
         skip(self),
         fields(key = %key, bucket = %self.bucket)
     )]
-    async fn head(&self, key: &str) -> StorageResult<u64> {
-        let output = self.client.head_object().bucket(&self.bucket).key(key).send().await.map_err(|e| {
-            if let aws_sdk_s3::error::SdkError::ServiceError(ref err) = e
-                && err.err().is_not_found()
-            {
-                return StorageError::NotFound;
-            }
-            StorageError::Internal(e.to_string())
-        })?;
-        let len = output.content_length.unwrap_or(0);
-        Ok(u64::try_from(len).unwrap_or(0))
-    }
-
-    #[tracing::instrument(
-        level = "debug",
-        err,
-        skip(self),
-        fields(key = %key, bucket = %self.bucket)
-    )]
     async fn delete(&self, key: &str) -> StorageResult<()> {
         self.client
             .delete_object()

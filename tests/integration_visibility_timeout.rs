@@ -49,14 +49,14 @@ async fn test_push_visibility_timeout_retry() {
     // 1. Setup User and Token
     {
         let mut conn = app.pool.acquire().await.unwrap();
-        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, $2, 'hash')")
+        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
             .bind(user_id)
             .bind(format!("retry_{}", &user_id.to_string()[..8]))
             .execute(&mut *conn)
             .await
             .unwrap();
 
-        sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)")
+        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
             .bind(user_id)
             .execute(&mut *conn)
             .await
@@ -75,11 +75,18 @@ async fn test_push_visibility_timeout_retry() {
     notification_repo.push_jobs(&[user_id], 0).await.unwrap();
 
     // 3. Run worker with FAILING provider
-    let failing_worker = PushNotificationWorker::new(
-        app.pool.clone(),
+    let notification_service = obscura_server::services::notification_service::NotificationService::new(
         notification_repo.clone(),
-        Arc::new(TransientFailureProvider),
+        &config.notifications,
+    );
+    let push_token_service = obscura_server::services::push_token_service::PushTokenService::new(
+        app.pool.clone(),
         obscura_server::adapters::database::push_token_repo::PushTokenRepository::new(),
+    );
+    let failing_worker = PushNotificationWorker::new(
+        notification_service.clone(),
+        push_token_service.clone(),
+        Arc::new(TransientFailureProvider),
         &config.notifications,
     );
 
@@ -105,10 +112,9 @@ async fn test_push_visibility_timeout_retry() {
 
     // 6. Run worker with SUCCESSFUL provider
     let success_worker = PushNotificationWorker::new(
-        app.pool.clone(),
-        notification_repo.clone(),
+        notification_service,
+        push_token_service,
         Arc::new(SharedMockPushProvider),
-        obscura_server::adapters::database::push_token_repo::PushTokenRepository::new(),
         &config.notifications,
     );
 

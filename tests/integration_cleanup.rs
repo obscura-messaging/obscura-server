@@ -14,8 +14,12 @@
     clippy::similar_names
 )]
 use obscura_server::adapters::database::message_repo::MessageRepository;
-use obscura_server::config::MessagingConfig;
+use obscura_server::adapters::redis::{NotificationRepository, RedisCache, RedisClient};
+use obscura_server::config::{MessagingConfig, NotificationConfig, PubSubConfig};
+use obscura_server::services::message_service::MessageService;
+use obscura_server::services::notification_service::NotificationService;
 use obscura_server::workers::MessageCleanupWorker;
+use std::sync::Arc;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
@@ -30,23 +34,36 @@ async fn test_message_cleanup_worker_full_orchestration() {
         ..MessagingConfig::default()
     };
 
-    let worker = MessageCleanupWorker::new(pool.clone(), repo.clone(), config);
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let pubsub = RedisClient::new(&PubSubConfig::default(), 1024, shutdown_rx).await.unwrap();
+    let notif_config = NotificationConfig::default();
+    let notifier = NotificationService::new(
+        Arc::new(NotificationRepository::new(Arc::clone(&pubsub), &notif_config)),
+        &notif_config,
+    );
+    let submission_cache = RedisCache::new(pubsub, "test:idemp:".to_string(), 60);
+    let service = MessageService::new(pool.clone(), repo, notifier, submission_cache, config.max_inbox_size, 30);
+    let worker = MessageCleanupWorker::new(service, config.cleanup_interval_secs);
 
     // --- Part 1: Overflow Pruning ---
     let user_a = Uuid::new_v4();
-    sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, $2, 'hash')")
+    sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
         .bind(user_a)
         .bind(format!("worker_a_{}", &user_a.to_string()[..8]))
         .execute(&pool)
         .await
         .unwrap();
 
-    sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)").bind(user_a).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
+        .bind(user_a)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Seed 3 messages (exceeds limit of 2)
     for i in 0..3 {
         let msg_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO messages (id, submission_id, sender_id, sender_device_id, device_id, content, created_at, expires_at) VALUES ($1, $6, $2, $2, $2, $3, $4, $5)")
+        sqlx::query("INSERT INTO messages (id, idempotency_key, sender_user_id, sender_device_id, device_id, content, created_at, expires_at) VALUES ($1, $6, $2, $2, $2, $3, $4, $5)")
             .bind(msg_id)
             .bind(user_a)
             .bind(format!("msg {i}").into_bytes())
@@ -60,19 +77,23 @@ async fn test_message_cleanup_worker_full_orchestration() {
 
     // --- Part 2: Expiry Deletion ---
     let user_b = Uuid::new_v4();
-    sqlx::query("INSERT INTO users (id, username, password_hash) VALUES ($1, $2, 'hash')")
+    sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
         .bind(user_b)
         .bind(format!("worker_b_{}", &user_b.to_string()[..8]))
         .execute(&pool)
         .await
         .unwrap();
 
-    sqlx::query("INSERT INTO devices (id, user_id) VALUES ($1, $1)").bind(user_b).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
+        .bind(user_b)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Insert one expired message
     let expired_msg_id = Uuid::new_v4();
     let expired_time = OffsetDateTime::now_utc() - Duration::days(1);
-    sqlx::query("INSERT INTO messages (id, submission_id, sender_id, sender_device_id, device_id, content, expires_at) VALUES ($1, $5, $2, $2, $2, $3, $4)")
+    sqlx::query("INSERT INTO messages (id, idempotency_key, sender_user_id, sender_device_id, device_id, content, expires_at) VALUES ($1, $5, $2, $2, $2, $3, $4)")
         .bind(expired_msg_id)
         .bind(user_b)
         .bind(b"expired content".to_vec())
@@ -85,7 +106,7 @@ async fn test_message_cleanup_worker_full_orchestration() {
     // Insert one active message
     let active_msg_id = Uuid::new_v4();
     let active_time = OffsetDateTime::now_utc() + Duration::days(1);
-    sqlx::query("INSERT INTO messages (id, submission_id, sender_id, sender_device_id, device_id, content, expires_at) VALUES ($1, $5, $2, $2, $2, $3, $4)")
+    sqlx::query("INSERT INTO messages (id, idempotency_key, sender_user_id, sender_device_id, device_id, content, expires_at) VALUES ($1, $5, $2, $2, $2, $3, $4)")
         .bind(active_msg_id)
         .bind(user_b)
         .bind(b"active content".to_vec())

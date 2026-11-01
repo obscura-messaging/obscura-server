@@ -18,7 +18,7 @@ use uuid::Uuid;
 /// Returns `AppError::LengthRequired` if the Content-Length header is missing.
 /// Returns `AppError::Internal` if there is an error during upload.
 pub(crate) async fn upload_attachment(
-    _auth_user: AuthUser,
+    _auth: AuthUser,
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Body,
@@ -45,7 +45,7 @@ pub(crate) async fn upload_attachment(
 /// # Panics
 /// Panics if the default Content-Type cannot be parsed.
 pub(crate) async fn download_attachment(
-    _auth_user: AuthUser,
+    _auth: AuthUser,
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,

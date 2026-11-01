@@ -34,6 +34,5 @@ pub trait ObjectStorage: Send + Sync + 'static {
         max_size: usize,
     ) -> StorageResult<u64>;
     async fn get(&self, key: &str) -> StorageResult<(u64, StorageStream)>;
-    async fn head(&self, key: &str) -> StorageResult<u64>;
     async fn delete(&self, key: &str) -> StorageResult<()>;
 }

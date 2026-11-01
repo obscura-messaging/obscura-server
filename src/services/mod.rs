@@ -1,7 +1,5 @@
 pub mod attachment_service;
 pub mod auth_service;
-pub mod backup_service;
-pub mod crypto_service;
 pub mod device_service;
 pub mod gateway;
 pub mod health_service;
@@ -9,4 +7,3 @@ pub mod key_service;
 pub mod message_service;
 pub mod notification_service;
 pub mod push_token_service;
-pub mod rate_limit_service;

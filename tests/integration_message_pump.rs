@@ -27,7 +27,7 @@ mod common;
 
 use common::TestApp;
 use obscura_server::config::Config;
-use obscura_server::domain::notification::UserEvent;
+use obscura_server::domain::notification::DeviceEvent;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -72,7 +72,7 @@ async fn message_survives_a_transient_fetch_failure() {
     .await;
     let message_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO messages (id, device_id, sender_id, sender_device_id, submission_id, content, expires_at)
+        "INSERT INTO messages (id, device_id, sender_user_id, sender_device_id, idempotency_key, content, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '1 day')",
     )
     .bind(message_id)
@@ -87,7 +87,7 @@ async fn message_survives_a_transient_fetch_failure() {
 
     // Wake the pump while it cannot read. Its fetch times out acquiring a connection, and the
     // notification that woke it is consumed.
-    app.notifier.notify(&[alice.device_id], UserEvent::MessageReceived).await;
+    app.notifier.notify(&[alice.device_id], DeviceEvent::MessageReceived).await;
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Database is healthy again. Alice has NOT reconnected, and nothing else will notify the pump.

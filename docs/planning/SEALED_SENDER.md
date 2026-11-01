@@ -1,6 +1,6 @@
 # Sealed sender
 
-**Status: not started.** Today every `Envelope` carries a server-stamped `sender_id` and `sender_device_id` taken from the sender's device-scoped JWT, so the server knows who messages whom. There is no server-side blocking.
+**Status: not started.** Today every `Envelope` carries a server-stamped `sender_user_id` and `sender_device_id` taken from the sender's device-scoped JWT, so the server knows who messages whom. There is no server-side blocking.
 
 ## Goal
 
@@ -16,5 +16,5 @@ Hide the sender from the server while still limiting abuse, following Signal's u
 
 - How unauthenticated sends are rate limited, since the server can no longer key limits on the sender.
 - Default mode for new accounts: open to any certificate holder, or token required.
-- Wire changes: `Envelope.sender_id`/`sender_device_id` become optional and `SendMessageRequest` needs a sealed variant, a coordinated change in obscura-proto.
+- Wire changes: `Envelope.sender_user_id`/`sender_device_id` become optional and `SendMessageRequest` needs a sealed variant, a coordinated change in obscura-proto.
 - What `Idempotency-Key` caching and push wake-ups reveal once the sender is hidden.

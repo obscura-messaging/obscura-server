@@ -14,29 +14,46 @@ impl MessageRepository {
         Self {}
     }
 
-    /// Checks which devices exist in the database.
+    /// Locks the device sets of `recipient_user_ids`, and returns `(device_id, user_id)` for each
+    /// of their devices.
+    ///
+    /// Invariant: a device is only inserted after `FOR UPDATE` on its user row in the same transaction.
+    /// So `FOR SHARE` on the owners' rows (in id order) keeps devices from being added to them until the
+    /// transaction ends, while concurrent sends share the lock; `FOR KEY SHARE` on the devices keeps them
+    /// from being deleted.
     ///
     /// # Errors
-    /// Returns `AppError::Database` if the query fails.
+    /// Returns `AppError::Database` if a query fails.
     #[tracing::instrument(level = "debug", skip(self, conn))]
-    pub(crate) async fn check_devices_exist(&self, conn: &mut PgConnection, device_ids: &[Uuid]) -> Result<Vec<Uuid>> {
-        if device_ids.is_empty() {
-            return Ok(Vec::new());
-        }
+    pub(crate) async fn lock_device_sets(
+        &self,
+        conn: &mut PgConnection,
+        recipient_user_ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, Uuid)>> {
+        let user_ids: Vec<Uuid> = sqlx::query_scalar(
+            r#"
+            SELECT id FROM users
+            WHERE id = ANY($1)
+            ORDER BY id
+            FOR SHARE
+            "#,
+        )
+        .bind(recipient_user_ids)
+        .fetch_all(&mut *conn)
+        .await?;
 
-        let rows: Vec<(Uuid,)> = sqlx::query_as("SELECT id FROM devices WHERE id = ANY($1)")
-            .bind(device_ids)
+        let devices = sqlx::query_as("SELECT id, user_id FROM devices WHERE user_id = ANY($1) FOR KEY SHARE")
+            .bind(user_ids)
             .fetch_all(conn)
-            .await
-            .map_err(AppError::Database)?;
+            .await?;
 
-        Ok(rows.into_iter().map(|(id,)| id).collect())
+        Ok(devices)
     }
 
     /// Inserts a batch of messages.
     ///
-    /// Ignores duplicate messages (based on `sender_device_id` and `submission_id`) via `ON CONFLICT DO NOTHING`.
-    /// Returns the list of `(device_id, submission_id)` that were successfully inserted.
+    /// Ignores duplicate messages (based on `sender_device_id`, `device_id`, and `idempotency_key`) via
+    /// `ON CONFLICT DO NOTHING`. Returns the list of `device_id`s that were successfully inserted.
     ///
     /// # Errors
     /// Returns `AppError::Database` if the insert fails.
@@ -44,11 +61,12 @@ impl MessageRepository {
     pub(crate) async fn create_batch(
         &self,
         conn: &mut PgConnection,
-        sender_id: Uuid,
+        sender_user_id: Uuid,
         sender_device_id: Uuid,
-        messages: Vec<(Uuid, Uuid, Vec<u8>)>,
+        idempotency_key: Uuid,
+        messages: Vec<(Uuid, Vec<u8>)>,
         ttl_days: i64,
-    ) -> Result<Vec<(Uuid, Uuid)>> {
+    ) -> Result<Vec<Uuid>> {
         if messages.is_empty() {
             return Ok(Vec::new());
         }
@@ -56,28 +74,26 @@ impl MessageRepository {
         let expires_at = OffsetDateTime::now_utc() + Duration::days(ttl_days);
 
         let mut device_ids = Vec::with_capacity(messages.len());
-        let mut submission_ids = Vec::with_capacity(messages.len());
         let mut contents = Vec::with_capacity(messages.len());
 
-        for (device_id, submission_id, content) in messages {
+        for (device_id, content) in messages {
             device_ids.push(device_id);
-            submission_ids.push(submission_id);
             contents.push(content);
         }
 
-        let inserted = sqlx::query_as::<_, (Uuid, Uuid)>(
+        let inserted = sqlx::query_scalar::<_, Uuid>(
             r#"
-            INSERT INTO messages (sender_id, sender_device_id, device_id, submission_id, content, expires_at)
-            SELECT $1, $2, u.d_id, u.s_id, u.content, $6
-            FROM UNNEST($3::uuid[], $4::uuid[], $5::bytea[]) AS u(d_id, s_id, content)
-            ON CONFLICT (sender_device_id, submission_id) DO NOTHING
-            RETURNING device_id, submission_id
+            INSERT INTO messages (sender_user_id, sender_device_id, device_id, idempotency_key, content, expires_at)
+            SELECT $1, $2, u.d_id, $3, u.content, $6
+            FROM UNNEST($4::uuid[], $5::bytea[]) AS u(d_id, content)
+            ON CONFLICT (sender_device_id, device_id, idempotency_key) DO NOTHING
+            RETURNING device_id
             "#,
         )
-        .bind(sender_id)
+        .bind(sender_user_id)
         .bind(sender_device_id)
+        .bind(idempotency_key)
         .bind(device_ids)
-        .bind(submission_ids)
         .bind(contents)
         .bind(expires_at)
         .fetch_all(conn)
@@ -103,7 +119,7 @@ impl MessageRepository {
             Some((last_ts, last_id)) => {
                 sqlx::query_as::<_, MessageRecord>(
                     r#"
-                    SELECT id, sender_id, sender_device_id, content, created_at
+                    SELECT id, sender_user_id, sender_device_id, content, created_at
                     FROM messages
                     WHERE device_id = $1
                       AND expires_at > NOW()
@@ -122,7 +138,7 @@ impl MessageRepository {
             None => {
                 sqlx::query_as::<_, MessageRecord>(
                     r#"
-                    SELECT id, sender_id, sender_device_id, content, created_at
+                    SELECT id, sender_user_id, sender_device_id, content, created_at
                     FROM messages
                     WHERE device_id = $1
                       AND expires_at > NOW()
@@ -193,16 +209,6 @@ impl MessageRepository {
         .bind(limit)
         .execute(conn)
         .await?;
-        Ok(result.rows_affected())
-    }
-
-    /// Deletes all messages for a specific device (Inbox wipe).
-    ///
-    /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
-    #[tracing::instrument(level = "debug", skip(self, conn))]
-    pub(crate) async fn delete_all_for_device(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<u64> {
-        let result = sqlx::query("DELETE FROM messages WHERE device_id = $1").bind(device_id).execute(conn).await?;
         Ok(result.rows_affected())
     }
 }

@@ -1,8 +1,7 @@
-use crate::adapters::database::DbPool;
-use crate::adapters::database::push_token_repo::PushTokenRepository;
 use crate::adapters::push::{PushError, PushProvider};
-use crate::adapters::redis::NotificationRepository;
 use crate::config::NotificationConfig;
+use crate::services::notification_service::NotificationService;
+use crate::services::push_token_service::PushTokenService;
 use opentelemetry::{KeyValue, global, metrics::Counter};
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,10 +38,9 @@ impl Metrics {
 
 #[derive(Debug)]
 pub struct PushNotificationWorker {
-    pool: DbPool,
-    repo: Arc<NotificationRepository>,
+    notification_service: NotificationService,
+    push_token_service: PushTokenService,
     provider: Arc<dyn PushProvider>,
-    token_repo: PushTokenRepository,
     interval_secs: u64,
     visibility_timeout_secs: u64,
     invalid_token_cleanup_interval_secs: u64,
@@ -54,17 +52,15 @@ pub struct PushNotificationWorker {
 
 impl PushNotificationWorker {
     pub fn new(
-        pool: DbPool,
-        repo: Arc<NotificationRepository>,
+        notification_service: NotificationService,
+        push_token_service: PushTokenService,
         provider: Arc<dyn PushProvider>,
-        token_repo: PushTokenRepository,
         config: &NotificationConfig,
     ) -> Self {
         Self {
-            pool,
-            repo,
+            notification_service,
+            push_token_service,
             provider,
-            token_repo,
             interval_secs: config.worker_interval_secs,
             visibility_timeout_secs: config.visibility_timeout_secs,
             invalid_token_cleanup_interval_secs: config.invalid_token_cleanup_interval_secs,
@@ -100,7 +96,7 @@ impl PushNotificationWorker {
 
                 _ = cleanup_interval.tick() => {
                     async {
-                        Self::flush_invalid_tokens(&self.pool, &self.token_repo, &mut cleanup_batch).await;
+                        Self::flush_invalid_tokens(&self.push_token_service, &mut cleanup_batch).await;
                     }
                     .instrument(tracing::debug_span!("flush_invalid_tokens"))
                     .await;
@@ -110,7 +106,7 @@ impl PushNotificationWorker {
                     if let Some(token) = res {
                         cleanup_batch.push(token);
                         if cleanup_batch.len() >= self.invalid_token_cleanup_batch_size {
-                            Self::flush_invalid_tokens(&self.pool, &self.token_repo, &mut cleanup_batch).await;
+                            Self::flush_invalid_tokens(&self.push_token_service, &mut cleanup_batch).await;
                         }
                     }
                 }
@@ -120,26 +116,21 @@ impl PushNotificationWorker {
         tracing::info!("Push notification worker shutting down...");
 
         // Final cleanup
-        Self::flush_invalid_tokens(&self.pool, &self.token_repo, &mut cleanup_batch).await;
+        Self::flush_invalid_tokens(&self.push_token_service, &mut cleanup_batch).await;
     }
 
-    #[tracing::instrument(level = "debug", skip(pool, repo, batch))]
-    async fn flush_invalid_tokens(pool: &DbPool, repo: &PushTokenRepository, batch: &mut Vec<String>) {
+    #[tracing::instrument(level = "debug", skip(push_token_service, batch))]
+    async fn flush_invalid_tokens(push_token_service: &PushTokenService, batch: &mut Vec<String>) {
         if batch.is_empty() {
             return;
         }
 
         let count = batch.len();
-        match pool.acquire().await {
-            Ok(mut conn) => {
-                if let Err(e) = repo.delete_tokens_batch(&mut conn, batch).await {
-                    tracing::error!(error = %e, "Failed to delete invalid token batch");
-                } else {
-                    tracing::info!(count, "Successfully deleted invalid tokens in batch");
-                    batch.clear();
-                }
-            }
-            Err(e) => tracing::error!(error = %e, "Failed to acquire connection for cleanup"),
+        if let Err(e) = push_token_service.delete_tokens_batch(batch).await {
+            tracing::error!(error = %e, "Failed to delete invalid token batch");
+        } else {
+            tracing::info!(count, "Successfully deleted invalid tokens in batch");
+            batch.clear();
         }
     }
 
@@ -157,7 +148,7 @@ impl PushNotificationWorker {
         // We poll up to 'available' jobs, which is naturally capped by worker_concurrency
         let limit = available.cast_signed();
         // If the worker crashes, the job will become visible again after this period.
-        let device_ids = self.repo.lease_due_jobs(limit, self.visibility_timeout_secs).await?;
+        let device_ids = self.notification_service.lease_due_push_jobs(limit, self.visibility_timeout_secs).await?;
 
         if device_ids.is_empty() {
             tracing::debug!("No due push notification jobs found");
@@ -167,10 +158,7 @@ impl PushNotificationWorker {
         tracing::info!(count = device_ids.len(), "Processing leased push notifications");
 
         // 1. Batch lookup tokens for all devices
-        let device_token_pairs = {
-            let mut conn = self.pool.acquire().await?;
-            self.token_repo.find_tokens_for_devices(&mut conn, &device_ids).await?
-        };
+        let device_token_pairs = self.push_token_service.find_tokens_for_devices(&device_ids).await?;
 
         let devices_with_tokens: std::collections::HashSet<Uuid> =
             device_token_pairs.iter().map(|(id, _)| *id).collect();
@@ -179,14 +167,14 @@ impl PushNotificationWorker {
         for device_id in &device_ids {
             if !devices_with_tokens.contains(device_id) {
                 tracing::info!(%device_id, "Device has no registered push token, removing job");
-                let _ = self.repo.delete_job(*device_id).await;
+                let _ = self.notification_service.complete_push_job(*device_id).await;
             }
         }
 
         // 3. Dispatch concurrently, bounded by the semaphore
         for (device_id, token) in device_token_pairs {
             let provider = Arc::clone(&self.provider);
-            let repo = Arc::clone(&self.repo);
+            let notification_service = self.notification_service.clone();
             let metrics = self.metrics.clone();
             let tx = invalid_token_tx.clone();
 
@@ -205,14 +193,14 @@ impl PushNotificationWorker {
                             tracing::debug!("Push notification sent successfully");
                             metrics.sent.add(1, &[]);
                             // Success: Remove job from Redis
-                            let _ = repo.delete_job(device_id).await;
+                            let _ = notification_service.complete_push_job(device_id).await;
                         }
                         Err(PushError::Unregistered) => {
                             tracing::info!("Token unregistered, reporting to invalid token cleanup");
                             metrics.invalidated_tokens.add(1, &[]);
 
                             // Definitively failed: Remove job from Redis anyway
-                            let _ = repo.delete_job(device_id).await;
+                            let _ = notification_service.complete_push_job(device_id).await;
 
                             // Send to cleanup for batch DB deletion
                             let _ = tx.send(token).await;

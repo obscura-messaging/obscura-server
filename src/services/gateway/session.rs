@@ -1,5 +1,5 @@
 use crate::config::WsConfig;
-use crate::domain::notification::UserEvent;
+use crate::domain::notification::DeviceEvent;
 use crate::proto::obscura::v1 as proto;
 use crate::services::gateway::{Metrics, ack_batcher::AckBatcher, message_pump::MessagePump, prekey_pump::PreKeyPump};
 use crate::services::key_service::KeyService;
@@ -198,7 +198,7 @@ impl Session {
 
                 result = notification_rx.recv() => {
                     let continue_loop = match result {
-                        Ok(UserEvent::MessageReceived) => {
+                        Ok(DeviceEvent::MessageReceived) => {
                             message_pump.notify();
                             true
                         }
@@ -209,11 +209,11 @@ impl Session {
                             prekey_pump.notify();
                             true
                         }
-                        Ok(UserEvent::PreKeyLow) => {
+                        Ok(DeviceEvent::PreKeyLow) => {
                             prekey_pump.notify();
                             true
                         }
-                        Ok(UserEvent::Disconnect) | Err(broadcast::error::RecvError::Closed) => false,
+                        Ok(DeviceEvent::Disconnect) | Err(broadcast::error::RecvError::Closed) => false,
                     };
 
                      if !continue_loop { break; }

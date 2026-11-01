@@ -37,14 +37,14 @@ impl RedisCache {
         Ok(())
     }
 
-    /// Deletes a key from the cache.
+    /// Removes a key and returns its value in one atomic operation, so that only one caller gets it.
     ///
     /// # Errors
     /// Returns an error if the Redis operation fails.
-    pub async fn delete(&self, key: &str) -> anyhow::Result<()> {
+    pub async fn take(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         let mut conn = self.redis.publisher();
         let full_key = format!("{}{key}", self.prefix);
-        let _: () = conn.del(full_key).await?;
-        Ok(())
+        let value: Option<Vec<u8>> = conn.get_del(full_key).await?;
+        Ok(value)
     }
 }
