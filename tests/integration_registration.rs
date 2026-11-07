@@ -67,3 +67,21 @@ async fn test_register_flow() {
 
     assert_eq!(resp_keys.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn test_duplicate_username_conflicts() {
+    let app = common::TestApp::spawn().await;
+    let username = common::generate_username("dup");
+    app.register_user(&username).await;
+
+    let (payload, _identity_key) = common::generate_registration_payload(&username, "password12345", 456, 1);
+    let resp = app.client.post(format!("{}/v1/users", app.server_url)).json(&payload).send().await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE username = $1")
+        .bind(&username)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "the second registration must not create a user");
+}

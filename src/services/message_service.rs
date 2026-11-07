@@ -359,4 +359,27 @@ mod tests {
         );
         assert_eq!(plan.outcome.invalid_device_ids, vec![unknown_device]);
     }
+
+    #[test]
+    fn test_parse_send_request_batch_limit_is_inclusive() {
+        let sender_device = Uuid::new_v4();
+        // `n` recipients with one submission each, so both counts checked against the limit equal `n`.
+        let request = |n: usize| proto::SendMessageRequest {
+            recipients: (0..n)
+                .map(|_| proto::send_message_request::Recipient {
+                    user_id: Uuid::new_v4().as_bytes().to_vec(),
+                    submissions: vec![proto::send_message_request::Submission {
+                        device_id: Uuid::new_v4().as_bytes().to_vec(),
+                        message: vec![1],
+                    }],
+                })
+                .collect(),
+        };
+
+        let parsed = parse_send_request(sender_device, 3, request(3)).expect("a batch exactly at the limit is allowed");
+        assert_eq!(parsed.len(), 3);
+
+        let err = parse_send_request(sender_device, 3, request(4)).expect_err("a batch over the limit is rejected");
+        assert!(matches!(err, AppError::PayloadTooLarge));
+    }
 }

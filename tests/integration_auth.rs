@@ -234,3 +234,35 @@ async fn test_login_requires_matching_device_id() {
 
     assert_eq!(resp_keys.status(), StatusCode::OK, "Should be able to use token on /keys");
 }
+
+#[tokio::test]
+async fn test_rotated_refresh_token_gets_full_ttl() {
+    let app = common::TestApp::spawn().await;
+    let user = app.register_user(&common::generate_username("rotate")).await;
+
+    // Rotate twice, so the second refresh uses a token the server issued by rotation.
+    let mut refresh_token = user.refresh_token.clone();
+    for round in 1..=2 {
+        let resp = app
+            .client
+            .post(format!("{}/v1/session/refresh", app.server_url))
+            .json(&json!({ "refreshToken": refresh_token }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "refresh {round} should succeed");
+        let body: serde_json::Value = resp.json().await.unwrap();
+        refresh_token = body["refreshToken"].as_str().unwrap().to_string();
+    }
+
+    let expiries: Vec<time::OffsetDateTime> =
+        sqlx::query_scalar("SELECT expires_at FROM refresh_tokens WHERE device_id = $1")
+            .bind(user.device_id)
+            .fetch_all(&app.pool)
+            .await
+            .unwrap();
+    let ttl_days = app.config.auth.refresh_token_ttl_days;
+    let earliest_expected = time::OffsetDateTime::now_utc() + time::Duration::days(ttl_days - 1);
+    assert_eq!(expiries.len(), 1, "rotation replaces the old token");
+    assert!(expiries[0] > earliest_expected, "rotated token should expire about {ttl_days} days from now");
+}

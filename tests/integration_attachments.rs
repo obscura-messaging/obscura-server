@@ -243,3 +243,99 @@ async fn test_attachment_conditional_download() {
     assert_eq!(resp_200.status(), StatusCode::OK);
     assert_eq!(resp_200.bytes().await.unwrap(), content.to_vec());
 }
+
+#[tokio::test]
+async fn test_attachment_exact_max_size_accepted() {
+    let mut config = common::get_test_config();
+    config.storage.bucket = format!("test-att-max-{}", &Uuid::new_v4().to_string()[..8]);
+    config.attachment.max_size_bytes = 100;
+
+    let app = common::TestApp::spawn_with_config(config.clone()).await;
+    common::ensure_storage_bucket(&app.s3_client, &config.storage.bucket).await;
+    let user = app.register_user(&common::generate_username("att_max")).await;
+
+    let content = vec![7u8; 100];
+    let resp = app
+        .client
+        .post(format!("{}/v1/attachments", app.server_url))
+        .header("Authorization", format!("Bearer {}", user.token))
+        .header("Content-Length", "100")
+        .body(content.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED, "an attachment of exactly max_size_bytes is accepted");
+    let id = resp.json::<serde_json::Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .client
+        .get(format!("{}/v1/attachments/{}", app.server_url, id))
+        .header("Authorization", format!("Bearer {}", user.token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.bytes().await.unwrap(), content);
+}
+
+#[tokio::test]
+async fn test_expired_attachment_is_not_downloadable() {
+    let mut config = common::get_test_config();
+    config.storage.bucket = format!("test-att-exp-{}", &Uuid::new_v4().to_string()[..8]);
+
+    let app = common::TestApp::spawn_with_config(config.clone()).await;
+    common::ensure_storage_bucket(&app.s3_client, &config.storage.bucket).await;
+    let user = app.register_user(&common::generate_username("att_exp")).await;
+
+    // Expired in the database, but the cleanup worker has not removed the object yet.
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO attachments (id, expires_at) VALUES ($1, NOW() - INTERVAL '1 day')")
+        .bind(id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    app.s3_client
+        .put_object()
+        .bucket(&config.storage.bucket)
+        .key(format!("{}{}", config.attachment.prefix, id))
+        .body(aws_sdk_s3::primitives::ByteStream::from(b"expired data".to_vec()))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = app
+        .client
+        .get(format!("{}/v1/attachments/{}", app.server_url, id))
+        .header("Authorization", format!("Bearer {}", user.token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_attachment_missing_from_storage_is_not_found() {
+    let mut config = common::get_test_config();
+    config.storage.bucket = format!("test-att-gone-{}", &Uuid::new_v4().to_string()[..8]);
+
+    let app = common::TestApp::spawn_with_config(config.clone()).await;
+    common::ensure_storage_bucket(&app.s3_client, &config.storage.bucket).await;
+    let user = app.register_user(&common::generate_username("att_gone")).await;
+
+    // Unexpired in the database, but the object is missing from storage.
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO attachments (id, expires_at) VALUES ($1, NOW() + INTERVAL '1 day')")
+        .bind(id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    let resp = app
+        .client
+        .get(format!("{}/v1/attachments/{}", app.server_url, id))
+        .header("Authorization", format!("Bearer {}", user.token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}

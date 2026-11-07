@@ -217,3 +217,59 @@ impl AttachmentService {
         Ok(total_deleted)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::storage::StorageResult;
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use futures::StreamExt;
+
+    /// Fails every upload with one error. `S3Storage` returns these when a streamed body breaks a size limit,
+    /// which the API cannot trigger because it requires a matching `Content-Length` and checks it first.
+    struct FailingStorage(fn() -> StorageError);
+
+    #[async_trait]
+    impl ObjectStorage for FailingStorage {
+        async fn put(
+            &self,
+            _key: &str,
+            _stream: StorageStream,
+            _content_len: Option<usize>,
+            _min_size: usize,
+            _max_size: usize,
+        ) -> StorageResult<u64> {
+            Err((self.0)())
+        }
+
+        async fn get(&self, _key: &str) -> StorageResult<(u64, StorageStream)> {
+            Err(StorageError::NotFound)
+        }
+
+        async fn delete(&self, _key: &str) -> StorageResult<()> {
+            Ok(())
+        }
+    }
+
+    async fn upload_error(error: fn() -> StorageError) -> AppError {
+        // Never connects: the storage error is returned before the database is used.
+        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("Valid test pool");
+        let service = AttachmentService::new(
+            pool,
+            AttachmentRepository::new(),
+            Arc::new(FailingStorage(error)),
+            AttachmentConfig::default(),
+            30,
+        );
+        let stream: StorageStream = futures::stream::iter([Ok(Bytes::from_static(b"data"))]).boxed();
+        service.upload(None, stream).await.expect_err("a storage error should fail the upload")
+    }
+
+    #[tokio::test]
+    async fn test_upload_maps_storage_errors() {
+        assert!(matches!(upload_error(|| StorageError::ExceedsLimit).await, AppError::PayloadTooLarge));
+        assert!(matches!(upload_error(|| StorageError::BelowMinSize).await, AppError::BadRequest(_)));
+        assert!(matches!(upload_error(|| StorageError::Internal("boom".into())).await, AppError::Internal));
+    }
+}

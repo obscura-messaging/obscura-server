@@ -40,4 +40,12 @@ mod tests {
         assert!(res.is_err());
         assert_eq!(res.expect_err("Token should be too long"), "Token is too long (max 4096 characters)");
     }
+
+    #[test]
+    fn test_validate_token_at_max_length() {
+        let max = "A".repeat(4096);
+        let req = RegisterPushTokenRequest { token: format!("  {max}  ") };
+        let token = PushToken::try_from(req).expect("a 4096-character token is allowed, measured after trimming");
+        assert_eq!(token.as_str(), max);
+    }
 }
