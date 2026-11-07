@@ -71,3 +71,7 @@ coverage-html:
 clean-coverage:
     cargo llvm-cov clean
     rm -rf lcov.info coverage/
+
+# Run mutation tests as isolated parallel shards (see scripts/mutants.sh)
+mutants *args:
+    scripts/mutants.sh {{args}}
