@@ -10,6 +10,14 @@ use tokio::sync::RwLock;
 /// How many seconds before expiry to proactively refresh the token.
 const REFRESH_MARGIN_SECS: u64 = 300;
 
+/// Lifetime of the signed assertion exchanged for an access token. Google accepts at most an hour.
+const ASSERTION_TTL_SECS: u64 = 3600;
+
+/// Seconds since the UNIX epoch.
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
 /// Google `OAuth2` scope required for FCM.
 const FCM_SCOPE: &str = "https://www.googleapis.com/auth/firebase.messaging";
 
@@ -42,6 +50,19 @@ struct Claims {
     exp: u64,
 }
 
+impl Claims {
+    /// The assertion a service account signs at `now` to request an access token from `audience`.
+    fn assertion(client_email: &str, audience: &str, now: u64) -> Self {
+        Self {
+            iss: client_email.to_string(),
+            scope: FCM_SCOPE.to_string(),
+            aud: audience.to_string(),
+            iat: now,
+            exp: now.saturating_add(ASSERTION_TTL_SECS),
+        }
+    }
+}
+
 /// Response from Google's token endpoint.
 #[derive(Deserialize)]
 struct TokenResponse {
@@ -70,10 +91,14 @@ impl std::fmt::Debug for CachedToken {
 }
 
 impl CachedToken {
-    /// Returns `true` if the token should be refreshed (within the refresh margin).
-    fn needs_refresh(&self) -> bool {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-        now + REFRESH_MARGIN_SECS >= self.expires_at
+    /// A token received at `now` that the token endpoint said expires in `expires_in` seconds.
+    const fn new(access_token: String, now: u64, expires_in: u64) -> Self {
+        Self { access_token, expires_at: now.saturating_add(expires_in) }
+    }
+
+    /// Returns `true` if, at `now`, the token is expired or within the refresh margin of expiring.
+    const fn needs_refresh(&self, now: u64) -> bool {
+        now.saturating_add(REFRESH_MARGIN_SECS) >= self.expires_at
     }
 }
 
@@ -124,6 +149,75 @@ struct FcmErrorDetail {
 #[derive(Debug, Deserialize)]
 struct FieldViolation {
     field: Option<String>,
+}
+
+impl FcmErrorResponse {
+    /// Classifies a failed send from its HTTP status and response body: whether the device token is gone
+    /// for good, the quota is exhausted, or the failure is something else worth retrying.
+    fn classify(status: reqwest::StatusCode, body: &str) -> PushError {
+        // Map HTTP status codes and FCM error codes to PushError variants
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return PushError::QuotaExceeded;
+        }
+
+        // 404 UNREGISTERED: token is no longer valid
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return PushError::Unregistered;
+        }
+
+        // 403 SENDER_ID_MISMATCH: token belongs to a different sender and will never work
+        if status == reqwest::StatusCode::FORBIDDEN {
+            return PushError::Unregistered;
+        }
+
+        // Parse the error body for specific FCM error codes
+        if let Ok(error_resp) = serde_json::from_str::<Self>(body)
+            && let Some(ref error) = error_resp.error
+        {
+            // Check top-level status for token-is-gone errors
+            if let Some(ref s) = error.status
+                && (s == "NOT_FOUND" || s == "UNREGISTERED" || s == "SENDER_ID_MISMATCH")
+            {
+                return PushError::Unregistered;
+            }
+
+            // Check error details for UNREGISTERED error code
+            if let Some(ref details) = error.details {
+                for detail in details {
+                    if let Some(ref code) = detail.error_code
+                        && code == "UNREGISTERED"
+                    {
+                        return PushError::Unregistered;
+                    }
+                }
+            }
+
+            // 400 INVALID_ARGUMENT: could be a bad token format or a payload
+            // issue (message too big, reserved data key, invalid TTL, etc.).
+            // Parse the google.rpc.BadRequest field violations to distinguish:
+            // a violation on "message.token" means the token itself is invalid
+            // and will never succeed, so treat it as Unregistered.
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && let Some(ref s) = error.status
+                && s == "INVALID_ARGUMENT"
+            {
+                let is_token_violation = error.details.as_ref().is_some_and(|details| {
+                    details.iter().any(|d| {
+                        d.field_violations.as_ref().is_some_and(|fvs| {
+                            fvs.iter().any(|fv| fv.field.as_ref().is_some_and(|f| f == "message.token"))
+                        })
+                    })
+                });
+
+                if is_token_violation {
+                    return PushError::Unregistered;
+                }
+
+                tracing::warn!("FCM returned INVALID_ARGUMENT (not a token issue), check payload: {body}");
+            }
+        }
+        PushError::Other(anyhow::anyhow!("FCM request failed with HTTP {status}: {body}"))
+    }
 }
 
 /// FCM message payload.
@@ -217,11 +311,13 @@ impl FcmPushProvider {
     /// a single caller acquire a write lock and refresh.
     #[tracing::instrument(level = "debug", skip(self), err)]
     async fn get_access_token(&self) -> Result<String, PushError> {
+        let now = now_secs();
+
         // Fast path: read lock
         {
             let cache = self.token_cache.read().await;
             if let Some(ref cached) = *cache
-                && !cached.needs_refresh()
+                && !cached.needs_refresh(now)
             {
                 return Ok(cached.access_token.clone());
             }
@@ -232,12 +328,12 @@ impl FcmPushProvider {
 
         // Double-check after acquiring write lock (another task may have refreshed)
         if let Some(ref cached) = *cache
-            && !cached.needs_refresh()
+            && !cached.needs_refresh(now)
         {
             return Ok(cached.access_token.clone());
         }
 
-        let token = self.fetch_access_token().await?;
+        let token = self.fetch_access_token(now).await?;
         let access_token = token.access_token.clone();
         *cache = Some(token);
         drop(cache);
@@ -246,16 +342,8 @@ impl FcmPushProvider {
 
     /// Performs the JWT bearer assertion flow to obtain a new access token.
     #[tracing::instrument(level = "debug", skip(self), err)]
-    async fn fetch_access_token(&self) -> Result<CachedToken, PushError> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-
-        let claims = Claims {
-            iss: self.client_email.clone(),
-            scope: FCM_SCOPE.to_string(),
-            aud: self.token_endpoint.clone(),
-            iat: now,
-            exp: now + 3600,
-        };
+    async fn fetch_access_token(&self, now: u64) -> Result<CachedToken, PushError> {
+        let claims = Claims::assertion(&self.client_email, &self.token_endpoint, now);
 
         let header = Header::new(Algorithm::RS256);
         let assertion = jsonwebtoken::encode(&header, &claims, &self.encoding_key)
@@ -278,7 +366,7 @@ impl FcmPushProvider {
         let token_resp: TokenResponse =
             resp.json().await.map_err(|e| PushError::Other(anyhow::anyhow!("Failed to parse token response: {e}")))?;
 
-        Ok(CachedToken { access_token: token_resp.access_token, expires_at: now + token_resp.expires_in })
+        Ok(CachedToken::new(token_resp.access_token, now, token_resp.expires_in))
     }
 
     /// Sends a data-only push notification via the FCM HTTP v1 API.
@@ -320,76 +408,12 @@ impl FcmPushProvider {
             .map_err(|e| PushError::Other(anyhow::anyhow!("FCM request failed: {e}")))?;
 
         let status = resp.status();
-
         if status.is_success() {
             return Ok(());
         }
 
-        // Map HTTP status codes and FCM error codes to PushError variants
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(PushError::QuotaExceeded);
-        }
-
         let body = resp.text().await.unwrap_or_default();
-
-        // 404 UNREGISTERED: token is no longer valid
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return Err(PushError::Unregistered);
-        }
-
-        // 403 SENDER_ID_MISMATCH: token belongs to a different sender and will never work
-        if status == reqwest::StatusCode::FORBIDDEN {
-            return Err(PushError::Unregistered);
-        }
-
-        // Parse the error body for specific FCM error codes
-        if let Ok(error_resp) = serde_json::from_str::<FcmErrorResponse>(&body)
-            && let Some(ref error) = error_resp.error
-        {
-            // Check top-level status for token-is-gone errors
-            if let Some(ref s) = error.status
-                && (s == "NOT_FOUND" || s == "UNREGISTERED" || s == "SENDER_ID_MISMATCH")
-            {
-                return Err(PushError::Unregistered);
-            }
-
-            // Check error details for UNREGISTERED error code
-            if let Some(ref details) = error.details {
-                for detail in details {
-                    if let Some(ref code) = detail.error_code
-                        && code == "UNREGISTERED"
-                    {
-                        return Err(PushError::Unregistered);
-                    }
-                }
-            }
-
-            // 400 INVALID_ARGUMENT: could be a bad token format or a payload
-            // issue (message too big, reserved data key, invalid TTL, etc.).
-            // Parse the google.rpc.BadRequest field violations to distinguish:
-            // a violation on "message.token" means the token itself is invalid
-            // and will never succeed, so treat it as Unregistered.
-            if status == reqwest::StatusCode::BAD_REQUEST
-                && let Some(ref s) = error.status
-                && s == "INVALID_ARGUMENT"
-            {
-                let is_token_violation = error.details.as_ref().is_some_and(|details| {
-                    details.iter().any(|d| {
-                        d.field_violations.as_ref().is_some_and(|fvs| {
-                            fvs.iter().any(|fv| fv.field.as_ref().is_some_and(|f| f == "message.token"))
-                        })
-                    })
-                });
-
-                if is_token_violation {
-                    return Err(PushError::Unregistered);
-                }
-
-                tracing::warn!("FCM returned INVALID_ARGUMENT (not a token issue), check payload: {body}");
-            }
-        }
-
-        Err(PushError::Other(anyhow::anyhow!("FCM request failed with HTTP {status}: {body}")))
+        Err(FcmErrorResponse::classify(status, &body))
     }
 }
 
@@ -503,23 +527,26 @@ wxOWCSTHCchvQGrMpJlCSygGPUKmT/nl464SFJsQcyZLhrwKKW8=\n\
     // ── CachedToken tests ───────────────────────────────────────────────
 
     #[test]
-    fn cached_token_needs_refresh_when_expired() {
-        let token = CachedToken { access_token: "test".to_string(), expires_at: 0 };
-        assert!(token.needs_refresh());
+    fn cached_token_expires_after_its_lifetime() {
+        let token = CachedToken::new("test".to_string(), 1_000, 3_600);
+        assert_eq!(token.expires_at, 4_600);
     }
 
     #[test]
-    fn cached_token_does_not_need_refresh_when_fresh() {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        let token = CachedToken { access_token: "test".to_string(), expires_at: now + 3600 };
-        assert!(!token.needs_refresh());
+    fn cached_token_needs_refresh_from_the_margin_on() {
+        let token = CachedToken::new("test".to_string(), 1_000, 3_600);
+        assert!(!token.needs_refresh(1_000), "fresh");
+        assert!(!token.needs_refresh(4_600 - REFRESH_MARGIN_SECS - 1), "just outside the margin");
+        assert!(token.needs_refresh(4_600 - REFRESH_MARGIN_SECS), "at the margin");
+        assert!(token.needs_refresh(10_000), "expired");
     }
 
     #[test]
-    fn cached_token_needs_refresh_within_margin() {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        let token = CachedToken { access_token: "test".to_string(), expires_at: now + REFRESH_MARGIN_SECS - 1 };
-        assert!(token.needs_refresh());
+    fn assertion_is_valid_for_its_ttl() {
+        let claims = Claims::assertion("sa@example.com", "https://token.example", 1_000);
+        assert_eq!((claims.iat, claims.exp), (1_000, 1_000 + ASSERTION_TTL_SECS));
+        assert_eq!((claims.iss.as_str(), claims.aud.as_str()), ("sa@example.com", "https://token.example"));
+        assert_eq!(claims.scope, FCM_SCOPE);
     }
 
     // ── Token cache tests ───────────────────────────────────────────────
@@ -595,7 +622,7 @@ wxOWCSTHCchvQGrMpJlCSygGPUKmT/nl464SFJsQcyZLhrwKKW8=\n\
             token_endpoint: token_url,
         };
 
-        let result = provider.fetch_access_token().await;
+        let result = provider.fetch_access_token(now_secs()).await;
         assert!(matches!(result, Err(PushError::Other(_))));
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("Token exchange failed"), "Unexpected error: {err_msg}");
@@ -705,32 +732,6 @@ wxOWCSTHCchvQGrMpJlCSygGPUKmT/nl464SFJsQcyZLhrwKKW8=\n\
     }
 
     #[tokio::test]
-    async fn send_push_404_returns_unregistered() {
-        let url = start_mock_fcm(StatusCode::NOT_FOUND, r#"{"error":{"status":"NOT_FOUND"}}"#).await;
-        let provider = mock_provider(&url);
-        let result = provider.send_push("device_token_abc").await;
-        assert!(matches!(result, Err(PushError::Unregistered)));
-    }
-
-    #[tokio::test]
-    async fn send_push_body_not_found_status_returns_unregistered() {
-        // 400 with NOT_FOUND in the body status field
-        let url = start_mock_fcm(StatusCode::BAD_REQUEST, r#"{"error":{"status":"NOT_FOUND"}}"#).await;
-        let provider = mock_provider(&url);
-        let result = provider.send_push("device_token_abc").await;
-        assert!(matches!(result, Err(PushError::Unregistered)));
-    }
-
-    #[tokio::test]
-    async fn send_push_body_unregistered_status_returns_unregistered() {
-        // 400 with UNREGISTERED in the body status field
-        let url = start_mock_fcm(StatusCode::BAD_REQUEST, r#"{"error":{"status":"UNREGISTERED"}}"#).await;
-        let provider = mock_provider(&url);
-        let result = provider.send_push("device_token_abc").await;
-        assert!(matches!(result, Err(PushError::Unregistered)));
-    }
-
-    #[tokio::test]
     async fn send_push_body_unregistered_detail_returns_unregistered() {
         let url = start_mock_fcm(
             StatusCode::BAD_REQUEST,
@@ -743,78 +744,50 @@ wxOWCSTHCchvQGrMpJlCSygGPUKmT/nl464SFJsQcyZLhrwKKW8=\n\
     }
 
     #[tokio::test]
-    async fn send_push_403_sender_id_mismatch_returns_unregistered() {
-        let url = start_mock_fcm(StatusCode::FORBIDDEN, r#"{"error":{"status":"SENDER_ID_MISMATCH"}}"#).await;
-        let provider = mock_provider(&url);
-        let result = provider.send_push("device_token_abc").await;
-        assert!(matches!(result, Err(PushError::Unregistered)));
-    }
-
-    #[tokio::test]
-    async fn send_push_body_sender_id_mismatch_status_returns_unregistered() {
-        // 400 with SENDER_ID_MISMATCH in the body status field
-        let url = start_mock_fcm(StatusCode::BAD_REQUEST, r#"{"error":{"status":"SENDER_ID_MISMATCH"}}"#).await;
-        let provider = mock_provider(&url);
-        let result = provider.send_push("device_token_abc").await;
-        assert!(matches!(result, Err(PushError::Unregistered)));
-    }
-
-    #[tokio::test]
-    async fn send_push_400_invalid_argument_no_details_returns_other_error() {
-        let url = start_mock_fcm(StatusCode::BAD_REQUEST, r#"{"error":{"status":"INVALID_ARGUMENT"}}"#).await;
-        let provider = mock_provider(&url);
-        let result = provider.send_push("device_token_abc").await;
-        assert!(matches!(result, Err(PushError::Other(_))));
-    }
-
-    #[tokio::test]
-    async fn send_push_400_invalid_argument_token_field_violation_returns_unregistered() {
-        let body = r#"{"error":{"status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.BadRequest","fieldViolations":[{"field":"message.token","description":"Invalid registration token"}]}]}}"#;
-        let url = start_mock_fcm(StatusCode::BAD_REQUEST, body).await;
-        let provider = mock_provider(&url);
-        let result = provider.send_push("device_token_abc").await;
-        assert!(matches!(result, Err(PushError::Unregistered)));
-    }
-
-    #[tokio::test]
-    async fn send_push_400_invalid_argument_non_token_field_violation_returns_other() {
-        let body = r#"{"error":{"status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.BadRequest","fieldViolations":[{"field":"message.data","description":"Payload too large"}]}]}}"#;
-        let url = start_mock_fcm(StatusCode::BAD_REQUEST, body).await;
-        let provider = mock_provider(&url);
-        let result = provider.send_push("device_token_abc").await;
-        assert!(matches!(result, Err(PushError::Other(_))));
-    }
-
-    #[tokio::test]
-    async fn send_push_500_returns_other_error() {
-        let url = start_mock_fcm(StatusCode::INTERNAL_SERVER_ERROR, r#"{"error":{"status":"INTERNAL"}}"#).await;
-        let provider = mock_provider(&url);
-        let result = provider.send_push("device_token_abc").await;
-        assert!(matches!(result, Err(PushError::Other(_))));
-    }
-
-    #[tokio::test]
-    async fn send_push_503_unavailable_returns_other_error() {
-        let url = start_mock_fcm(StatusCode::SERVICE_UNAVAILABLE, r#"{"error":{"status":"UNAVAILABLE"}}"#).await;
-        let provider = mock_provider(&url);
-        let result = provider.send_push("device_token_abc").await;
-        assert!(matches!(result, Err(PushError::Other(_))));
-    }
-
-    #[tokio::test]
-    async fn send_push_401_third_party_auth_error_returns_other() {
-        let url = start_mock_fcm(StatusCode::UNAUTHORIZED, r#"{"error":{"status":"THIRD_PARTY_AUTH_ERROR"}}"#).await;
-        let provider = mock_provider(&url);
-        let result = provider.send_push("device_token_abc").await;
-        assert!(matches!(result, Err(PushError::Other(_))));
-    }
-
-    #[tokio::test]
     async fn send_push_unparseable_error_body_returns_other() {
         let url = start_mock_fcm(StatusCode::BAD_REQUEST, "not json at all").await;
         let provider = mock_provider(&url);
         let result = provider.send_push("device_token_abc").await;
         assert!(matches!(result, Err(PushError::Other(_))));
+    }
+
+    #[test]
+    fn classify_failures() {
+        use reqwest::StatusCode as S;
+        let token_violation = r#"{"error":{"status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.BadRequest","fieldViolations":[{"field":"message.token","description":"Invalid registration token"}]}]}}"#;
+        let payload_violation = r#"{"error":{"status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.BadRequest","fieldViolations":[{"field":"message.data","description":"Payload too large"}]}]}}"#;
+        let cases = [
+            (S::TOO_MANY_REQUESTS, r#"{"error":{"status":"RESOURCE_EXHAUSTED"}}"#, "quota"),
+            (S::TOO_MANY_REQUESTS, "", "quota"),
+            (S::NOT_FOUND, r#"{"error":{"status":"NOT_FOUND"}}"#, "unregistered"),
+            (S::NOT_FOUND, "", "unregistered"),
+            (S::FORBIDDEN, r#"{"error":{"status":"SENDER_ID_MISMATCH"}}"#, "unregistered"),
+            (S::BAD_REQUEST, r#"{"error":{"status":"NOT_FOUND"}}"#, "unregistered"),
+            (S::BAD_REQUEST, r#"{"error":{"status":"UNREGISTERED"}}"#, "unregistered"),
+            (S::BAD_REQUEST, r#"{"error":{"status":"SENDER_ID_MISMATCH"}}"#, "unregistered"),
+            (
+                S::BAD_REQUEST,
+                r#"{"error":{"status":"INVALID_ARGUMENT","details":[{"errorCode":"UNREGISTERED"}]}}"#,
+                "unregistered",
+            ),
+            (S::BAD_REQUEST, token_violation, "unregistered"),
+            (S::BAD_REQUEST, payload_violation, "other"),
+            (S::BAD_REQUEST, r#"{"error":{"status":"INVALID_ARGUMENT"}}"#, "other"),
+            (S::INTERNAL_SERVER_ERROR, token_violation, "other"),
+            (S::INTERNAL_SERVER_ERROR, r#"{"error":{"status":"INTERNAL"}}"#, "other"),
+            (S::SERVICE_UNAVAILABLE, r#"{"error":{"status":"UNAVAILABLE"}}"#, "other"),
+            (S::UNAUTHORIZED, r#"{"error":{"status":"THIRD_PARTY_AUTH_ERROR"}}"#, "other"),
+            (S::BAD_REQUEST, "not json at all", "other"),
+            (S::BAD_REQUEST, r#"{"error":null}"#, "other"),
+        ];
+        for (status, body, expected) in cases {
+            let got = match FcmErrorResponse::classify(status, body) {
+                PushError::Unregistered => "unregistered",
+                PushError::QuotaExceeded => "quota",
+                PushError::Other(_) => "other",
+            };
+            assert_eq!(got, expected, "HTTP {status} with body {body}");
+        }
     }
 
     // ── FcmPushProvider::new() constructor tests ────────────────────────
