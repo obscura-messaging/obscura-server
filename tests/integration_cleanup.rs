@@ -46,19 +46,7 @@ async fn test_message_cleanup_worker_full_orchestration() {
     let worker = MessageCleanupWorker::new(service, config.cleanup_interval_secs);
 
     // --- Part 1: Overflow Pruning ---
-    let user_a = Uuid::new_v4();
-    sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
-        .bind(user_a)
-        .bind(format!("worker_a_{}", &user_a.to_string()[..8]))
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
-        .bind(user_a)
-        .execute(&pool)
-        .await
-        .unwrap();
+    let user_a = common::insert_device(&pool, "worker_a").await;
 
     // Seed 3 messages (exceeds limit of 2)
     for i in 0..3 {
@@ -76,19 +64,7 @@ async fn test_message_cleanup_worker_full_orchestration() {
     }
 
     // --- Part 2: Expiry Deletion ---
-    let user_b = Uuid::new_v4();
-    sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
-        .bind(user_b)
-        .bind(format!("worker_b_{}", &user_b.to_string()[..8]))
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
-        .bind(user_b)
-        .execute(&pool)
-        .await
-        .unwrap();
+    let user_b = common::insert_device(&pool, "worker_b").await;
 
     // Insert one expired message
     let expired_msg_id = Uuid::new_v4();

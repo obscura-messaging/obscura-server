@@ -28,7 +28,6 @@ use std::sync::{
 use std::time::Duration;
 use tokio::sync::{Semaphore, mpsc};
 use tracing::Instrument;
-use uuid::Uuid;
 
 #[tokio::test]
 async fn test_scheduled_push_delivery() {
@@ -37,26 +36,8 @@ async fn test_scheduled_push_delivery() {
     config.notifications.worker_interval_secs = 1;
 
     let app = TestApp::spawn_with_workers(config).await;
-    let user_id = Uuid::new_v4();
 
-    {
-        let mut conn = app.pool.acquire().await.unwrap();
-        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
-            .bind(user_id)
-            .bind(format!("u_{}", &user_id.to_string()[..8]))
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
-            .bind(user_id)
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-        let token_repo = obscura_server::adapters::database::push_token_repo::PushTokenRepository::new();
-        token_repo.upsert_token(&mut conn, user_id, &format!("token:{user_id}")).await.unwrap();
-    }
+    let user_id = common::insert_device_with_push_token(&app.pool, "u").await;
 
     // 1. Notify MessageReceived
     app.notifier.notify(&[user_id], obscura_server::domain::notification::DeviceEvent::MessageReceived).await;
@@ -159,26 +140,8 @@ async fn test_delivery_exactly_once_under_competition() {
     config.notifications.worker_interval_secs = 1;
 
     let app = TestApp::spawn_with_config(config).await;
-    let user_id = Uuid::new_v4();
 
-    {
-        let mut conn = app.pool.acquire().await.unwrap();
-        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
-            .bind(user_id)
-            .bind(format!("u_comp_{}", &user_id.to_string()[..8]))
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
-            .bind(user_id)
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-        let token_repo = obscura_server::adapters::database::push_token_repo::PushTokenRepository::new();
-        token_repo.upsert_token(&mut conn, user_id, &format!("token:{user_id}")).await.unwrap();
-    }
+    let user_id = common::insert_device_with_push_token(&app.pool, "u_comp").await;
 
     // Access internal components via Resources/Config
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -235,26 +198,8 @@ async fn test_push_coalescing() {
     config.notifications.worker_interval_secs = 1;
 
     let app = TestApp::spawn_with_workers(config).await;
-    let user_id = Uuid::new_v4();
 
-    {
-        let mut conn = app.pool.acquire().await.unwrap();
-        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
-            .bind(user_id)
-            .bind(format!("u_coal_{}", &user_id.to_string()[..8]))
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
-            .bind(user_id)
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-        let token_repo = obscura_server::adapters::database::push_token_repo::PushTokenRepository::new();
-        token_repo.upsert_token(&mut conn, user_id, &format!("token:{user_id}")).await.unwrap();
-    }
+    let user_id = common::insert_device_with_push_token(&app.pool, "u_coal").await;
 
     for _ in 0..5 {
         app.notifier.notify(&[user_id], obscura_server::domain::notification::DeviceEvent::MessageReceived).await;
@@ -351,28 +296,7 @@ async fn test_notification_worker_concurrency_limit() {
     let (invalid_token_tx, _invalid_token_rx) = mpsc::channel(16);
 
     for i in 0..jobs {
-        let user_id = Uuid::new_v4();
-        {
-            let mut conn = app.pool.acquire().await.unwrap();
-            let username = common::generate_username(&format!("conc_{i}"));
-            sqlx::query(
-                "INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')",
-            )
-            .bind(user_id)
-            .bind(username)
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-            sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
-                .bind(user_id)
-                .execute(&mut *conn)
-                .await
-                .unwrap();
-
-            let token_repo = obscura_server::adapters::database::push_token_repo::PushTokenRepository::new();
-            token_repo.upsert_token(&mut conn, user_id, &format!("token:{user_id}")).await.unwrap();
-        }
+        let user_id = common::insert_device_with_push_token(&app.pool, &format!("conc_{i}")).await;
         let _: anyhow::Result<()> = notification_repo.push_jobs(&[user_id], 0).await;
     }
 

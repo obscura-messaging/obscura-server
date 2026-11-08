@@ -164,6 +164,39 @@ pub fn generate_username(prefix: &str) -> String {
     format!("{prefix}_{}", &Uuid::new_v4().to_string()[..8])
 }
 
+/// Inserts a user with one device, without going through registration, and returns the device ID,
+/// which is also the user ID. For tests that need a device to exist but do not exercise the API.
+pub async fn insert_device(pool: &PgPool, username_prefix: &str) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
+        .bind(id)
+        .bind(generate_username(username_prefix))
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    id
+}
+
+pub async fn insert_push_token(pool: &PgPool, device_id: Uuid, token: &str) {
+    let mut conn = pool.acquire().await.unwrap();
+    adapters::database::push_token_repo::PushTokenRepository::new()
+        .upsert_token(&mut conn, device_id, token)
+        .await
+        .unwrap();
+}
+
+/// Inserts a device with the push token `token:{device_id}`, which `SharedMockPushProvider` counts.
+pub async fn insert_device_with_push_token(pool: &PgPool, username_prefix: &str) -> Uuid {
+    let id = insert_device(pool, username_prefix).await;
+    insert_push_token(pool, id, &format!("token:{id}")).await;
+    id
+}
+
 pub fn generate_signing_key() -> [u8; 32] {
     let mut rng = rand::rng();
     let mut bytes = [0u8; 32];

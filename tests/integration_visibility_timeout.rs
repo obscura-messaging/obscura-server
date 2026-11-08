@@ -22,7 +22,6 @@ use obscura_server::adapters::redis::NotificationRepository;
 use obscura_server::workers::PushNotificationWorker;
 use std::sync::Arc;
 use std::time::Duration;
-use uuid::Uuid;
 
 #[derive(Debug, Default)]
 struct TransientFailureProvider;
@@ -43,28 +42,9 @@ async fn test_push_visibility_timeout_retry() {
     config.notifications.visibility_timeout_secs = 2;
 
     let app = TestApp::spawn_with_config(config.clone()).await;
-    let user_id = Uuid::new_v4();
-    let token = format!("token:{user_id}");
 
     // 1. Setup User and Token
-    {
-        let mut conn = app.pool.acquire().await.unwrap();
-        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
-            .bind(user_id)
-            .bind(format!("retry_{}", &user_id.to_string()[..8]))
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
-            .bind(user_id)
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-        let repo = obscura_server::adapters::database::push_token_repo::PushTokenRepository::new();
-        repo.upsert_token(&mut conn, user_id, &token).await.unwrap();
-    }
+    let user_id = common::insert_device_with_push_token(&app.pool, "retry").await;
 
     // 2. Schedule a job
     let pubsub =

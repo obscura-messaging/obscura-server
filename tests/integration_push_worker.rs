@@ -21,7 +21,6 @@ use obscura_server::adapters::push::{PushError, PushProvider};
 use obscura_server::adapters::redis::NotificationRepository;
 use obscura_server::workers::PushNotificationWorker;
 use std::sync::Arc;
-use uuid::Uuid;
 
 #[derive(Debug, Default)]
 struct FailingPushProvider;
@@ -44,28 +43,11 @@ async fn test_push_worker_invalidates_unregistered_tokens() {
     config.notifications.push_queue_key = format!("{}-cleanup", config.notifications.push_queue_key);
 
     let pool = common::get_test_pool().await;
-    let user_id = Uuid::new_v4();
     let token = "invalid_token_123";
 
     // 1. Setup DB state
-    {
-        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
-            .bind(user_id)
-            .bind(format!("fail_{}", &user_id.to_string()[..8]))
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
-            .bind(user_id)
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let repo = PushTokenRepository::new();
-        let mut conn = pool.acquire().await.unwrap();
-        repo.upsert_token(&mut conn, user_id, token).await.unwrap();
-    }
+    let user_id = common::insert_device(&pool, "fail").await;
+    common::insert_push_token(&pool, user_id, token).await;
 
     // 2. Schedule a push
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -135,23 +117,9 @@ async fn test_push_worker_removes_job_when_user_has_no_token() {
     config.notifications.push_queue_key = format!("{}-no-token", config.notifications.push_queue_key);
 
     let pool = common::get_test_pool().await;
-    let user_id = Uuid::new_v4();
 
     // 1. Setup DB state (User ONLY, NO token)
-    {
-        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
-            .bind(user_id)
-            .bind(format!("user_{}", &user_id.to_string()[..8]))
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
-            .bind(user_id)
-            .execute(&pool)
-            .await
-            .unwrap();
-    }
+    let user_id = common::insert_device(&pool, "user").await;
 
     // 2. Schedule a push job
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
