@@ -137,6 +137,9 @@ async fn test_prekey_coalescing() {
     let mut config = common::get_test_config();
     // The burst below must not queue on the pool: this test is about debouncing, not pool capacity.
     config.database.max_connections = FETCHES * 2;
+    // Far longer than the burst takes, so the whole burst lands inside one debounce window.
+    let debounce = Duration::from_millis(1500);
+    config.websocket.prekey_debounce_interval_ms = debounce.as_millis().try_into().unwrap();
     let app = common::TestApp::spawn_with_workers(config).await;
 
     // 1. Bob with 25 keys
@@ -144,13 +147,11 @@ async fn test_prekey_coalescing() {
     let mut bob_ws = app.connect_ws(&bob.token).await;
     bob_ws.ensure_subscribed().await;
 
-    // Clear initial status frame
-    let _ = bob_ws.receive_prekey_status_timeout(Duration::from_secs(1)).await;
-
     let alice = app.register_user(&common::generate_username("alice_co")).await;
 
     // 2. Alice fetches 20 keys CONCURRENTLY.
     // This will definitely dip Bob below the 20-key threshold multiple times.
+    let burst_started = std::time::Instant::now();
     let mut handles = Vec::new();
     for _ in 0..FETCHES {
         let client = app.client.clone();
@@ -170,27 +171,15 @@ async fn test_prekey_coalescing() {
         assert_eq!(h.await.unwrap().status(), StatusCode::OK, "every fetch must consume a key");
     }
 
-    // Wait for the 500ms debounce window + some slack
-    tokio::time::sleep(Duration::from_millis(800)).await;
-
-    // 3. Bob should receive status frames.
-    // Due to time-based debouncing, he should receive very few, and the last one
-    // MUST reflect the final state.
-    let mut last_count = 25;
-    let mut frame_count = 0;
-
-    let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(5) {
-        if let Some(status) = bob_ws.receive_prekey_status_timeout(Duration::from_millis(500)).await {
-            frame_count += 1;
-            last_count = status.one_time_pre_key_count;
-            if last_count == 5 {
-                break;
-            }
-        }
-    }
-
-    assert!(frame_count > 0, "Bob should have received at least one notification");
-    assert!(frame_count < 10, "Debouncing should have significantly reduced the number of frames");
-    assert_eq!(last_count, 5, "Bob should eventually receive the final accurate count of 5");
+    // 3. The pump waits out the burst before reading the count, so its first frame comes at least one
+    // debounce interval after the burst started, and reports the final count. Without debouncing, the
+    // first frame comes within milliseconds and may report a count from partway through the burst.
+    let status =
+        bob_ws.receive_prekey_status_timeout(Duration::from_secs(5)).await.expect("Bob should receive a status frame");
+    let waited = burst_started.elapsed();
+    assert!(
+        waited >= debounce,
+        "the first frame came {waited:?} after the burst started, before the debounce interval"
+    );
+    assert_eq!(status.one_time_pre_key_count, 5, "the first frame should report the count after the whole burst");
 }

@@ -205,10 +205,36 @@ async fn test_push_coalescing() {
         app.notifier.notify(&[user_id], obscura_server::domain::notification::DeviceEvent::MessageReceived).await;
     }
 
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    let sent =
+        app.wait_until(|| async { notification_counts().get(&user_id).is_some() }, Duration::from_secs(10)).await;
+    assert!(sent, "the coalesced push was never sent");
+
+    // The worker removes a job only after sending its push, so once the job is gone, no further push can
+    // come from it. A job kept after sending would be sent again when its lease expired.
+    let removed = app.wait_until(|| async { !app.push_job_scheduled(user_id).await }, Duration::from_secs(10)).await;
+    assert!(removed, "the push job should be removed once its push is sent");
 
     let count = notification_counts().get(&user_id).map_or(0, |c| *c);
     assert_eq!(count, 1, "Expected 1 coalesced notification, got {count}");
+}
+
+/// Leasing is what stops competing workers from sending the same push twice: of many concurrent leases
+/// for one due job, exactly one may get it.
+#[tokio::test]
+async fn test_concurrent_leases_are_exclusive() {
+    let app = TestApp::spawn().await;
+    let repo = Arc::new(NotificationRepository::new(app.resources.pubsub.clone(), &app.config.notifications));
+    let device_id = uuid::Uuid::new_v4();
+    repo.push_jobs(&[device_id], 0).await.unwrap();
+
+    let leases = futures::future::join_all((0..10).map(|_| {
+        let repo = Arc::clone(&repo);
+        async move { repo.lease_due_jobs(10, 30).await.unwrap() }
+    }))
+    .await;
+
+    let winners = leases.iter().filter(|leased| !leased.is_empty()).count();
+    assert_eq!(winners, 1, "exactly one concurrent lease should get the job: {leases:?}");
 }
 
 /// Holds every push until the test opens the gate, and records how many are in flight at once.

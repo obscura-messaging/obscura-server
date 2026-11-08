@@ -107,8 +107,17 @@ async fn test_full_system_flow() {
     // 8. Verify Push Coalescing
     // Receiver is offline, so push notification should fire.
     // We sent 49 valid messages. We expect EXACTLY 1 push notification due to coalescing/debouncing.
-    // Wait for the push delay (2s) + buffer.
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    let pushed = app_a
+        .wait_until(|| async { notification_counts().get(&receiver.device_id).is_some() }, Duration::from_secs(10))
+        .await;
+    assert!(pushed, "the coalesced push was never sent");
+
+    // The worker removes a job only after sending its push, so once the job is gone, no further push can
+    // come from it. Checked before the receiver connects, because connecting cancels the job too.
+    let removed = app_a
+        .wait_until(|| async { !app_a.push_job_scheduled(receiver.device_id).await }, Duration::from_secs(10))
+        .await;
+    assert!(removed, "the push job should be removed once its push is sent");
 
     let push_count = notification_counts().get(&receiver.device_id).map_or(0, |c| *c);
     assert_eq!(push_count, 1, "Expected exactly 1 coalesced push notification, got {push_count}");

@@ -144,23 +144,22 @@ async fn test_push_worker_removes_job_when_user_has_no_token() {
         &config.notifications,
     );
 
-    let worker_handle = tokio::spawn(worker.run(shutdown_rx));
+    // 4. Run one worker pass directly, so no timer decides when it happens. A job for a device with no
+    // push token is removed within the pass.
+    let (invalid_token_tx, _invalid_token_rx) = tokio::sync::mpsc::channel(16);
+    worker.process_due_jobs(invalid_token_tx).await.unwrap();
 
-    // 4. Wait for worker to process at least one cycle.
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // 5. Check the job is gone. This looks for the job itself: a job the pass leased but kept would not be
+    // due again until its lease expires, so leasing again could not see it.
+    let client = redis::Client::open(config.pubsub.url.clone()).unwrap();
+    let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+    let score: Option<f64> = redis::cmd("ZSCORE")
+        .arg(&config.notifications.push_queue_key)
+        .arg(user_id.to_string())
+        .query_async(&mut conn)
+        .await
+        .unwrap();
+    assert!(score.is_none(), "Job should have been removed because user has no token");
 
-    // 5. Shutdown the worker and AWAIT its completion.
-    // This ensures no leases are currently active and the worker has finished its final cycle.
     let _ = shutdown_tx.send(true);
-    let _ = worker_handle.await;
-
-    // 6. Check if job is gone from Redis.
-    // Since the worker is stopped, it cannot have the job currently leased.
-    // If it's still in Redis, it will be returned by lease_due_jobs.
-    let leased = notification_repo.lease_due_jobs(10, 0).await.unwrap();
-
-    assert!(
-        leased.is_empty(),
-        "Job should have been removed because user has no token, but it was still present: {leased:?}"
-    );
 }

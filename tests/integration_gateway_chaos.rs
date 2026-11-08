@@ -102,27 +102,11 @@ async fn test_ack_batcher_does_not_drop_on_disconnect() {
         alice_ws.send_ack(id.clone()).await;
     }
 
-    // Wait a tiny bit just for the WebSocket to route the message to the batcher
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // VIOLENTLY DISCONNECT ALICE
+    // VIOLENTLY DISCONNECT ALICE. The server reads her ACK frames before the close that follows them.
     let _ = alice_ws.sink.close().await;
     drop(alice_ws);
 
-    // Give the server a moment to process the disconnect and drop the session channel,
-    // which should trigger the AckBatcher's `None` arm and force a flush.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Reconnect Alice. If the batcher dropped the state on disconnect,
-    // the messages will still be in the database and she will receive them again.
-    let mut new_alice_ws = app.connect_ws(&alice.token).await;
-    new_alice_ws.ensure_subscribed().await;
-
-    // Expect NO messages, as they should have been deleted.
-    let env = new_alice_ws.receive_envelope_timeout(Duration::from_secs(2)).await;
-
-    assert!(
-        env.is_none(),
-        "Alice received messages after reconnecting! The AckBatcher dropped the state on disconnect."
-    );
+    // The disconnect closes the batcher's channel, which should flush the pending ACKs. Nothing else
+    // could delete these messages within the 10s flush interval.
+    app.assert_message_count(alice.device_id, 0).await;
 }
