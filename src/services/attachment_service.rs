@@ -2,6 +2,7 @@ use crate::adapters::database::DbPool;
 use crate::adapters::database::attachment_repo::AttachmentRepository;
 use crate::adapters::storage::{ObjectStorage, StorageError, StorageStream};
 use crate::config::AttachmentConfig;
+use crate::domain::attachment::SizeLimits;
 use crate::error::{AppError, Result};
 use opentelemetry::{
     global,
@@ -49,6 +50,7 @@ pub struct AttachmentService {
     repo: AttachmentRepository,
     storage: Arc<dyn ObjectStorage>,
     attachment_config: AttachmentConfig,
+    size_limits: SizeLimits,
     ttl_days: i64,
     metrics: Metrics,
 }
@@ -57,6 +59,7 @@ impl std::fmt::Debug for AttachmentService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AttachmentService")
             .field("attachment_config", &self.attachment_config)
+            .field("size_limits", &self.size_limits)
             .field("ttl_days", &self.ttl_days)
             .field("metrics", &self.metrics)
             .finish_non_exhaustive()
@@ -70,9 +73,10 @@ impl AttachmentService {
         repo: AttachmentRepository,
         storage: Arc<dyn ObjectStorage>,
         attachment_config: AttachmentConfig,
+        size_limits: SizeLimits,
         ttl_days: i64,
     ) -> Self {
-        Self { pool, repo, storage, attachment_config, ttl_days, metrics: Metrics::new() }
+        Self { pool, repo, storage, attachment_config, size_limits, ttl_days, metrics: Metrics::new() }
     }
 
     /// Uploads an attachment to storage.
@@ -86,32 +90,18 @@ impl AttachmentService {
         skip(self, stream),
         fields(attachment_id = tracing::field::Empty, attachment_size = tracing::field::Empty)
     )]
-    pub(crate) async fn upload(&self, content_len: Option<usize>, stream: StorageStream) -> Result<(Uuid, i64)> {
+    pub(crate) async fn upload(&self, content_len: Option<u64>, stream: StorageStream) -> Result<(Uuid, i64)> {
         if let Some(len) = content_len {
             tracing::Span::current().record("attachment_size", len);
-            if len < self.attachment_config.min_size_bytes {
-                return Err(AppError::BadRequest("Attachment too small".into()));
-            }
-            if len > self.attachment_config.max_size_bytes {
-                return Err(AppError::PayloadTooLarge);
-            }
+            self.size_limits.check(len)?;
         }
 
         let id = Uuid::new_v4();
-        let key = format!("{}{}", self.attachment_config.prefix, id);
+        let key = self.attachment_config.object_key(id);
         tracing::Span::current().record("attachment_id", tracing::field::display(id));
 
-        let put_future = self.storage.put(
-            &key,
-            stream,
-            content_len,
-            self.attachment_config.min_size_bytes,
-            self.attachment_config.max_size_bytes,
-        );
-
-        let actual_len = put_future.await.map_err(|e| match e {
-            StorageError::ExceedsLimit => AppError::PayloadTooLarge,
-            StorageError::BelowMinSize => AppError::BadRequest("Attachment too small".into()),
+        let actual_len = self.storage.put(&key, stream, content_len, self.size_limits).await.map_err(|e| match e {
+            StorageError::Size(violation) => violation.into(),
             _ => AppError::Internal,
         })?;
 
@@ -141,7 +131,7 @@ impl AttachmentService {
         drop(conn);
 
         // Stream from Storage
-        let key = format!("{}{}", self.attachment_config.prefix, id);
+        let key = self.attachment_config.object_key(id);
         let (content_length, stream) = self.storage.get(&key).await.map_err(|e| match e {
             StorageError::NotFound => AppError::NotFound,
             _ => AppError::Internal,
@@ -183,7 +173,7 @@ impl AttachmentService {
 
             let count = ids.len();
             for id in ids {
-                let key = format!("{}{}", self.attachment_config.prefix, id);
+                let key = self.attachment_config.object_key(id);
                 let res: Result<bool> = async {
                     if let Err(e) = self.storage.delete(&key).await {
                         tracing::warn!(error = ?e, key = %key, "Storage delete error");
@@ -222,6 +212,7 @@ impl AttachmentService {
 mod tests {
     use super::*;
     use crate::adapters::storage::StorageResult;
+    use crate::domain::attachment::SizeViolation;
     use async_trait::async_trait;
     use bytes::Bytes;
     use futures::StreamExt;
@@ -236,9 +227,8 @@ mod tests {
             &self,
             _key: &str,
             _stream: StorageStream,
-            _content_len: Option<usize>,
-            _min_size: usize,
-            _max_size: usize,
+            _content_len: Option<u64>,
+            _limits: SizeLimits,
         ) -> StorageResult<u64> {
             Err((self.0)())
         }
@@ -260,6 +250,7 @@ mod tests {
             AttachmentRepository::new(),
             Arc::new(FailingStorage(error)),
             AttachmentConfig::default(),
+            AttachmentConfig::default().size_limits().expect("default limits are valid"),
             30,
         );
         let stream: StorageStream = futures::stream::iter([Ok(Bytes::from_static(b"data"))]).boxed();
@@ -268,8 +259,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_upload_maps_storage_errors() {
-        assert!(matches!(upload_error(|| StorageError::ExceedsLimit).await, AppError::PayloadTooLarge));
-        assert!(matches!(upload_error(|| StorageError::BelowMinSize).await, AppError::BadRequest(_)));
+        assert!(matches!(upload_error(|| SizeViolation::TooLarge.into()).await, AppError::PayloadTooLarge));
+        assert!(matches!(upload_error(|| SizeViolation::TooSmall.into()).await, AppError::BadRequest(_)));
         assert!(matches!(upload_error(|| StorageError::Internal("boom".into())).await, AppError::Internal));
     }
 }

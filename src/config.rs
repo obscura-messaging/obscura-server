@@ -1,5 +1,25 @@
+use crate::domain::attachment::{InvertedSizeLimits, SizeLimits};
 use clap::{Args, Parser};
 use ipnetwork::IpNetwork;
+use std::num::{NonZeroU32, NonZeroUsize};
+use thiserror::Error;
+use uuid::Uuid;
+
+/// A configuration whose values parse individually but contradict each other.
+#[derive(Error, Debug)]
+pub enum ConfigError {
+    #[error(transparent)]
+    AttachmentSizeLimits(#[from] InvertedSizeLimits),
+    #[error(
+        "FCM is half configured: {missing} is not set. Set both OBSCURA_FCM_PROJECT_ID and OBSCURA_FCM_CREDENTIALS_FILE, or neither"
+    )]
+    PartialFcm { missing: &'static str },
+}
+
+/// Builds a non-zero default. Only called with literals.
+const fn non_zero_u32(n: u32) -> NonZeroU32 {
+    NonZeroU32::new(n).expect("config defaults are non-zero")
+}
 
 #[derive(Clone, Debug, Parser)]
 #[command(version, about, long_about = None)]
@@ -70,9 +90,26 @@ impl Default for Config {
 }
 
 impl Config {
-    #[must_use]
-    pub fn load() -> Self {
-        Self::parse()
+    /// Parses the configuration from arguments and the environment, then checks the rules that span
+    /// several values. A process should not start with a configuration that fails either step.
+    ///
+    /// # Errors
+    /// Returns a [`ConfigError`] if values contradict each other. Values that fail to parse individually
+    /// exit through clap, like `--help`.
+    pub fn load() -> Result<Self, ConfigError> {
+        let config = Self::parse();
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Checks the rules that span several values.
+    ///
+    /// # Errors
+    /// Returns the first [`ConfigError`] found.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        self.attachment.size_limits()?;
+        self.fcm.settings()?;
+        Ok(())
     }
 }
 
@@ -331,7 +368,7 @@ pub struct AuthConfig {
         env = "OBSCURA_AUTH_MAX_DEVICES_PER_USER",
         default_value_t = AuthConfig::default().max_devices_per_user
     )]
-    pub max_devices_per_user: i64,
+    pub max_devices_per_user: NonZeroU32,
 }
 
 impl Default for AuthConfig {
@@ -341,7 +378,7 @@ impl Default for AuthConfig {
             access_token_ttl_secs: 900,
             refresh_token_ttl_days: 30,
             refresh_token_cleanup_interval_secs: 86400, // 24 hours
-            max_devices_per_user: 10,
+            max_devices_per_user: non_zero_u32(10),
         }
     }
 }
@@ -375,7 +412,7 @@ impl Default for RateLimitConfig {
 pub struct MessagingConfig {
     /// Maximum number of messages in a device's inbox
     #[arg(long = "messaging-inbox-max-size", env = "OBSCURA_MESSAGING_INBOX_MAX_SIZE", default_value_t = MessagingConfig::default().max_inbox_size)]
-    pub max_inbox_size: i64,
+    pub max_inbox_size: NonZeroU32,
 
     /// How often to run the message cleanup task
     #[arg(
@@ -392,7 +429,7 @@ pub struct MessagingConfig {
         env = "OBSCURA_MESSAGING_SEND_BATCH_LIMIT",
         default_value_t = MessagingConfig::default().send_batch_limit
     )]
-    pub send_batch_limit: i64,
+    pub send_batch_limit: NonZeroUsize,
 
     /// Time-to-live for idempotency keys in seconds
     #[arg(
@@ -408,7 +445,7 @@ pub struct MessagingConfig {
         env = "OBSCURA_PRE_KEY_REFILL_THRESHOLD",
         default_value_t = MessagingConfig::default().pre_key_refill_threshold
     )]
-    pub pre_key_refill_threshold: i32,
+    pub pre_key_refill_threshold: u32,
 
     /// Maximum number of one-time prekeys allowed per device
     #[arg(
@@ -416,18 +453,18 @@ pub struct MessagingConfig {
         env = "OBSCURA_PRE_KEYS_MAX",
         default_value_t = MessagingConfig::default().max_pre_keys
     )]
-    pub max_pre_keys: i64,
+    pub max_pre_keys: NonZeroU32,
 }
 
 impl Default for MessagingConfig {
     fn default() -> Self {
         Self {
-            max_inbox_size: 1000,
+            max_inbox_size: non_zero_u32(1000),
             cleanup_interval_secs: 300,
-            send_batch_limit: 100,
+            send_batch_limit: NonZeroUsize::new(100).expect("config defaults are non-zero"),
             idempotency_ttl_secs: 86400,
             pre_key_refill_threshold: 20,
-            max_pre_keys: 100,
+            max_pre_keys: non_zero_u32(100),
         }
     }
 }
@@ -543,7 +580,7 @@ pub struct WsConfig {
         env = "OBSCURA_WS_MESSAGE_FETCH_BATCH_SIZE",
         default_value_t = WsConfig::default().message_fetch_batch_size
     )]
-    pub message_fetch_batch_size: i64,
+    pub message_fetch_batch_size: NonZeroU32,
 
     /// Maximum size in bytes for a single WebSocket batch frame.
     /// Envelopes are split into sub-batches that stay under this limit to avoid
@@ -582,7 +619,7 @@ impl Default for WsConfig {
             ping_interval_secs: 30,
             ping_timeout_secs: 10,
             prekey_debounce_interval_ms: 500,
-            message_fetch_batch_size: 50,
+            message_fetch_batch_size: non_zero_u32(50),
             max_batch_bytes: 8 * 1024 * 1024, // 8 MiB
             fetch_retry_budget_ms: 10_000,
             ticket_ttl_secs: 30,
@@ -599,7 +636,7 @@ pub struct AttachmentConfig {
         env = "OBSCURA_ATTACHMENT_MAX_SIZE_BYTES",
         default_value_t = AttachmentConfig::default().max_size_bytes
     )]
-    pub max_size_bytes: usize,
+    pub max_size_bytes: u64,
 
     /// Min attachment size in bytes (Default: 1 byte)
     #[arg(
@@ -608,7 +645,7 @@ pub struct AttachmentConfig {
         env = "OBSCURA_ATTACHMENT_MIN_SIZE_BYTES",
         default_value_t = AttachmentConfig::default().min_size_bytes
     )]
-    pub min_size_bytes: usize,
+    pub min_size_bytes: u64,
 
     /// S3 prefix for logical namespacing of attachments.
     #[arg(
@@ -657,6 +694,20 @@ impl Default for AttachmentConfig {
             cleanup_batch_size: 100,
             request_timeout_secs: 120,
         }
+    }
+}
+
+impl AttachmentConfig {
+    /// # Errors
+    /// Returns [`InvertedSizeLimits`] if the minimum size exceeds the maximum.
+    pub const fn size_limits(&self) -> Result<SizeLimits, InvertedSizeLimits> {
+        SizeLimits::new(self.min_size_bytes, self.max_size_bytes)
+    }
+
+    /// The storage key of an attachment.
+    #[must_use]
+    pub fn object_key(&self, id: Uuid) -> String {
+        format!("{}{id}", self.prefix)
     }
 }
 
@@ -772,12 +823,29 @@ impl Default for FcmConfig {
     }
 }
 
+/// Both values FCM needs to send pushes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FcmSettings<'a> {
+    pub project_id: &'a str,
+    pub credentials_file: &'a str,
+}
+
 impl FcmConfig {
-    /// Returns `true` if both FCM fields are present and non-empty.
-    #[must_use]
-    pub fn is_configured(&self) -> bool {
-        self.project_id.as_ref().is_some_and(|s| !s.is_empty())
-            && self.credentials_file.as_ref().is_some_and(|s| !s.is_empty())
+    /// The FCM settings, or `None` if FCM is not configured. An empty value counts as unset, so an
+    /// environment variable set to an empty string leaves FCM off.
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::PartialFcm`] if only one of the two values is set.
+    pub fn settings(&self) -> Result<Option<FcmSettings<'_>>, ConfigError> {
+        fn set(value: Option<&str>) -> Option<&str> {
+            value.filter(|s| !s.is_empty())
+        }
+        match (set(self.project_id.as_deref()), set(self.credentials_file.as_deref())) {
+            (Some(project_id), Some(credentials_file)) => Ok(Some(FcmSettings { project_id, credentials_file })),
+            (None, None) => Ok(None),
+            (Some(_), None) => Err(ConfigError::PartialFcm { missing: "OBSCURA_FCM_CREDENTIALS_FILE" }),
+            (None, Some(_)) => Err(ConfigError::PartialFcm { missing: "OBSCURA_FCM_PROJECT_ID" }),
+        }
     }
 }
 
@@ -789,6 +857,60 @@ mod tests {
     #[test]
     fn verify_cli() {
         Config::command().debug_assert();
+    }
+
+    #[test]
+    fn test_defaults_are_valid() {
+        Config::default().validate().unwrap();
+    }
+
+    #[test]
+    fn test_limits_reject_zero_and_negative_values() {
+        for value in ["0", "-5"] {
+            let result = Config::try_parse_from(["obscura-server", "--messaging-send-batch-limit", value]);
+            assert!(result.is_err(), "a send batch limit of {value} should not parse");
+        }
+        let config = Config::try_parse_from(["obscura-server", "--messaging-send-batch-limit", "7"]).unwrap();
+        assert_eq!(config.messaging.send_batch_limit.get(), 7);
+    }
+
+    #[test]
+    fn test_inverted_attachment_sizes_are_rejected() {
+        let mut config = Config::default();
+        config.attachment.min_size_bytes = 11;
+        config.attachment.max_size_bytes = 10;
+        assert!(matches!(config.validate(), Err(ConfigError::AttachmentSizeLimits(_))));
+    }
+
+    #[test]
+    fn test_object_key_prefixes_the_id() {
+        let config = AttachmentConfig { prefix: "att/".to_string(), ..Default::default() };
+        let id = Uuid::new_v4();
+        assert_eq!(config.object_key(id), format!("att/{id}"));
+    }
+
+    #[test]
+    fn test_fcm_settings_require_both_values_or_neither() {
+        let fcm = |project: Option<&str>, credentials: Option<&str>| FcmConfig {
+            project_id: project.map(String::from),
+            credentials_file: credentials.map(String::from),
+            ..Default::default()
+        };
+
+        assert_eq!(fcm(None, None).settings().unwrap(), None);
+        assert_eq!(fcm(Some(""), Some("")).settings().unwrap(), None, "empty values count as unset");
+        assert_eq!(
+            fcm(Some("proj"), Some("/creds.json")).settings().unwrap(),
+            Some(FcmSettings { project_id: "proj", credentials_file: "/creds.json" })
+        );
+        assert!(matches!(
+            fcm(Some("proj"), None).settings(),
+            Err(ConfigError::PartialFcm { missing: "OBSCURA_FCM_CREDENTIALS_FILE" })
+        ));
+        assert!(matches!(
+            fcm(Some(""), Some("/creds.json")).settings(),
+            Err(ConfigError::PartialFcm { missing: "OBSCURA_FCM_PROJECT_ID" })
+        ));
     }
 
     #[test]

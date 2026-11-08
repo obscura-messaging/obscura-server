@@ -1,5 +1,5 @@
 use crate::adapters::push::{PushError, PushProvider};
-use crate::config::FcmConfig;
+use crate::config::FcmSettings;
 use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
@@ -186,16 +186,8 @@ impl FcmPushProvider {
     ///
     /// # Errors
     /// Returns an error if the credentials file cannot be read or parsed.
-    pub fn new(config: &FcmConfig) -> Result<Self, anyhow::Error> {
-        let project_id = config
-            .project_id
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("FCM project ID is required (set OBSCURA_FCM_PROJECT_ID)"))?;
-
-        let credentials_file = config
-            .credentials_file
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("FCM credentials file is required (set OBSCURA_FCM_CREDENTIALS_FILE)"))?;
+    pub fn new(settings: FcmSettings<'_>, ttl_secs: u64) -> Result<Self, anyhow::Error> {
+        let FcmSettings { project_id, credentials_file } = settings;
 
         let key_json = std::fs::read_to_string(credentials_file)
             .map_err(|e| anyhow::anyhow!("Failed to read FCM credentials file '{credentials_file}': {e}"))?;
@@ -207,12 +199,12 @@ impl FcmPushProvider {
             .map_err(|e| anyhow::anyhow!("Failed to parse RSA private key from service account: {e}"))?;
 
         Ok(Self {
-            project_id: project_id.clone(),
+            project_id: project_id.to_string(),
             client_email: sa_key.client_email,
             encoding_key,
             http: reqwest::Client::new(),
             token_cache: Arc::new(RwLock::new(None)),
-            ttl_secs: config.ttl_secs,
+            ttl_secs,
             fcm_base_url: "https://fcm.googleapis.com".to_string(),
             token_endpoint: GOOGLE_TOKEN_URI.to_string(),
         })
@@ -828,34 +820,9 @@ wxOWCSTHCchvQGrMpJlCSygGPUKmT/nl464SFJsQcyZLhrwKKW8=\n\
     // ── FcmPushProvider::new() constructor tests ────────────────────────
 
     #[test]
-    fn new_missing_project_id_returns_error() {
-        let config = FcmConfig {
-            project_id: None,
-            credentials_file: Some("/tmp/creds.json".to_string()),
-            ..FcmConfig::default()
-        };
-        let result = FcmPushProvider::new(&config);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("project ID"));
-    }
-
-    #[test]
-    fn new_missing_credentials_file_returns_error() {
-        let config =
-            FcmConfig { project_id: Some("project".to_string()), credentials_file: None, ..FcmConfig::default() };
-        let result = FcmPushProvider::new(&config);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("credentials file"));
-    }
-
-    #[test]
     fn new_nonexistent_file_returns_error() {
-        let config = FcmConfig {
-            project_id: Some("project".to_string()),
-            credentials_file: Some("/tmp/does_not_exist_12345.json".to_string()),
-            ..FcmConfig::default()
-        };
-        let result = FcmPushProvider::new(&config);
+        let settings = FcmSettings { project_id: "project", credentials_file: "/tmp/does_not_exist_12345.json" };
+        let result = FcmPushProvider::new(settings, 60);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Failed to read"));
     }
@@ -864,12 +831,8 @@ wxOWCSTHCchvQGrMpJlCSygGPUKmT/nl464SFJsQcyZLhrwKKW8=\n\
     fn new_invalid_json_returns_error() {
         let mut file = NamedTempFile::new().unwrap();
         write!(file, "not valid json").unwrap();
-        let config = FcmConfig {
-            project_id: Some("project".to_string()),
-            credentials_file: Some(file.path().to_string_lossy().to_string()),
-            ..FcmConfig::default()
-        };
-        let result = FcmPushProvider::new(&config);
+        let path = file.path().to_string_lossy();
+        let result = FcmPushProvider::new(FcmSettings { project_id: "project", credentials_file: &path }, 60);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("parse FCM service account"));
     }
@@ -878,12 +841,8 @@ wxOWCSTHCchvQGrMpJlCSygGPUKmT/nl464SFJsQcyZLhrwKKW8=\n\
     fn new_invalid_private_key_returns_error() {
         let mut file = NamedTempFile::new().unwrap();
         write!(file, r#"{{"client_email":"test@sa.iam.gserviceaccount.com","private_key":"not-a-pem-key"}}"#).unwrap();
-        let config = FcmConfig {
-            project_id: Some("project".to_string()),
-            credentials_file: Some(file.path().to_string_lossy().to_string()),
-            ..FcmConfig::default()
-        };
-        let result = FcmPushProvider::new(&config);
+        let path = file.path().to_string_lossy();
+        let result = FcmPushProvider::new(FcmSettings { project_id: "project", credentials_file: &path }, 60);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("RSA private key"));
     }
@@ -896,12 +855,9 @@ wxOWCSTHCchvQGrMpJlCSygGPUKmT/nl464SFJsQcyZLhrwKKW8=\n\
             "private_key": TEST_RSA_PEM,
         });
         write!(file, "{sa_json}").unwrap();
-        let config = FcmConfig {
-            project_id: Some("my-project-123".to_string()),
-            credentials_file: Some(file.path().to_string_lossy().to_string()),
-            ..FcmConfig::default()
-        };
-        let provider = FcmPushProvider::new(&config).unwrap();
+        let path = file.path().to_string_lossy();
+        let settings = FcmSettings { project_id: "my-project-123", credentials_file: &path };
+        let provider = FcmPushProvider::new(settings, 604_800).unwrap();
         assert_eq!(provider.project_id, "my-project-123");
         assert_eq!(provider.client_email, "test@sa.iam.gserviceaccount.com");
         assert_eq!(provider.ttl_secs, 604_800);

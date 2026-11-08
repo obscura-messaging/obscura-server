@@ -87,7 +87,7 @@ impl KeyService {
 
             Ok(Some(PreKeyStatus {
                 one_time_pre_key_count: i32::try_from(count).unwrap_or(i32::MAX),
-                min_threshold: self.config.pre_key_refill_threshold,
+                min_threshold: i32::try_from(self.config.pre_key_refill_threshold).unwrap_or(i32::MAX),
             }))
         } else {
             Ok(None)
@@ -122,8 +122,9 @@ impl KeyService {
 
         let current_count = self.repo.count_one_time_pre_keys(&mut tx, device_id).await?;
         let new_keys_count = i64::try_from(upload.one_time_pre_keys.len()).unwrap_or(i64::MAX);
-        if current_count + new_keys_count > self.config.max_pre_keys {
-            let to_delete = (current_count + new_keys_count) - self.config.max_pre_keys;
+        let max_pre_keys = i64::from(self.config.max_pre_keys.get());
+        if current_count + new_keys_count > max_pre_keys {
+            let to_delete = (current_count + new_keys_count) - max_pre_keys;
             self.repo.delete_oldest_one_time_pre_keys(&mut tx, device_id, to_delete).await?;
         }
 
@@ -171,7 +172,7 @@ impl KeyService {
     }
 
     pub(crate) fn check_batch_size(&self, one_time_pre_keys: &[OneTimePreKey]) -> Result<()> {
-        if i64::try_from(one_time_pre_keys.len()).unwrap_or(i64::MAX) > self.config.max_pre_keys {
+        if u32::try_from(one_time_pre_keys.len()).map_or(true, |n| n > self.config.max_pre_keys.get()) {
             return Err(AppError::BadRequest(format!("Batch too large. Limit is {}", self.config.max_pre_keys)));
         }
         Ok(())

@@ -27,7 +27,7 @@ pub(crate) async fn send_messages(
     let request = proto::SendMessageRequest::decode(body)
         .map_err(|e| AppError::BadRequest(format!("Invalid SendMessageRequest protobuf: {e}")))?;
 
-    let batch_limit = usize::try_from(state.config.messaging.send_batch_limit).unwrap_or(0);
+    let batch_limit = state.config.messaging.send_batch_limit.get();
     let recipients = parse_send_request(auth.device_id, batch_limit, request)?;
 
     let outcome = state.message_service.send(auth.user_id, auth.device_id, idempotency_key, recipients).await?;

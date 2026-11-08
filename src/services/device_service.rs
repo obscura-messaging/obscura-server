@@ -12,6 +12,7 @@ use crate::services::auth_service::AuthService;
 use crate::services::key_service::KeyService;
 use crate::services::notification_service::NotificationService;
 use opentelemetry::{global, metrics::Counter};
+use std::num::NonZeroU32;
 use std::time::Duration;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -85,7 +86,7 @@ pub struct DeviceService {
     auth_service: AuthService,
     notifier: NotificationService,
     metrics: Metrics,
-    max_devices_per_user: i64,
+    max_devices_per_user: NonZeroU32,
 }
 
 impl DeviceService {
@@ -99,7 +100,7 @@ impl DeviceService {
         key_service: KeyService,
         auth_service: AuthService,
         notifier: NotificationService,
-        max_devices_per_user: i64,
+        max_devices_per_user: NonZeroU32,
     ) -> Self {
         Self {
             pool,
@@ -252,7 +253,7 @@ impl DeviceService {
         }
 
         let device_count = self.device_repo.count_by_user(&mut tx, user_id).await?;
-        if device_count >= self.max_devices_per_user {
+        if device_count >= i64::from(self.max_devices_per_user.get()) {
             return Err(AppError::Forbidden(format!(
                 "Device limit reached. Maximum allowed is {}.",
                 self.max_devices_per_user

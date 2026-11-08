@@ -110,7 +110,7 @@ async fn test_format_pure_math_32_byte() {
 #[tokio::test]
 async fn test_key_limit_enforced() {
     let mut config = common::get_test_config();
-    config.messaging.max_pre_keys = 50;
+    config.messaging.max_pre_keys = std::num::NonZeroU32::new(50).unwrap();
     let app = TestApp::spawn_with_config(config).await;
 
     let username = common::generate_username("limit");
@@ -361,7 +361,7 @@ async fn test_fetch_one_device_bundle_consumes_only_that_device() {
 #[tokio::test]
 async fn test_pre_key_batch_size_limit() {
     let mut config = common::get_test_config();
-    config.messaging.max_pre_keys = 50;
+    config.messaging.max_pre_keys = std::num::NonZeroU32::new(50).unwrap();
     let app = TestApp::spawn_with_config(config).await;
     let user = app.register_user_with_keys(&common::generate_username("batch"), 123, 1).await;
 

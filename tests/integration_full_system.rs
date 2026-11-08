@@ -31,7 +31,7 @@ async fn test_full_system_flow() {
     config.notifications.push_delay_secs = 2;
     config.notifications.worker_interval_secs = 1;
     // Ensure we can handle the batch size
-    config.messaging.send_batch_limit = 100;
+    config.messaging.send_batch_limit = std::num::NonZeroUsize::new(100).unwrap();
 
     // 2. Spawn 3 Nodes (A, B, C) sharing the same resources (DB, Redis)
     let app_a = TestApp::spawn_with_workers(config.clone()).await;

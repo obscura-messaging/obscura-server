@@ -25,7 +25,7 @@ pub(crate) async fn upload_attachment(
 ) -> Result<impl IntoResponse> {
     let content_len = headers
         .get(header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok().and_then(|s| s.parse::<usize>().ok()))
+        .and_then(|v| v.to_str().ok().and_then(|s| s.parse::<u64>().ok()))
         .ok_or(AppError::LengthRequired)?;
 
     // Bridge Axum Body -> StorageStream (using neutral std::io::Error)

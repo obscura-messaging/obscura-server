@@ -5,6 +5,7 @@ use crate::services::message_service::MessageService;
 use axum::extract::ws::Message as WsMessage;
 use opentelemetry::KeyValue;
 use prost::Message as ProstMessage;
+use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -16,7 +17,7 @@ const FETCH_RETRY_BASE: Duration = Duration::from_millis(250);
 /// Tuning for one pump, grouped so it threads through as a single parameter.
 #[derive(Clone, Copy, Debug)]
 pub struct PumpTuning {
-    pub batch_limit: i64,
+    pub batch_limit: NonZeroU32,
     pub max_batch_bytes: usize,
     /// How long one delivery notification keeps retrying a failed read before it is abandoned.
     pub retry_budget: Duration,
@@ -126,7 +127,7 @@ impl MessagePump {
         tuning: PumpTuning,
         cursor: &mut Option<(time::OffsetDateTime, Uuid)>,
     ) -> Result<bool> {
-        let messages = service.fetch_pending_batch(device_id, *cursor, tuning.batch_limit).await?;
+        let messages = service.fetch_pending_batch(device_id, *cursor, i64::from(tuning.batch_limit.get())).await?;
 
         if messages.is_empty() {
             return Ok(false);
@@ -171,7 +172,8 @@ impl MessagePump {
             Self::send_batch(current_batch, outbound_tx, metrics).await;
         }
 
-        Ok(batch_size >= usize::try_from(tuning.batch_limit).unwrap_or(usize::MAX))
+        // A batch too long to count in a u32 is certainly full.
+        Ok(u32::try_from(batch_size).map_or(true, |n| n >= tuning.batch_limit.get()))
     }
 
     /// Sends one frame, counting anything it could not deliver.

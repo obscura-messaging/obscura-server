@@ -30,7 +30,7 @@ async fn test_message_cleanup_worker_full_orchestration() {
     let pool = common::get_test_pool().await;
     let repo = MessageRepository::new();
     let config = MessagingConfig {
-        max_inbox_size: 2, // Small limit for overflow test
+        max_inbox_size: std::num::NonZeroU32::new(2).unwrap(), // Small limit for overflow test
         ..MessagingConfig::default()
     };
 

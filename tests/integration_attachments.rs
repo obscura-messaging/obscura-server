@@ -122,7 +122,7 @@ async fn test_attachment_cleanup() {
     }
 
     // 2. Put file in S3
-    let key = format!("{}{}", config.attachment.prefix, id);
+    let key = config.attachment.object_key(id);
     app.s3_client
         .put_object()
         .bucket(&config.storage.bucket)
@@ -139,6 +139,7 @@ async fn test_attachment_cleanup() {
         AttachmentRepository::new(),
         storage_adapter,
         config.attachment.clone(),
+        config.attachment.size_limits().unwrap(),
         config.ttl_days,
     );
     let worker = AttachmentCleanupWorker::new(service, config.attachment.cleanup_interval_secs);
@@ -297,7 +298,7 @@ async fn test_expired_attachment_is_not_downloadable() {
     app.s3_client
         .put_object()
         .bucket(&config.storage.bucket)
-        .key(format!("{}{}", config.attachment.prefix, id))
+        .key(config.attachment.object_key(id))
         .body(aws_sdk_s3::primitives::ByteStream::from(b"expired data".to_vec()))
         .send()
         .await

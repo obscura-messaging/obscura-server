@@ -276,7 +276,7 @@ mod tests {
             access_token_ttl_secs: 3600,
             refresh_token_ttl_days: 7,
             refresh_token_cleanup_interval_secs: 3600,
-            max_devices_per_user: 10,
+            max_devices_per_user: std::num::NonZeroU32::new(10).unwrap(),
         };
         let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("Valid test pool");
         AuthService::new(config, pool, UserRepository::new(), RefreshTokenRepository::new(), DeviceRepository::new())
