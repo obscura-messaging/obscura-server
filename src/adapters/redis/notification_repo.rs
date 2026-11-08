@@ -2,6 +2,7 @@ use crate::adapters::redis::RedisClient;
 use crate::config::NotificationConfig;
 use crate::domain::notification::{DeviceEvent, RealtimeNotification};
 use redis::AsyncCommands;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -11,7 +12,7 @@ pub struct NotificationRepository {
     redis: Arc<RedisClient>,
     channel_prefix: String,
     push_queue_key: String,
-    global_channel_capacity: usize,
+    global_channel_capacity: NonZeroUsize,
 }
 
 impl NotificationRepository {
@@ -21,7 +22,7 @@ impl NotificationRepository {
             redis,
             channel_prefix: config.channel_prefix.clone(),
             push_queue_key: config.push_queue_key.clone(),
-            global_channel_capacity: config.global_channel_capacity.get(),
+            global_channel_capacity: config.global_channel_capacity,
         }
     }
 
@@ -56,7 +57,7 @@ impl NotificationRepository {
         let pattern = format!("{}*", self.channel_prefix);
         let mut redis_rx = self.redis.subscribe(&pattern)?;
 
-        let (tx, rx) = broadcast::channel(self.global_channel_capacity);
+        let (tx, rx) = broadcast::channel(self.global_channel_capacity.get());
         let prefix = self.channel_prefix.clone();
         // Spawn a mapper task to translate technical PubSubMessages into domain RealtimeNotifications
         tokio::spawn(async move {

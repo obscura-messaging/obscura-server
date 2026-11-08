@@ -283,7 +283,7 @@ mod tests {
             jwt_secret: "test_secret".to_string(),
             access_token_ttl_secs: std::num::NonZeroU64::new(3600).unwrap(),
             refresh_token_ttl_days: std::num::NonZeroU32::new(7).unwrap(),
-            refresh_token_cleanup_interval_secs: 3600,
+            refresh_token_cleanup_interval_secs: std::num::NonZeroU64::new(3600).unwrap(),
             max_devices_per_user: std::num::NonZeroU32::new(10).unwrap(),
         };
         let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("Valid test pool");

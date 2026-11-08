@@ -34,7 +34,7 @@ Startup fails on a configuration that cannot work: a limit, capacity, batch size
 | `--auth-jwt-secret` | `OBSCURA_AUTH_JWT_SECRET` | `change_me_in_production` | JWT signing secret. Change it. |
 | `--auth-token-ttl-secs` | `OBSCURA_AUTH_TOKEN_TTL_SECS` | `900` | Access token lifetime. |
 | `--auth-refresh-token-ttl-days` | `OBSCURA_AUTH_REFRESH_TOKEN_TTL_DAYS` | `30` | Refresh token lifetime. |
-| `--auth-refresh-token-cleanup-interval-secs` | `OBSCURA_AUTH_REFRESH_TOKEN_CLEANUP_INTERVAL_SECS` | `86400` | Expired refresh token sweep; `0` disables it. |
+| `--auth-refresh-token-cleanup-interval-secs` | `OBSCURA_AUTH_REFRESH_TOKEN_CLEANUP_INTERVAL_SECS` | `86400` | Expired refresh token sweep. |
 | `--auth-max-devices-per-user` | `OBSCURA_AUTH_MAX_DEVICES_PER_USER` | `10` | Devices per user. |
 | **Rate limits** (per client IP; attachment routes are not limited) | | | |
 | `--rate-limit-per-second` | `OBSCURA_RATE_LIMIT_PER_SECOND` | `10` | Standard API routes. |

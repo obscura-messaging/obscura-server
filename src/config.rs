@@ -116,7 +116,7 @@ impl Config {
     /// Returns the first [`ConfigError`] found.
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.attachment.size_limits()?;
-        self.fcm.settings()?;
+        self.fcm.credentials()?;
         Ok(())
     }
 }
@@ -368,7 +368,7 @@ pub struct AuthConfig {
         env = "OBSCURA_AUTH_REFRESH_TOKEN_CLEANUP_INTERVAL_SECS",
         default_value_t = AuthConfig::default().refresh_token_cleanup_interval_secs
     )]
-    pub refresh_token_cleanup_interval_secs: u64,
+    pub refresh_token_cleanup_interval_secs: NonZeroU64,
 
     /// Maximum number of devices a single user can have registered
     #[arg(
@@ -385,7 +385,7 @@ impl Default for AuthConfig {
             jwt_secret: "change_me_in_production".to_string(),
             access_token_ttl_secs: non_zero_u64(900),
             refresh_token_ttl_days: non_zero_u32(30),
-            refresh_token_cleanup_interval_secs: 86400, // 24 hours
+            refresh_token_cleanup_interval_secs: non_zero_u64(86400), // 24 hours
             max_devices_per_user: non_zero_u32(10),
         }
     }
@@ -844,25 +844,25 @@ impl Default for FcmConfig {
     }
 }
 
-/// Both values FCM needs to send pushes.
+/// The project and service account FCM needs to send pushes, both present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FcmSettings<'a> {
+pub struct FcmCredentials<'a> {
     pub project_id: &'a str,
     pub credentials_file: &'a str,
 }
 
 impl FcmConfig {
-    /// The FCM settings, or `None` if FCM is not configured. An empty value counts as unset, so an
+    /// The FCM credentials, or `None` if FCM is not configured. An empty value counts as unset, so an
     /// environment variable set to an empty string leaves FCM off.
     ///
     /// # Errors
     /// Returns [`ConfigError::PartialFcm`] if only one of the two values is set.
-    pub fn settings(&self) -> Result<Option<FcmSettings<'_>>, ConfigError> {
+    pub fn credentials(&self) -> Result<Option<FcmCredentials<'_>>, ConfigError> {
         fn set(value: Option<&str>) -> Option<&str> {
             value.filter(|s| !s.is_empty())
         }
         match (set(self.project_id.as_deref()), set(self.credentials_file.as_deref())) {
-            (Some(project_id), Some(credentials_file)) => Ok(Some(FcmSettings { project_id, credentials_file })),
+            (Some(project_id), Some(credentials_file)) => Ok(Some(FcmCredentials { project_id, credentials_file })),
             (None, None) => Ok(None),
             (Some(_), None) => Err(ConfigError::PartialFcm { missing: "OBSCURA_FCM_CREDENTIALS_FILE" }),
             (None, Some(_)) => Err(ConfigError::PartialFcm { missing: "OBSCURA_FCM_PROJECT_ID" }),
@@ -911,25 +911,25 @@ mod tests {
     }
 
     #[test]
-    fn test_fcm_settings_require_both_values_or_neither() {
+    fn test_fcm_credentials_require_both_values_or_neither() {
         let fcm = |project: Option<&str>, credentials: Option<&str>| FcmConfig {
             project_id: project.map(String::from),
             credentials_file: credentials.map(String::from),
             ..Default::default()
         };
 
-        assert_eq!(fcm(None, None).settings().unwrap(), None);
-        assert_eq!(fcm(Some(""), Some("")).settings().unwrap(), None, "empty values count as unset");
+        assert_eq!(fcm(None, None).credentials().unwrap(), None);
+        assert_eq!(fcm(Some(""), Some("")).credentials().unwrap(), None, "empty values count as unset");
         assert_eq!(
-            fcm(Some("proj"), Some("/creds.json")).settings().unwrap(),
-            Some(FcmSettings { project_id: "proj", credentials_file: "/creds.json" })
+            fcm(Some("proj"), Some("/creds.json")).credentials().unwrap(),
+            Some(FcmCredentials { project_id: "proj", credentials_file: "/creds.json" })
         );
         assert!(matches!(
-            fcm(Some("proj"), None).settings(),
+            fcm(Some("proj"), None).credentials(),
             Err(ConfigError::PartialFcm { missing: "OBSCURA_FCM_CREDENTIALS_FILE" })
         ));
         assert!(matches!(
-            fcm(Some(""), Some("/creds.json")).settings(),
+            fcm(Some(""), Some("/creds.json")).credentials(),
             Err(ConfigError::PartialFcm { missing: "OBSCURA_FCM_PROJECT_ID" })
         ));
     }

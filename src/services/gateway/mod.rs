@@ -1,5 +1,6 @@
 #![allow(unreachable_pub)]
 pub(crate) mod ack_batcher;
+mod frames;
 pub(crate) mod message_pump;
 pub(crate) mod prekey_pump;
 pub(crate) mod session;

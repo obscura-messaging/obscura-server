@@ -1,6 +1,7 @@
 use crate::error::AppError;
 use crate::services::auth_service::AuthService;
 use crate::services::device_service::DeviceService;
+use std::num::NonZeroU64;
 use std::time::Duration;
 use tracing::Instrument;
 
@@ -8,22 +9,21 @@ use tracing::Instrument;
 pub struct RefreshTokenCleanupWorker {
     auth_service: AuthService,
     device_service: DeviceService,
-    cleanup_interval_secs: u64,
+    cleanup_interval_secs: NonZeroU64,
 }
 
 impl RefreshTokenCleanupWorker {
     #[must_use]
-    pub const fn new(auth_service: AuthService, device_service: DeviceService, cleanup_interval_secs: u64) -> Self {
+    pub const fn new(
+        auth_service: AuthService,
+        device_service: DeviceService,
+        cleanup_interval_secs: NonZeroU64,
+    ) -> Self {
         Self { auth_service, device_service, cleanup_interval_secs }
     }
 
     pub async fn run(self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
-        if self.cleanup_interval_secs == 0 {
-            tracing::info!("Refresh token cleanup is disabled (interval = 0)");
-            return;
-        }
-
-        let mut interval = tokio::time::interval(Duration::from_secs(self.cleanup_interval_secs));
+        let mut interval = tokio::time::interval(Duration::from_secs(self.cleanup_interval_secs.get()));
 
         while !*shutdown.borrow() {
             tokio::select! {
