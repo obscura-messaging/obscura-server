@@ -1,5 +1,6 @@
 use crate::services::notification_service::NotificationService;
 use opentelemetry::{global, metrics::Counter};
+use std::num::NonZeroU64;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
@@ -25,19 +26,19 @@ impl Metrics {
 #[derive(Debug)]
 pub struct NotificationWorker {
     service: NotificationService,
-    cleanup_interval_secs: u64,
+    cleanup_interval_secs: NonZeroU64,
     metrics: Option<Metrics>,
 }
 
 impl NotificationWorker {
     #[must_use]
-    pub const fn new(service: NotificationService, cleanup_interval_secs: u64) -> Self {
+    pub const fn new(service: NotificationService, cleanup_interval_secs: NonZeroU64) -> Self {
         Self { service, cleanup_interval_secs, metrics: None }
     }
 
     pub async fn run(mut self, mut shutdown: watch::Receiver<bool>) {
         self.metrics = Some(Metrics::new());
-        let mut cleanup_interval = tokio::time::interval(Duration::from_secs(self.cleanup_interval_secs));
+        let mut cleanup_interval = tokio::time::interval(Duration::from_secs(self.cleanup_interval_secs.get()));
 
         let mut notification_rx = match self.service.subscribe_realtime().await {
             Ok(rx) => rx,

@@ -80,11 +80,11 @@ pub struct MgmtState {
 
 fn auth_router(config: &Config, rate_limit_extractor: IpKeyExtractor) -> Router<AppState> {
     // Auth Tier: Stricter limits for expensive/sensitive registration & login
-    let auth_interval_ns = 1_000_000_000 / config.rate_limit.auth_per_second.max(1);
+    let auth_interval_ns = 1_000_000_000 / config.rate_limit.auth_per_second.get();
     let auth_conf = Arc::new(
         GovernorConfigBuilder::default()
             .per_nanosecond(u64::from(auth_interval_ns))
-            .burst_size(config.rate_limit.auth_burst)
+            .burst_size(config.rate_limit.auth_burst.get())
             .key_extractor(rate_limit_extractor)
             .finish()
             .expect("Failed to build auth rate limiter config"),
@@ -92,7 +92,7 @@ fn auth_router(config: &Config, rate_limit_extractor: IpKeyExtractor) -> Router<
 
     let standard_timeout = TimeoutLayer::with_status_code(
         StatusCode::REQUEST_TIMEOUT,
-        Duration::from_secs(config.server.request_timeout_secs),
+        Duration::from_secs(config.server.request_timeout_secs.get()),
     );
 
     Router::new()
@@ -106,11 +106,11 @@ fn auth_router(config: &Config, rate_limit_extractor: IpKeyExtractor) -> Router<
 }
 
 fn api_router(config: &Config, rate_limit_extractor: IpKeyExtractor) -> Router<AppState> {
-    let std_interval_ns = 1_000_000_000 / config.rate_limit.per_second.max(1);
+    let std_interval_ns = 1_000_000_000 / config.rate_limit.per_second.get();
     let standard_conf = Arc::new(
         GovernorConfigBuilder::default()
             .per_nanosecond(u64::from(std_interval_ns))
-            .burst_size(config.rate_limit.burst)
+            .burst_size(config.rate_limit.burst.get())
             .key_extractor(rate_limit_extractor)
             .finish()
             .expect("Failed to build standard rate limiter config"),
@@ -132,7 +132,7 @@ fn api_router(config: &Config, rate_limit_extractor: IpKeyExtractor) -> Router<A
         .merge(standard_routes)
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(config.server.request_timeout_secs),
+            Duration::from_secs(config.server.request_timeout_secs.get()),
         ))
         .layer(GovernorLayer::new(standard_conf))
 }
@@ -140,7 +140,7 @@ fn api_router(config: &Config, rate_limit_extractor: IpKeyExtractor) -> Router<A
 fn storage_router(config: &Config) -> Router<AppState> {
     let attachment_timeout = TimeoutLayer::with_status_code(
         StatusCode::REQUEST_TIMEOUT,
-        Duration::from_secs(config.attachment.request_timeout_secs),
+        Duration::from_secs(config.attachment.request_timeout_secs.get()),
     );
 
     Router::new()
@@ -155,7 +155,7 @@ fn apply_middleware(router: Router<AppState>, config: &Config, state: AppState) 
         .layer(PropagateRequestIdLayer::new(axum::http::HeaderName::from_static("x-request-id")))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(config.server.global_timeout_secs),
+            Duration::from_secs(config.server.global_timeout_secs.get()),
         ))
         .layer(
             TraceLayer::new_for_http()

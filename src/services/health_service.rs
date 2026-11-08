@@ -58,7 +58,7 @@ impl HealthService {
     /// # Errors
     /// Returns a string describing the failure if the database is unreachable.
     pub async fn check_db(&self) -> Result<(), String> {
-        let db_timeout = Duration::from_millis(self.config.db_timeout_ms);
+        let db_timeout = Duration::from_millis(self.config.db_timeout_ms.get());
 
         match timeout(db_timeout, sqlx::query("SELECT 1").execute(&self.pool)).await {
             Ok(Ok(_)) => {
@@ -81,7 +81,7 @@ impl HealthService {
     /// # Errors
     /// Returns a string describing the failure if S3 is unreachable.
     pub async fn check_storage(&self) -> Result<(), String> {
-        let storage_timeout = Duration::from_millis(self.config.storage_timeout_ms);
+        let storage_timeout = Duration::from_millis(self.config.storage_timeout_ms.get());
 
         match timeout(storage_timeout, self.s3_client.head_bucket().bucket(&self.storage_bucket).send()).await {
             Ok(Ok(_)) => {
@@ -104,7 +104,7 @@ impl HealthService {
     /// # Errors
     /// Returns a string describing the failure if `PubSub` is unreachable.
     pub async fn check_pubsub(&self) -> Result<(), String> {
-        let pubsub_timeout = Duration::from_millis(self.config.pubsub_timeout_ms);
+        let pubsub_timeout = Duration::from_millis(self.config.pubsub_timeout_ms.get());
 
         match timeout(pubsub_timeout, self.pubsub.ping()).await {
             Ok(Ok(())) => {

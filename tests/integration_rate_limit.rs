@@ -24,8 +24,8 @@ mod common;
 #[tokio::test]
 async fn test_rate_limit_isolation() {
     let mut config = common::get_test_config();
-    config.rate_limit.per_second = 1;
-    config.rate_limit.burst = 2;
+    config.rate_limit.per_second = std::num::NonZeroU32::new(1).unwrap();
+    config.rate_limit.burst = std::num::NonZeroU32::new(2).unwrap();
     let app = common::TestApp::spawn_with_config(config).await;
     let user = app.register_user(&common::generate_username("rate_user_iso")).await;
 
@@ -68,8 +68,8 @@ async fn test_rate_limit_isolation() {
 #[tokio::test]
 async fn test_rate_limit_proxy_chain() {
     let mut config = common::get_test_config();
-    config.rate_limit.per_second = 1;
-    config.rate_limit.burst = 2;
+    config.rate_limit.per_second = std::num::NonZeroU32::new(1).unwrap();
+    config.rate_limit.burst = std::num::NonZeroU32::new(2).unwrap();
     let app = common::TestApp::spawn_with_config(config).await;
     let user = app.register_user(&common::generate_username("rate_user_chain")).await;
 
@@ -101,8 +101,8 @@ async fn test_rate_limit_proxy_chain() {
 #[tokio::test]
 async fn test_rate_limit_concurrency() {
     let mut config = common::get_test_config();
-    config.rate_limit.per_second = 1;
-    config.rate_limit.burst = 2;
+    config.rate_limit.per_second = std::num::NonZeroU32::new(1).unwrap();
+    config.rate_limit.burst = std::num::NonZeroU32::new(2).unwrap();
     let app = common::TestApp::spawn_with_config(config).await;
     let user = app.register_user(&common::generate_username("rate_user_conc")).await;
 
@@ -133,8 +133,8 @@ async fn test_rate_limit_concurrency() {
 #[tokio::test]
 async fn test_rate_limit_fallback_to_peer_ip() {
     let mut config = common::get_test_config();
-    config.rate_limit.per_second = 1;
-    config.rate_limit.burst = 2;
+    config.rate_limit.per_second = std::num::NonZeroU32::new(1).unwrap();
+    config.rate_limit.burst = std::num::NonZeroU32::new(2).unwrap();
     let app = common::TestApp::spawn_with_config(config).await;
     let user = app.register_user(&common::generate_username("rate_user_fall")).await;
 
@@ -161,8 +161,8 @@ async fn test_rate_limit_fallback_to_peer_ip() {
 #[tokio::test]
 async fn test_rate_limit_spoofing_protection() {
     let mut config = common::get_test_config();
-    config.rate_limit.per_second = 1;
-    config.rate_limit.burst = 1;
+    config.rate_limit.per_second = std::num::NonZeroU32::new(1).unwrap();
+    config.rate_limit.burst = std::num::NonZeroU32::new(1).unwrap();
     let app = common::TestApp::spawn_with_config(config).await;
     let user = app.register_user(&common::generate_username("rate_user_spoof")).await;
 
@@ -207,10 +207,10 @@ async fn test_rate_limit_spoofing_protection() {
 #[tokio::test]
 async fn test_rate_limit_tiers() {
     let mut config = common::get_test_config();
-    config.rate_limit.per_second = 10;
-    config.rate_limit.burst = 10;
-    config.rate_limit.auth_per_second = 1;
-    config.rate_limit.auth_burst = 1;
+    config.rate_limit.per_second = std::num::NonZeroU32::new(10).unwrap();
+    config.rate_limit.burst = std::num::NonZeroU32::new(10).unwrap();
+    config.rate_limit.auth_per_second = std::num::NonZeroU32::new(1).unwrap();
+    config.rate_limit.auth_burst = std::num::NonZeroU32::new(1).unwrap();
     let app = common::TestApp::spawn_with_config(config).await;
 
     let ip = "1.2.3.4";
@@ -248,8 +248,8 @@ async fn test_rate_limit_tiers() {
 #[tokio::test]
 async fn test_rate_limit_recovery() {
     let mut config = common::get_test_config();
-    config.rate_limit.per_second = 1;
-    config.rate_limit.burst = 1;
+    config.rate_limit.per_second = std::num::NonZeroU32::new(1).unwrap();
+    config.rate_limit.burst = std::num::NonZeroU32::new(1).unwrap();
     let app = common::TestApp::spawn_with_config(config).await;
     let user = app.register_user(&common::generate_username("rate_user_recov")).await;
 
@@ -290,8 +290,8 @@ async fn test_rate_limit_recovery() {
 #[tokio::test]
 async fn test_rate_limit_retry_after_header() {
     let mut config = common::get_test_config();
-    config.rate_limit.per_second = 1;
-    config.rate_limit.burst = 1;
+    config.rate_limit.per_second = std::num::NonZeroU32::new(1).unwrap();
+    config.rate_limit.burst = std::num::NonZeroU32::new(1).unwrap();
     let app = common::TestApp::spawn_with_config(config).await;
     let user = app.register_user(&common::generate_username("rate_user_retry")).await;
 

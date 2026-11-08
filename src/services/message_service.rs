@@ -1,6 +1,7 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::message_repo::MessageRepository;
 use crate::adapters::redis::RedisCache;
+use crate::domain::expires_after_days;
 use crate::domain::message::{DeviceMismatch, Message, RecipientSubmissions, SubmissionOutcome};
 use crate::domain::notification::DeviceEvent;
 use crate::error::Result;
@@ -95,7 +96,7 @@ pub struct MessageService {
     notifier: NotificationService,
     submission_cache: RedisCache,
     max_inbox_size: NonZeroU32,
-    ttl_days: i64,
+    ttl_days: NonZeroU32,
     metrics: Metrics,
 }
 
@@ -107,7 +108,7 @@ impl MessageService {
         notifier: NotificationService,
         submission_cache: RedisCache,
         max_inbox_size: NonZeroU32,
-        ttl_days: i64,
+        ttl_days: NonZeroU32,
     ) -> Self {
         Self { pool, repo, notifier, submission_cache, max_inbox_size, ttl_days, metrics: Metrics::new() }
     }
@@ -155,7 +156,14 @@ impl MessageService {
         } else {
             let inserted = self
                 .repo
-                .create_batch(&mut tx, sender_user_id, sender_device_id, idempotency_key, plan.to_insert, self.ttl_days)
+                .create_batch(
+                    &mut tx,
+                    sender_user_id,
+                    sender_device_id,
+                    idempotency_key,
+                    plan.to_insert,
+                    expires_after_days(time::OffsetDateTime::now_utc(), self.ttl_days),
+                )
                 .await?;
             tx.commit().await?;
 

@@ -24,7 +24,7 @@ mod common;
 async fn test_standard_request_timeout() {
     let mut config = common::get_test_config();
     // Set standard request timeout to 2s for better CI stability
-    config.server.request_timeout_secs = 2;
+    config.server.request_timeout_secs = std::num::NonZeroU64::new(2).unwrap();
 
     let app = common::TestApp::spawn_with_config(config).await;
     let username = common::generate_username("timeout_std");
@@ -58,7 +58,7 @@ async fn test_standard_request_timeout() {
 #[tokio::test]
 async fn test_attachment_upload_timeout() {
     let mut config = common::get_test_config();
-    config.attachment.request_timeout_secs = 2; // 2 second limit
+    config.attachment.request_timeout_secs = std::num::NonZeroU64::new(2).unwrap(); // 2 second limit
 
     let app = common::TestApp::spawn_with_config(config.clone()).await;
     common::ensure_storage_bucket(&app.s3_client, &config.storage.bucket).await;
@@ -92,9 +92,9 @@ async fn test_attachment_upload_timeout() {
 #[tokio::test]
 async fn test_global_safety_timeout() {
     let mut config = common::get_test_config();
-    config.server.global_timeout_secs = 3; // Hard cap at 3s to allow registration
+    config.server.global_timeout_secs = std::num::NonZeroU64::new(3).unwrap(); // Hard cap at 3s to allow registration
     // Make standard timeout longer so only global trips
-    config.server.request_timeout_secs = 30;
+    config.server.request_timeout_secs = std::num::NonZeroU64::new(30).unwrap();
 
     let app = common::TestApp::spawn_with_config(config).await;
     let username = common::generate_username("timeout_global");
@@ -128,8 +128,8 @@ async fn test_attachment_timeout_independence() {
     let mut config = common::get_test_config();
 
     // Set Attachment Timeout LONGER than Standard Request Timeout (2s)
-    config.attachment.request_timeout_secs = 5;
-    config.server.request_timeout_secs = 2;
+    config.attachment.request_timeout_secs = std::num::NonZeroU64::new(5).unwrap();
+    config.server.request_timeout_secs = std::num::NonZeroU64::new(2).unwrap();
 
     let app = common::TestApp::spawn_with_config(config.clone()).await;
     common::ensure_storage_bucket(&app.s3_client, &config.storage.bucket).await;

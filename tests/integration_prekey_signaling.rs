@@ -136,7 +136,7 @@ async fn test_prekey_coalescing() {
     const FETCHES: u32 = 20;
     let mut config = common::get_test_config();
     // The burst below must not queue on the pool: this test is about debouncing, not pool capacity.
-    config.database.max_connections = FETCHES * 2;
+    config.database.max_connections = std::num::NonZeroU32::new(FETCHES * 2).unwrap();
     // Far longer than the burst takes, so the whole burst lands inside one debounce window.
     let debounce = Duration::from_millis(1500);
     config.websocket.prekey_debounce_interval_ms = debounce.as_millis().try_into().unwrap();

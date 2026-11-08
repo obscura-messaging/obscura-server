@@ -4,7 +4,7 @@ Every option is a flag or an environment variable; flags win. `cargo run -- --he
 
 For production, set at least the JWT secret and the database, Valkey and storage options. Storage credentials fall back to the AWS SDK's default chain when unset.
 
-Startup fails on a configuration that cannot work: an inbox, device, pre-key or batch limit below 1, an attachment minimum above the maximum, or only one of the two FCM values.
+Startup fails on a configuration that cannot work: a limit, capacity, batch size, interval, timeout or TTL below 1 where 0 has no meaning, an attachment minimum above the maximum, or only one of the two FCM values. Options where 0 is meaningful, such as ports and the push delay, still accept it.
 
 | Flag | Environment variable | Default | Description |
 |---|---|---|---|

@@ -90,26 +90,23 @@ async fn test_logout_revokes_refresh_token() {
 
 #[tokio::test]
 async fn test_refresh_token_expiration() {
-    // 1. Setup app with 0-day TTL (immediate expiration)
-    let mut config = common::get_test_config();
-    config.auth.refresh_token_ttl_days = 0;
+    let app = common::TestApp::spawn().await;
+    let user = app.register_user(&common::generate_username("expire_user")).await;
 
-    let app = common::TestApp::spawn_with_config(config).await;
-    let username = common::generate_username("expire_user");
+    // Expire the token directly, rather than waiting for a real TTL to pass.
+    sqlx::query("UPDATE refresh_tokens SET expires_at = NOW() - INTERVAL '1 second' WHERE device_id = $1")
+        .bind(user.device_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
 
-    // 2. Register
-    let user = app.register_user(&username).await;
-
-    // 3. Wait a moment to ensure clock ticks (1s)
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
-    // 4. Try to Refresh (Should fail)
-    let refresh_payload = json!({
-        "refreshToken": user.refresh_token
-    });
-
-    let resp_refresh =
-        app.client.post(format!("{}/v1/session/refresh", app.server_url)).json(&refresh_payload).send().await.unwrap();
+    let resp_refresh = app
+        .client
+        .post(format!("{}/v1/session/refresh", app.server_url))
+        .json(&json!({ "refreshToken": user.refresh_token }))
+        .send()
+        .await
+        .unwrap();
 
     assert_eq!(resp_refresh.status(), StatusCode::UNAUTHORIZED, "Expired refresh token should be rejected");
 }
@@ -262,7 +259,7 @@ async fn test_rotated_refresh_token_gets_full_ttl() {
             .await
             .unwrap();
     let ttl_days = app.config.auth.refresh_token_ttl_days;
-    let earliest_expected = time::OffsetDateTime::now_utc() + time::Duration::days(ttl_days - 1);
+    let earliest_expected = time::OffsetDateTime::now_utc() + time::Duration::days(i64::from(ttl_days.get()) - 1);
     assert_eq!(expiries.len(), 1, "rotation replaces the old token");
     assert!(expiries[0] > earliest_expected, "rotated token should expire about {ttl_days} days from now");
 }

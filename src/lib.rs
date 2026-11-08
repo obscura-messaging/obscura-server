@@ -210,10 +210,10 @@ impl AppBuilder {
         let submission_cache = RedisCache::new(
             Arc::clone(&pubsub),
             "idempotency:submission:".to_string(),
-            config.messaging.idempotency_ttl_secs,
+            config.messaging.idempotency_ttl_secs.get(),
         );
         let ws_ticket_cache =
-            RedisCache::new(Arc::clone(&pubsub), "ws:ticket:".to_string(), config.websocket.ticket_ttl_secs);
+            RedisCache::new(Arc::clone(&pubsub), "ws:ticket:".to_string(), config.websocket.ticket_ttl_secs.get());
         let message_service = MessageService::new(
             pool.clone(),
             MessageRepository::new(),

@@ -5,6 +5,7 @@ use crate::adapters::database::user_repo::UserRepository;
 use crate::config::AuthConfig;
 use crate::domain::auth::{AuthSession, Caller, Claims, DeviceRole, Jwt};
 use crate::domain::crypto::{generate_opaque_token, hash_opaque_token};
+use crate::domain::expires_after_days;
 use crate::error::{AppError, Result};
 use argon2::{
     Argon2,
@@ -14,6 +15,7 @@ use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode}
 use opentelemetry::{global, metrics::Counter};
 use sqlx::PgConnection;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -157,7 +159,8 @@ impl AuthService {
         let (token, expires_at) = self.issue_access_token(user_id, device_id)?;
         let refresh_token = generate_opaque_token();
         let refresh_hash = hash_opaque_token(&refresh_token);
-        self.refresh_repo.create(conn, device_id, &refresh_hash, self.config.refresh_token_ttl_days).await?;
+        let refresh_expires_at = expires_after_days(OffsetDateTime::now_utc(), self.config.refresh_token_ttl_days);
+        self.refresh_repo.create(conn, device_id, &refresh_hash, refresh_expires_at).await?;
 
         Ok(AuthSession { token, refresh_token, expires_at, user_id, device_id })
     }
@@ -175,7 +178,12 @@ impl AuthService {
 
         let (user_id, device_id) = self
             .refresh_repo
-            .rotate_unexpired(&mut conn, &old_hash, &new_hash, self.config.refresh_token_ttl_days)
+            .rotate_unexpired(
+                &mut conn,
+                &old_hash,
+                &new_hash,
+                expires_after_days(OffsetDateTime::now_utc(), self.config.refresh_token_ttl_days),
+            )
             .await?
             .ok_or(AppError::Unauthorized)?;
 
@@ -191,8 +199,8 @@ impl AuthService {
 
     fn issue_access_token(&self, user_id: Uuid, device_id: Uuid) -> Result<(String, i64)> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0)).as_secs();
-        let claims =
-            Claims::expiring(user_id, device_id, now, self.config.access_token_ttl_secs).ok_or(AppError::Internal)?;
+        let claims = Claims::expiring(user_id, device_id, now, self.config.access_token_ttl_secs.get())
+            .ok_or(AppError::Internal)?;
         let expires_at = i64::try_from(claims.exp).map_err(|_| AppError::Internal)?;
         let jwt = self.encode_jwt(&claims)?;
         Ok((jwt.0, expires_at))
@@ -274,8 +282,8 @@ mod tests {
     fn setup_service() -> AuthService {
         let config = AuthConfig {
             jwt_secret: "test_secret".to_string(),
-            access_token_ttl_secs: 3600,
-            refresh_token_ttl_days: 7,
+            access_token_ttl_secs: std::num::NonZeroU64::new(3600).unwrap(),
+            refresh_token_ttl_days: std::num::NonZeroU32::new(7).unwrap(),
             refresh_token_cleanup_interval_secs: 3600,
             max_devices_per_user: std::num::NonZeroU32::new(10).unwrap(),
         };

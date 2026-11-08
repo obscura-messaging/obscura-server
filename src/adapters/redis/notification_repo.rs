@@ -21,7 +21,7 @@ impl NotificationRepository {
             redis,
             channel_prefix: config.channel_prefix.clone(),
             push_queue_key: config.push_queue_key.clone(),
-            global_channel_capacity: config.global_channel_capacity,
+            global_channel_capacity: config.global_channel_capacity.get(),
         }
     }
 

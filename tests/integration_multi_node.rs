@@ -55,9 +55,13 @@ async fn test_multi_node_push_cancellation() {
 
     // 1. Manually schedule a push on the shared Redis queue
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let pubsub = obscura_server::adapters::redis::RedisClient::new(&app_a.config.pubsub, 1024, shutdown_rx.clone())
-        .await
-        .unwrap();
+    let pubsub = obscura_server::adapters::redis::RedisClient::new(
+        &app_a.config.pubsub,
+        std::num::NonZeroUsize::new(1024).unwrap(),
+        shutdown_rx.clone(),
+    )
+    .await
+    .unwrap();
 
     let mut conn = pubsub.publisher();
     let run_at = time::OffsetDateTime::now_utc().unix_timestamp() + 30;

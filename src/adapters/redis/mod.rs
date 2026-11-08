@@ -4,6 +4,7 @@ use futures::StreamExt;
 use opentelemetry::metrics::Gauge;
 use opentelemetry::{KeyValue, global};
 use rand::RngExt;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, watch};
@@ -78,7 +79,7 @@ pub struct RedisClient {
     subscriptions: Arc<DashMap<String, broadcast::Sender<PubSubMessage>>>,
     client: redis::Client,
     shutdown: watch::Receiver<bool>,
-    channel_capacity: usize,
+    channel_capacity: NonZeroUsize,
     config: PubSubConfig,
 }
 
@@ -89,7 +90,7 @@ impl RedisClient {
     /// Returns an error if the connection fails.
     pub async fn new(
         config: &PubSubConfig,
-        channel_capacity: usize,
+        channel_capacity: NonZeroUsize,
         shutdown: watch::Receiver<bool>,
     ) -> anyhow::Result<Arc<Self>> {
         let client = redis::Client::open(config.url.as_str())?;
@@ -119,7 +120,7 @@ impl RedisClient {
         }
 
         // Create new broadcast channel for this pattern
-        let (tx, rx) = broadcast::channel(self.channel_capacity);
+        let (tx, rx) = broadcast::channel(self.channel_capacity.get());
         self.subscriptions.insert(pattern.to_string(), tx.clone());
 
         // Spawn a background listener for this specific pattern

@@ -29,7 +29,7 @@ async fn test_full_system_flow() {
     let mut config = common::get_test_config();
     // Enable push notifications with a delay to allow coalescing
     config.notifications.push_delay_secs = 2;
-    config.notifications.worker_interval_secs = 1;
+    config.notifications.worker_interval_secs = std::num::NonZeroU64::new(1).unwrap();
     // Ensure we can handle the batch size
     config.messaging.send_batch_limit = std::num::NonZeroUsize::new(100).unwrap();
 

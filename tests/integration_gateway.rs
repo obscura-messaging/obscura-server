@@ -23,7 +23,7 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 #[tokio::test]
 async fn test_server_sends_ping() {
     let mut config = common::get_test_config();
-    config.websocket.ping_interval_secs = 1; // 1 second for fast testing
+    config.websocket.ping_interval_secs = std::num::NonZeroU64::new(1).unwrap(); // 1 second for fast testing
     config.websocket.ping_timeout_secs = 1;
 
     let app = TestApp::spawn_with_config(config).await;
@@ -49,7 +49,7 @@ async fn test_server_sends_ping() {
 #[tokio::test]
 async fn test_heartbeat_timeout_closes_connection() {
     let mut config = common::get_test_config();
-    config.websocket.ping_interval_secs = 1;
+    config.websocket.ping_interval_secs = std::num::NonZeroU64::new(1).unwrap();
     config.websocket.ping_timeout_secs = 1;
 
     let app = TestApp::spawn_with_config(config).await;

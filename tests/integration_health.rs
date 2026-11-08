@@ -116,7 +116,11 @@ async fn test_health_check_db_timeout() {
         app.s3_client.clone(),
         Arc::clone(&app.resources.pubsub),
         app.config.storage.bucket.clone(),
-        HealthConfig { db_timeout_ms: 50, storage_timeout_ms: 2000, pubsub_timeout_ms: 2000 },
+        HealthConfig {
+            db_timeout_ms: std::num::NonZeroU64::new(50).unwrap(),
+            storage_timeout_ms: std::num::NonZeroU64::new(2000).unwrap(),
+            pubsub_timeout_ms: std::num::NonZeroU64::new(2000).unwrap(),
+        },
     );
 
     let result = health.check_db().await;
@@ -134,7 +138,11 @@ async fn test_health_check_storage_timeout() {
         create_unreachable_s3_client().await,
         Arc::clone(&app.resources.pubsub),
         "test-bucket".to_string(),
-        HealthConfig { db_timeout_ms: 2000, storage_timeout_ms: 50, pubsub_timeout_ms: 2000 },
+        HealthConfig {
+            db_timeout_ms: std::num::NonZeroU64::new(2000).unwrap(),
+            storage_timeout_ms: std::num::NonZeroU64::new(50).unwrap(),
+            pubsub_timeout_ms: std::num::NonZeroU64::new(2000).unwrap(),
+        },
     );
 
     let result = health.check_storage().await;

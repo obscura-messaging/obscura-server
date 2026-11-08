@@ -3,13 +3,15 @@ use crate::adapters::database::attachment_repo::AttachmentRepository;
 use crate::adapters::storage::{ObjectStorage, StorageError, StorageStream};
 use crate::config::AttachmentConfig;
 use crate::domain::attachment::{SizeLimits, etag_matches};
+use crate::domain::expires_after_days;
 use crate::error::{AppError, Result};
 use opentelemetry::{
     global,
     metrics::{Counter, Histogram},
 };
+use std::num::NonZeroU32;
 use std::sync::Arc;
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -61,7 +63,7 @@ pub struct AttachmentService {
     storage: Arc<dyn ObjectStorage>,
     attachment_config: AttachmentConfig,
     size_limits: SizeLimits,
-    ttl_days: i64,
+    ttl_days: NonZeroU32,
     metrics: Metrics,
 }
 
@@ -84,7 +86,7 @@ impl AttachmentService {
         storage: Arc<dyn ObjectStorage>,
         attachment_config: AttachmentConfig,
         size_limits: SizeLimits,
-        ttl_days: i64,
+        ttl_days: NonZeroU32,
     ) -> Self {
         Self { pool, repo, storage, attachment_config, size_limits, ttl_days, metrics: Metrics::new() }
     }
@@ -115,7 +117,7 @@ impl AttachmentService {
             _ => AppError::Internal,
         })?;
 
-        let expires_at = OffsetDateTime::now_utc() + Duration::days(self.ttl_days);
+        let expires_at = expires_after_days(OffsetDateTime::now_utc(), self.ttl_days);
         let mut conn = self.pool.acquire().await?;
         self.repo.create(&mut conn, id, expires_at).await?;
 
@@ -172,7 +174,7 @@ impl AttachmentService {
         use tracing::Instrument;
 
         let mut total_deleted = 0;
-        let batch_limit = i64::try_from(self.attachment_config.cleanup_batch_size).unwrap_or(i64::MAX);
+        let batch_limit = i64::from(self.attachment_config.cleanup_batch_size.get());
 
         loop {
             let ids = {
@@ -270,7 +272,7 @@ mod tests {
             Arc::new(FailingStorage(error)),
             AttachmentConfig::default(),
             AttachmentConfig::default().size_limits().expect("default limits are valid"),
-            30,
+            NonZeroU32::new(30).unwrap(),
         );
         let stream: StorageStream = futures::stream::iter([Ok(Bytes::from_static(b"data"))]).boxed();
         service.upload(None, stream).await.expect_err("a storage error should fail the upload")

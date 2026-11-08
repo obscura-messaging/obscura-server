@@ -1,7 +1,7 @@
 use crate::domain::attachment::SizeLimits;
 use clap::{Args, Parser};
 use ipnetwork::IpNetwork;
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -16,9 +16,17 @@ pub enum ConfigError {
     PartialFcm { missing: &'static str },
 }
 
-/// Builds a non-zero default. Only called with literals.
+// Build non-zero defaults. Only called with literals.
 const fn non_zero_u32(n: u32) -> NonZeroU32 {
     NonZeroU32::new(n).expect("config defaults are non-zero")
+}
+
+const fn non_zero_u64(n: u64) -> NonZeroU64 {
+    NonZeroU64::new(n).expect("config defaults are non-zero")
+}
+
+const fn non_zero_usize(n: usize) -> NonZeroUsize {
+    NonZeroUsize::new(n).expect("config defaults are non-zero")
 }
 
 #[derive(Clone, Debug, Parser)]
@@ -26,7 +34,7 @@ const fn non_zero_u32(n: u32) -> NonZeroU32 {
 pub struct Config {
     /// Global time-to-live for messages and attachments in days
     #[arg(long, env = "OBSCURA_TTL_DAYS", default_value_t = Config::default().ttl_days)]
-    pub ttl_days: i64,
+    pub ttl_days: NonZeroU32,
 
     #[command(flatten)]
     pub database: DatabaseConfig,
@@ -71,7 +79,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            ttl_days: 30,
+            ttl_days: non_zero_u32(30),
             database: DatabaseConfig::default(),
             server: ServerConfig::default(),
             auth: AuthConfig::default(),
@@ -131,7 +139,7 @@ pub struct DatabaseConfig {
         env = "OBSCURA_DATABASE_MAX_CONNECTIONS",
         default_value_t = DatabaseConfig::default().max_connections
     )]
-    pub max_connections: u32,
+    pub max_connections: NonZeroU32,
 
     /// Minimum number of connections to keep idle in the pool
     #[arg(long = "db-min-connections", env = "OBSCURA_DATABASE_MIN_CONNECTIONS", default_value_t = DatabaseConfig::default().min_connections)]
@@ -139,7 +147,7 @@ pub struct DatabaseConfig {
 
     /// Seconds to wait before timing out on acquiring a connection
     #[arg(long = "db-acquire-timeout-secs", env = "OBSCURA_DATABASE_ACQUIRE_TIMEOUT_SECS", default_value_t = DatabaseConfig::default().acquire_timeout_secs)]
-    pub acquire_timeout_secs: u64,
+    pub acquire_timeout_secs: NonZeroU64,
 
     /// Seconds before an idle connection is closed
     #[arg(long = "db-idle-timeout-secs", env = "OBSCURA_DATABASE_IDLE_TIMEOUT_SECS", default_value_t = DatabaseConfig::default().idle_timeout_secs)]
@@ -154,9 +162,9 @@ impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
             url: "postgres://user:password@localhost/signal_server".to_string(),
-            max_connections: 20,
+            max_connections: non_zero_u32(20),
             min_connections: 5,
-            acquire_timeout_secs: 3,
+            acquire_timeout_secs: non_zero_u64(3),
             idle_timeout_secs: 600,
             max_lifetime_secs: 1800,
         }
@@ -249,7 +257,7 @@ pub struct TelemetryConfig {
         env = "OBSCURA_TELEMETRY_METRICS_EXPORT_INTERVAL_SECS",
         default_value_t = TelemetryConfig::default().metrics_export_interval_secs
     )]
-    pub metrics_export_interval_secs: u64,
+    pub metrics_export_interval_secs: NonZeroU64,
 
     /// OTLP export timeout in seconds
     #[arg(
@@ -257,7 +265,7 @@ pub struct TelemetryConfig {
         env = "OBSCURA_TELEMETRY_EXPORT_TIMEOUT_SECS",
         default_value_t = TelemetryConfig::default().export_timeout_secs
     )]
-    pub export_timeout_secs: u64,
+    pub export_timeout_secs: NonZeroU64,
 }
 
 impl Default for TelemetryConfig {
@@ -266,8 +274,8 @@ impl Default for TelemetryConfig {
             otlp_endpoint: None,
             log_format: LogFormat::Text,
             trace_sampling_ratio: 1.0,
-            metrics_export_interval_secs: 60,
-            export_timeout_secs: 10,
+            metrics_export_interval_secs: non_zero_u64(60),
+            export_timeout_secs: non_zero_u64(10),
         }
     }
 }
@@ -305,11 +313,11 @@ pub struct ServerConfig {
 
     /// Timeout for standard requests in seconds
     #[arg(long = "server-request-timeout-secs", env = "OBSCURA_SERVER_REQUEST_TIMEOUT_SECS", default_value_t = ServerConfig::default().request_timeout_secs)]
-    pub request_timeout_secs: u64,
+    pub request_timeout_secs: NonZeroU64,
 
     /// Global catch-all safety timeout in seconds
     #[arg(long = "server-global-timeout-secs", env = "OBSCURA_SERVER_GLOBAL_TIMEOUT_SECS", default_value_t = ServerConfig::default().global_timeout_secs)]
-    pub global_timeout_secs: u64,
+    pub global_timeout_secs: NonZeroU64,
 
     /// Comma-separated list of CIDRs to trust for X-Forwarded-For IP extraction
     #[arg(
@@ -328,8 +336,8 @@ impl Default for ServerConfig {
             port: 3000,
             mgmt_port: 9090,
             shutdown_timeout_secs: 5,
-            request_timeout_secs: 30,
-            global_timeout_secs: 600,
+            request_timeout_secs: non_zero_u64(30),
+            global_timeout_secs: non_zero_u64(600),
             trusted_proxies: vec![
                 "10.0.0.0/8".parse().expect("Invalid default CIDR for private network"),
                 "172.16.0.0/12".parse().expect("Invalid default CIDR for private network"),
@@ -348,11 +356,11 @@ pub struct AuthConfig {
 
     /// Access token time-to-live in seconds
     #[arg(long = "auth-token-ttl-secs", env = "OBSCURA_AUTH_TOKEN_TTL_SECS", default_value_t = AuthConfig::default().access_token_ttl_secs)]
-    pub access_token_ttl_secs: u64,
+    pub access_token_ttl_secs: NonZeroU64,
 
     /// Refresh token time-to-live in days
     #[arg(long = "auth-refresh-token-ttl-days", env = "OBSCURA_AUTH_REFRESH_TOKEN_TTL_DAYS", default_value_t = AuthConfig::default().refresh_token_ttl_days)]
-    pub refresh_token_ttl_days: i64,
+    pub refresh_token_ttl_days: NonZeroU32,
 
     /// How often to run the refresh token cleanup task in seconds
     #[arg(
@@ -375,8 +383,8 @@ impl Default for AuthConfig {
     fn default() -> Self {
         Self {
             jwt_secret: "change_me_in_production".to_string(),
-            access_token_ttl_secs: 900,
-            refresh_token_ttl_days: 30,
+            access_token_ttl_secs: non_zero_u64(900),
+            refresh_token_ttl_days: non_zero_u32(30),
             refresh_token_cleanup_interval_secs: 86400, // 24 hours
             max_devices_per_user: non_zero_u32(10),
         }
@@ -387,24 +395,29 @@ impl Default for AuthConfig {
 pub struct RateLimitConfig {
     /// Requests per second allowed for standard endpoints
     #[arg(long = "rate-limit-per-second", env = "OBSCURA_RATE_LIMIT_PER_SECOND", default_value_t = RateLimitConfig::default().per_second)]
-    pub per_second: u32,
+    pub per_second: NonZeroU32,
 
     /// Burst allowance for standard endpoints
     #[arg(long = "rate-limit-burst", env = "OBSCURA_RATE_LIMIT_BURST", default_value_t = RateLimitConfig::default().burst)]
-    pub burst: u32,
+    pub burst: NonZeroU32,
 
     /// Stricter rate limit for expensive auth-related endpoints (/v1/users*, /v1/session*, POST /v1/link-sessions)
     #[arg(long = "auth-rate-limit-per-second", env = "OBSCURA_RATE_LIMIT_AUTH_PER_SECOND", default_value_t = RateLimitConfig::default().auth_per_second)]
-    pub auth_per_second: u32,
+    pub auth_per_second: NonZeroU32,
 
     /// Burst allowance for expensive auth-related endpoints
     #[arg(long = "auth-rate-limit-burst", env = "OBSCURA_RATE_LIMIT_AUTH_BURST", default_value_t = RateLimitConfig::default().auth_burst)]
-    pub auth_burst: u32,
+    pub auth_burst: NonZeroU32,
 }
 
 impl Default for RateLimitConfig {
     fn default() -> Self {
-        Self { per_second: 10, burst: 20, auth_per_second: 1, auth_burst: 3 }
+        Self {
+            per_second: non_zero_u32(10),
+            burst: non_zero_u32(20),
+            auth_per_second: non_zero_u32(1),
+            auth_burst: non_zero_u32(3),
+        }
     }
 }
 
@@ -421,7 +434,7 @@ pub struct MessagingConfig {
         env = "OBSCURA_MESSAGING_CLEANUP_INTERVAL_SECS",
         default_value_t = MessagingConfig::default().cleanup_interval_secs
     )]
-    pub cleanup_interval_secs: u64,
+    pub cleanup_interval_secs: NonZeroU64,
 
     /// Maximum number of messages to accept in a single send request
     #[arg(
@@ -437,7 +450,7 @@ pub struct MessagingConfig {
         env = "OBSCURA_MESSAGING_IDEMPOTENCY_TTL_SECS",
         default_value_t = MessagingConfig::default().idempotency_ttl_secs
     )]
-    pub idempotency_ttl_secs: u64,
+    pub idempotency_ttl_secs: NonZeroU64,
 
     /// Threshold of one-time prekeys to trigger a refill notification
     #[arg(
@@ -460,9 +473,9 @@ impl Default for MessagingConfig {
     fn default() -> Self {
         Self {
             max_inbox_size: non_zero_u32(1000),
-            cleanup_interval_secs: 300,
-            send_batch_limit: NonZeroUsize::new(100).expect("config defaults are non-zero"),
-            idempotency_ttl_secs: 86400,
+            cleanup_interval_secs: non_zero_u64(300),
+            send_batch_limit: non_zero_usize(100),
+            idempotency_ttl_secs: non_zero_u64(86400),
             pre_key_refill_threshold: 20,
             max_pre_keys: non_zero_u32(100),
         }
@@ -473,15 +486,15 @@ impl Default for MessagingConfig {
 pub struct NotificationConfig {
     /// How often to run the notification cleanup
     #[arg(long = "notifications-cleanup-interval-secs", env = "OBSCURA_NOTIFICATIONS_CLEANUP_INTERVAL_SECS", default_value_t = NotificationConfig::default().cleanup_interval_secs)]
-    pub cleanup_interval_secs: u64,
+    pub cleanup_interval_secs: NonZeroU64,
 
     /// Capacity of the global notification dispatcher channel
     #[arg(long = "notifications-global-channel-capacity", env = "OBSCURA_NOTIFICATIONS_GLOBAL_CHANNEL_CAPACITY", default_value_t = NotificationConfig::default().global_channel_capacity)]
-    pub global_channel_capacity: usize,
+    pub global_channel_capacity: NonZeroUsize,
 
     /// Capacity of the per-device notification channel
     #[arg(long = "notifications-device-channel-capacity", env = "OBSCURA_NOTIFICATIONS_DEVICE_CHANNEL_CAPACITY", default_value_t = NotificationConfig::default().device_channel_capacity)]
-    pub device_channel_capacity: usize,
+    pub device_channel_capacity: NonZeroUsize,
 
     /// Delay in seconds before a push notification is sent as a fallback
     #[arg(long = "notifications-push-delay-secs", env = "OBSCURA_NOTIFICATIONS_PUSH_DELAY_SECS", default_value_t = NotificationConfig::default().push_delay_secs)]
@@ -489,11 +502,11 @@ pub struct NotificationConfig {
 
     /// Interval in seconds for the notification worker to poll for due jobs
     #[arg(long = "notifications-worker-interval-secs", env = "OBSCURA_NOTIFICATIONS_WORKER_INTERVAL_SECS", default_value_t = NotificationConfig::default().worker_interval_secs)]
-    pub worker_interval_secs: u64,
+    pub worker_interval_secs: NonZeroU64,
 
     /// Maximum number of concurrent push notification requests (also used as Redis poll limit)
     #[arg(long = "notifications-worker-concurrency", env = "OBSCURA_NOTIFICATIONS_WORKER_CONCURRENCY", default_value_t = NotificationConfig::default().worker_concurrency)]
-    pub worker_concurrency: usize,
+    pub worker_concurrency: NonZeroUsize,
 
     /// Redis key for the push notification job queue
     #[arg(long = "notifications-push-queue-key", env = "OBSCURA_NOTIFICATIONS_PUSH_QUEUE_KEY", default_value_t = NotificationConfig::default().push_queue_key)]
@@ -505,36 +518,36 @@ pub struct NotificationConfig {
 
     /// How long a push job is leased by a worker in seconds
     #[arg(long = "notifications-visibility-timeout-secs", env = "OBSCURA_NOTIFICATIONS_VISIBILITY_TIMEOUT_SECS", default_value_t = NotificationConfig::default().visibility_timeout_secs)]
-    pub visibility_timeout_secs: u64,
+    pub visibility_timeout_secs: NonZeroU64,
 
     /// How often the invalid token cleanup flushes to the database in seconds
     #[arg(long = "notifications-invalid-token-cleanup-interval-secs", env = "OBSCURA_NOTIFICATIONS_INVALID_TOKEN_CLEANUP_INTERVAL_SECS", default_value_t = NotificationConfig::default().invalid_token_cleanup_interval_secs)]
-    pub invalid_token_cleanup_interval_secs: u64,
+    pub invalid_token_cleanup_interval_secs: NonZeroU64,
 
     /// Maximum number of invalid tokens to delete in a single batch
     #[arg(long = "notifications-invalid-token-cleanup-batch-size", env = "OBSCURA_NOTIFICATIONS_INVALID_TOKEN_CLEANUP_BATCH_SIZE", default_value_t = NotificationConfig::default().invalid_token_cleanup_batch_size)]
-    pub invalid_token_cleanup_batch_size: usize,
+    pub invalid_token_cleanup_batch_size: NonZeroUsize,
 
     /// Capacity of the invalid token cleanup channel
     #[arg(long = "notifications-invalid-token-cleanup-channel-capacity", env = "OBSCURA_NOTIFICATIONS_INVALID_TOKEN_CLEANUP_CHANNEL_CAPACITY", default_value_t = NotificationConfig::default().invalid_token_cleanup_channel_capacity)]
-    pub invalid_token_cleanup_channel_capacity: usize,
+    pub invalid_token_cleanup_channel_capacity: NonZeroUsize,
 }
 
 impl Default for NotificationConfig {
     fn default() -> Self {
         Self {
-            cleanup_interval_secs: 60,
-            global_channel_capacity: 1024,
-            device_channel_capacity: 64,
+            cleanup_interval_secs: non_zero_u64(60),
+            global_channel_capacity: non_zero_usize(1024),
+            device_channel_capacity: non_zero_usize(64),
             push_delay_secs: 2,
-            worker_interval_secs: 1,
-            worker_concurrency: 100,
+            worker_interval_secs: non_zero_u64(1),
+            worker_concurrency: non_zero_usize(100),
             push_queue_key: "jobs:push_notifications".to_string(),
             channel_prefix: "device:".to_string(),
-            visibility_timeout_secs: 30,
-            invalid_token_cleanup_interval_secs: 5,
-            invalid_token_cleanup_batch_size: 50,
-            invalid_token_cleanup_channel_capacity: 256,
+            visibility_timeout_secs: non_zero_u64(30),
+            invalid_token_cleanup_interval_secs: non_zero_u64(5),
+            invalid_token_cleanup_batch_size: non_zero_usize(50),
+            invalid_token_cleanup_channel_capacity: non_zero_usize(256),
         }
     }
 }
@@ -543,15 +556,15 @@ impl Default for NotificationConfig {
 pub struct WsConfig {
     /// Size of the outbound message buffer
     #[arg(long = "ws-outbound-buffer-size", env = "OBSCURA_WS_OUTBOUND_BUFFER_SIZE", default_value_t = WsConfig::default().outbound_buffer_size)]
-    pub outbound_buffer_size: usize,
+    pub outbound_buffer_size: NonZeroUsize,
 
     /// Size of the acknowledgment buffer
     #[arg(long = "ws-ack-buffer-size", env = "OBSCURA_WS_ACK_BUFFER_SIZE", default_value_t = WsConfig::default().ack_buffer_size)]
-    pub ack_buffer_size: usize,
+    pub ack_buffer_size: NonZeroUsize,
 
     /// Number of acknowledgments to batch before flushing
     #[arg(long = "ws-ack-batch-size", env = "OBSCURA_WS_ACK_BATCH_SIZE", default_value_t = WsConfig::default().ack_batch_size)]
-    pub ack_batch_size: usize,
+    pub ack_batch_size: NonZeroUsize,
 
     /// How often to flush pending acknowledgments
     #[arg(long = "ws-ack-flush-interval-ms", env = "OBSCURA_WS_ACK_FLUSH_INTERVAL_MS", default_value_t = WsConfig::default().ack_flush_interval_ms)]
@@ -564,7 +577,7 @@ pub struct WsConfig {
             env = "OBSCURA_WS_PING_INTERVAL_SECS",
             default_value_t = WsConfig::default().ping_interval_secs
         )]
-    pub ping_interval_secs: u64,
+    pub ping_interval_secs: NonZeroU64,
 
     /// How long to wait for a pong response before closing the connection in seconds
     #[arg(long = "ws-ping-timeout-secs", env = "OBSCURA_WS_PING_TIMEOUT_SECS", default_value_t = WsConfig::default().ping_timeout_secs)]
@@ -606,23 +619,23 @@ pub struct WsConfig {
         env = "OBSCURA_WS_TICKET_TTL_SECS",
         default_value_t = WsConfig::default().ticket_ttl_secs
     )]
-    pub ticket_ttl_secs: u64,
+    pub ticket_ttl_secs: NonZeroU64,
 }
 
 impl Default for WsConfig {
     fn default() -> Self {
         Self {
-            outbound_buffer_size: 32,
-            ack_buffer_size: 1000,
-            ack_batch_size: 100,
+            outbound_buffer_size: non_zero_usize(32),
+            ack_buffer_size: non_zero_usize(1000),
+            ack_batch_size: non_zero_usize(100),
             ack_flush_interval_ms: 500,
-            ping_interval_secs: 30,
+            ping_interval_secs: non_zero_u64(30),
             ping_timeout_secs: 10,
             prekey_debounce_interval_ms: 500,
             message_fetch_batch_size: non_zero_u32(50),
             max_batch_bytes: 8 * 1024 * 1024, // 8 MiB
             fetch_retry_budget_ms: 10_000,
-            ticket_ttl_secs: 30,
+            ticket_ttl_secs: non_zero_u64(30),
         }
     }
 }
@@ -663,7 +676,7 @@ pub struct AttachmentConfig {
         env = "OBSCURA_ATTACHMENT_CLEANUP_INTERVAL_SECS",
         default_value_t = AttachmentConfig::default().cleanup_interval_secs
     )]
-    pub cleanup_interval_secs: u64,
+    pub cleanup_interval_secs: NonZeroU64,
 
     /// Maximum number of attachments to delete in a single batch
     #[arg(
@@ -672,7 +685,7 @@ pub struct AttachmentConfig {
         env = "OBSCURA_ATTACHMENT_CLEANUP_BATCH_SIZE",
         default_value_t = AttachmentConfig::default().cleanup_batch_size
     )]
-    pub cleanup_batch_size: u64,
+    pub cleanup_batch_size: NonZeroU32,
 
     /// S3 streaming timeout in seconds
     #[arg(
@@ -681,7 +694,7 @@ pub struct AttachmentConfig {
         env = "OBSCURA_ATTACHMENT_TIMEOUT_SECS",
         default_value_t = AttachmentConfig::default().request_timeout_secs
     )]
-    pub request_timeout_secs: u64,
+    pub request_timeout_secs: NonZeroU64,
 }
 
 impl Default for AttachmentConfig {
@@ -690,9 +703,9 @@ impl Default for AttachmentConfig {
             max_size_bytes: 52_428_800,
             min_size_bytes: 1,
             prefix: "attachments/".to_string(),
-            cleanup_interval_secs: 3600,
-            cleanup_batch_size: 100,
-            request_timeout_secs: 120,
+            cleanup_interval_secs: non_zero_u64(3600),
+            cleanup_batch_size: non_zero_u32(100),
+            request_timeout_secs: non_zero_u64(120),
         }
     }
 }
@@ -779,7 +792,7 @@ pub struct HealthConfig {
         env = "OBSCURA_HEALTH_DB_TIMEOUT_MS",
         default_value_t = HealthConfig::default().db_timeout_ms
     )]
-    pub db_timeout_ms: u64,
+    pub db_timeout_ms: NonZeroU64,
 
     /// Timeout for storage health check in milliseconds
     #[arg(
@@ -788,7 +801,7 @@ pub struct HealthConfig {
         env = "OBSCURA_HEALTH_STORAGE_TIMEOUT_MS",
         default_value_t = HealthConfig::default().storage_timeout_ms
     )]
-    pub storage_timeout_ms: u64,
+    pub storage_timeout_ms: NonZeroU64,
 
     /// Timeout for pubsub health check in milliseconds
     #[arg(
@@ -797,12 +810,16 @@ pub struct HealthConfig {
         env = "OBSCURA_HEALTH_PUBSUB_TIMEOUT_MS",
         default_value_t = HealthConfig::default().pubsub_timeout_ms
     )]
-    pub pubsub_timeout_ms: u64,
+    pub pubsub_timeout_ms: NonZeroU64,
 }
 
 impl Default for HealthConfig {
     fn default() -> Self {
-        Self { db_timeout_ms: 2000, storage_timeout_ms: 2000, pubsub_timeout_ms: 2000 }
+        Self {
+            db_timeout_ms: non_zero_u64(2000),
+            storage_timeout_ms: non_zero_u64(2000),
+            pubsub_timeout_ms: non_zero_u64(2000),
+        }
     }
 }
 

@@ -1,22 +1,23 @@
 use crate::error::Result;
 use crate::services::attachment_service::AttachmentService;
+use std::num::NonZeroU64;
 use std::time::Duration;
 use tracing::Instrument;
 
 #[derive(Clone, Debug)]
 pub struct AttachmentCleanupWorker {
     service: AttachmentService,
-    cleanup_interval_secs: u64,
+    cleanup_interval_secs: NonZeroU64,
 }
 
 impl AttachmentCleanupWorker {
     #[must_use]
-    pub const fn new(service: AttachmentService, cleanup_interval_secs: u64) -> Self {
+    pub const fn new(service: AttachmentService, cleanup_interval_secs: NonZeroU64) -> Self {
         Self { service, cleanup_interval_secs }
     }
 
     pub async fn run(self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
-        let mut interval = tokio::time::interval(Duration::from_secs(self.cleanup_interval_secs));
+        let mut interval = tokio::time::interval(Duration::from_secs(self.cleanup_interval_secs.get()));
 
         while !*shutdown.borrow() {
             tokio::select! {

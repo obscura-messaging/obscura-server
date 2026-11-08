@@ -68,7 +68,7 @@ impl NotificationService {
         Self {
             repo,
             channels: Arc::new(DashMap::new()),
-            device_channel_capacity: config.device_channel_capacity,
+            device_channel_capacity: config.device_channel_capacity.get(),
             push_delay_secs: config.push_delay_secs,
             metrics: Metrics::new(),
         }
@@ -200,10 +200,13 @@ mod tests {
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         let config = NotificationConfig::default();
 
-        let pubsub =
-            crate::adapters::redis::RedisClient::new(&crate::config::PubSubConfig::default(), 1024, shutdown_rx)
-                .await
-                .expect("Redis client creation");
+        let pubsub = crate::adapters::redis::RedisClient::new(
+            &crate::config::PubSubConfig::default(),
+            std::num::NonZeroUsize::new(1024).unwrap(),
+            shutdown_rx,
+        )
+        .await
+        .expect("Redis client creation");
 
         let repo = Arc::new(NotificationRepository::new(pubsub, &config));
         let service = NotificationService::new(repo, &config);
