@@ -138,9 +138,9 @@ async fn test_attachment_cleanup() {
         AttachmentRepository::new(),
         storage_adapter,
         config.attachment.clone(),
-        config.attachment.size_limits().unwrap(),
         config.ttl_days,
-    );
+    )
+    .unwrap();
     let worker = AttachmentCleanupWorker::new(service, config.attachment.cleanup_interval_secs);
 
     // 4. Execution
