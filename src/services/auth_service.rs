@@ -3,7 +3,7 @@ use crate::adapters::database::device_repo::DeviceRepository;
 use crate::adapters::database::refresh_token_repo::RefreshTokenRepository;
 use crate::adapters::database::user_repo::UserRepository;
 use crate::config::AuthConfig;
-use crate::domain::auth::{AuthSession, Caller, Claims, DeviceRole, Jwt};
+use crate::domain::auth::{AuthSession, Caller, Claims, Jwt};
 use crate::domain::crypto::{generate_opaque_token, hash_opaque_token};
 use crate::domain::expires_after_days;
 use crate::error::{AppError, Result};
@@ -82,7 +82,7 @@ impl AuthService {
         let user_id = self.verify_credentials(username, &password).await?;
 
         let mut conn = self.pool.acquire().await?;
-        if self.device_repo.find_is_primary(&mut conn, device_id, user_id).await?.is_none() {
+        if self.device_repo.find_role(&mut conn, device_id, user_id).await?.is_none() {
             tracing::warn!(device_id = %device_id, "Login rejected: device does not belong to user");
             return Err(AppError::Conflict("Device does not belong to this account".into()));
         }
@@ -235,9 +235,8 @@ impl AuthService {
     pub(crate) async fn authenticate(&self, jwt: &Jwt) -> Result<Caller> {
         let (user_id, device_id) = self.verify_token(jwt)?;
         let mut conn = self.pool.acquire().await?;
-        let is_primary =
-            self.device_repo.find_is_primary(&mut conn, device_id, user_id).await?.ok_or(AppError::Unauthorized)?;
-        Ok(Caller::new(user_id, device_id, DeviceRole::from_is_primary(is_primary)))
+        let role = self.device_repo.find_role(&mut conn, device_id, user_id).await?.ok_or(AppError::Unauthorized)?;
+        Ok(Caller::new(user_id, device_id, role))
     }
 
     /// Checks whether a device still exists.

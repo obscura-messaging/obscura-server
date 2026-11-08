@@ -30,7 +30,7 @@ pub(crate) async fn send_messages(
     let batch_limit = state.config.messaging.send_batch_limit.get();
     let recipients = parse_send_request(auth.device_id(), batch_limit, request)?;
 
-    let outcome = state.message_service.send(auth.user_id(), auth.device_id(), idempotency_key, recipients).await?;
+    let outcome = state.message_service.send(&auth, idempotency_key, recipients).await?;
 
     Ok(proto::SendMessageResponse::from(outcome).encode_to_vec())
 }

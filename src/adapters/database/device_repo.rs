@@ -1,5 +1,5 @@
 use crate::adapters::database::records::DeviceRecord;
-use crate::domain::device::Device;
+use crate::domain::device::{Device, DeviceRole};
 use crate::error::Result;
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -24,7 +24,7 @@ impl DeviceRepository {
         user_id: Uuid,
         name: Option<&str>,
         registration_id: i32,
-        is_primary: bool,
+        role: DeviceRole,
     ) -> Result<Device> {
         let record = sqlx::query_as::<_, DeviceRecord>(
             r#"
@@ -36,7 +36,7 @@ impl DeviceRepository {
         .bind(user_id)
         .bind(name)
         .bind(registration_id)
-        .bind(is_primary)
+        .bind(role.is_primary())
         .fetch_one(conn)
         .await?;
 
@@ -109,25 +109,25 @@ impl DeviceRepository {
         Ok(record.map(Into::into))
     }
 
-    /// Returns whether a device owned by `user_id` is the primary device, or `None` if it does not
-    /// belong to `user_id`.
+    /// Returns the role of a device owned by `user_id`, or `None` if it does not belong to `user_id`.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn find_is_primary(
+    pub(crate) async fn find_role(
         &self,
         conn: &mut PgConnection,
         device_id: Uuid,
         user_id: Uuid,
-    ) -> Result<Option<bool>> {
-        let is_primary = sqlx::query_scalar("SELECT is_primary FROM devices WHERE id = $1 AND user_id = $2")
-            .bind(device_id)
-            .bind(user_id)
-            .fetch_optional(conn)
-            .await?;
+    ) -> Result<Option<DeviceRole>> {
+        let is_primary: Option<bool> =
+            sqlx::query_scalar("SELECT is_primary FROM devices WHERE id = $1 AND user_id = $2")
+                .bind(device_id)
+                .bind(user_id)
+                .fetch_optional(conn)
+                .await?;
 
-        Ok(is_primary)
+        Ok(is_primary.map(DeviceRole::from_is_primary))
     }
 
     /// Checks if a device exists.

@@ -1,6 +1,7 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::message_repo::MessageRepository;
 use crate::adapters::redis::RedisCache;
+use crate::domain::auth::Caller;
 use crate::domain::expires_after_days;
 use crate::domain::message::{DeviceMismatch, Message, RecipientSubmissions, SubmissionOutcome};
 use crate::domain::notification::DeviceEvent;
@@ -121,16 +122,16 @@ impl MessageService {
     /// Returns `AppError::Database` if any database operation fails.
     #[tracing::instrument(
         err(level = "warn"),
-        skip(self, recipients),
-        fields(sender_user_id = %sender_user_id, sender_device_id = %sender_device_id, recipients = recipients.len())
+        skip(self, sender, recipients),
+        fields(sender_user_id = %sender.user_id(), sender_device_id = %sender.device_id(), recipients = recipients.len())
     )]
     pub(crate) async fn send(
         &self,
-        sender_user_id: Uuid,
-        sender_device_id: Uuid,
+        sender: &Caller,
         idempotency_key: Uuid,
         recipients: Vec<RecipientSubmissions>,
     ) -> Result<SubmissionOutcome> {
+        let (sender_user_id, sender_device_id) = (sender.user_id(), sender.device_id());
         let cache_key = format!("{sender_device_id}:{idempotency_key}");
         if let Ok(Some(cached)) = self.submission_cache.get(&cache_key).await
             && let Ok(outcome) = serde_json::from_slice::<SubmissionOutcome>(&cached)

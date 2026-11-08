@@ -198,8 +198,13 @@ impl AppBuilder {
 
         // Initialize Core Services
         let notifier = NotificationService::new(notification_repo, &config.notifications);
-        let key_service =
-            KeyService::new(pool.clone(), KeyRepository::new(), notifier.clone(), config.messaging.clone());
+        let key_service = KeyService::new(
+            pool.clone(),
+            KeyRepository::new(),
+            notifier.clone(),
+            config.messaging.max_pre_keys,
+            config.messaging.pre_key_refill_threshold,
+        );
         let auth_service = AuthService::new(
             config.auth.clone(),
             pool.clone(),

@@ -10,6 +10,11 @@ pub struct DeviceRecord {
 
 impl From<DeviceRecord> for crate::domain::device::Device {
     fn from(record: DeviceRecord) -> Self {
-        Self { id: record.id, user_id: record.user_id, name: record.name, is_primary: record.is_primary }
+        Self {
+            id: record.id,
+            user_id: record.user_id,
+            name: record.name,
+            role: crate::domain::device::DeviceRole::from_is_primary(record.is_primary),
+        }
     }
 }

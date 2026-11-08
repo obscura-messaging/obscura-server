@@ -1,6 +1,5 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::key_repo::KeyRepository;
-use crate::config::MessagingConfig;
 use crate::domain::keys::{
     OneTimePreKey, PreKeyBundle, PreKeyStatus, PreKeyUpload, SignedPreKey, check_pre_key_batch, excess_pre_keys,
 };
@@ -34,20 +33,27 @@ pub struct KeyService {
     pool: DbPool,
     repo: KeyRepository,
     notifier: NotificationService,
-    config: MessagingConfig,
+    max_pre_keys: NonZeroU32,
+    pre_key_refill_threshold: u32,
     metrics: Metrics,
 }
 
 impl KeyService {
     #[must_use]
-    pub fn new(pool: DbPool, repo: KeyRepository, notifier: NotificationService, config: MessagingConfig) -> Self {
-        Self { pool, repo, notifier, config, metrics: Metrics::new() }
+    pub fn new(
+        pool: DbPool,
+        repo: KeyRepository,
+        notifier: NotificationService,
+        max_pre_keys: NonZeroU32,
+        pre_key_refill_threshold: u32,
+    ) -> Self {
+        Self { pool, repo, notifier, max_pre_keys, pre_key_refill_threshold, metrics: Metrics::new() }
     }
 
     /// The most one-time pre-keys a device may hold or upload at once.
     #[must_use]
     pub(crate) const fn max_pre_keys(&self) -> NonZeroU32 {
-        self.config.max_pre_keys
+        self.max_pre_keys
     }
 
     /// Fetches one pre-key bundle for each of a user's devices, or for `device_id` only, consuming a
@@ -91,7 +97,7 @@ impl KeyService {
     pub async fn check_pre_key_status(&self, device_id: Uuid) -> Result<Option<PreKeyStatus>> {
         let mut conn = self.pool.acquire().await?;
         let count = self.repo.count_one_time_pre_keys(&mut conn, device_id).await?;
-        let status = PreKeyStatus::if_low(count, self.config.pre_key_refill_threshold);
+        let status = PreKeyStatus::if_low(count, self.pre_key_refill_threshold);
         if status.is_some() {
             self.metrics.prekey_low_total.add(1, &[]);
         }
@@ -106,7 +112,7 @@ impl KeyService {
     /// Returns `AppError::Database` if the database operation fails.
     #[tracing::instrument(skip(self, upload), fields(device.id = %device_id), err(level = "warn"))]
     pub(crate) async fn upload_keys(&self, device_id: Uuid, upload: PreKeyUpload) -> Result<()> {
-        check_pre_key_batch(self.config.max_pre_keys, upload.one_time_pre_keys.len())?;
+        check_pre_key_batch(self.max_pre_keys, upload.one_time_pre_keys.len())?;
 
         let mut tx = self.pool.begin().await?;
 
@@ -125,7 +131,7 @@ impl KeyService {
         }
 
         let current_count = self.repo.count_one_time_pre_keys(&mut tx, device_id).await?;
-        let excess = excess_pre_keys(self.config.max_pre_keys, current_count, upload.one_time_pre_keys.len());
+        let excess = excess_pre_keys(self.max_pre_keys, current_count, upload.one_time_pre_keys.len());
         if excess > 0 {
             self.repo.delete_oldest_one_time_pre_keys(&mut tx, device_id, excess).await?;
         }
@@ -150,7 +156,7 @@ impl KeyService {
         signed_pre_key: &SignedPreKey,
         one_time_pre_keys: &[OneTimePreKey],
     ) -> Result<()> {
-        check_pre_key_batch(self.config.max_pre_keys, one_time_pre_keys.len())?;
+        check_pre_key_batch(self.max_pre_keys, one_time_pre_keys.len())?;
         self.store_pre_keys(conn, device_id, signed_pre_key, one_time_pre_keys).await
     }
 

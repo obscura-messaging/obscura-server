@@ -54,7 +54,7 @@ pub struct DeviceResponse {
 
 impl From<crate::domain::device::Device> for DeviceResponse {
     fn from(d: crate::domain::device::Device) -> Self {
-        Self { device_id: d.id.to_string(), name: d.name, is_primary: d.is_primary }
+        Self { device_id: d.id.to_string(), name: d.name, is_primary: d.role.is_primary() }
     }
 }
 

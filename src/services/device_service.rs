@@ -6,6 +6,7 @@ use crate::domain::auth::AuthSession;
 use crate::domain::auth::Caller;
 use crate::domain::crypto::{PublicKey, generate_opaque_token, hash_opaque_token};
 use crate::domain::device::Device;
+use crate::domain::device::DeviceRole;
 use crate::domain::keys::check_pre_key_batch;
 use crate::domain::keys::{OneTimePreKey, SignedPreKey};
 use crate::domain::notification::DeviceEvent;
@@ -141,7 +142,7 @@ impl DeviceService {
         let user = self.user_repo.create(&mut tx, username, &password_hash, &keys.identity_key).await?;
         tracing::Span::current().record("user.id", tracing::field::display(user.id));
 
-        let session = self.provision_device(&mut tx, user.id, keys, true).await?;
+        let session = self.provision_device(&mut tx, user.id, keys, DeviceRole::Primary).await?;
         tx.commit().await?;
 
         tracing::info!("Account registered and primary device provisioned");
@@ -258,7 +259,7 @@ impl DeviceService {
             return Err(AppError::Forbidden(IDENTITY_KEY_MISMATCH.into()));
         }
 
-        let session = self.provision_device(&mut tx, user_id, device.keys, false).await?;
+        let session = self.provision_device(&mut tx, user_id, device.keys, DeviceRole::Linked).await?;
         tx.commit().await?;
 
         tracing::info!("Linked device provisioned successfully");
@@ -272,10 +273,10 @@ impl DeviceService {
         tx: &mut sqlx::PgConnection,
         user_id: Uuid,
         keys: NewDeviceKeys,
-        is_primary: bool,
+        role: DeviceRole,
     ) -> Result<AuthSession> {
         let created =
-            self.device_repo.create(&mut *tx, user_id, keys.name.as_deref(), keys.registration_id, is_primary).await?;
+            self.device_repo.create(&mut *tx, user_id, keys.name.as_deref(), keys.registration_id, role).await?;
         tracing::Span::current().record("device.id", tracing::field::display(created.id));
 
         self.key_service
@@ -346,7 +347,7 @@ impl DeviceService {
         let deleted = self.device_repo.delete_all_for_user(&mut tx, user_id).await?;
         self.link_session_repo.delete_all_for_user(&mut tx, user_id).await?;
         self.user_repo.set_identity_key(&mut tx, user_id, &keys.identity_key).await?;
-        let session = self.provision_device(&mut tx, user_id, keys, true).await?;
+        let session = self.provision_device(&mut tx, user_id, keys, DeviceRole::Primary).await?;
         tx.commit().await?;
 
         self.notifier.notify(&deleted, DeviceEvent::Disconnect).await;
