@@ -22,7 +22,10 @@ use obscura_server::{
     adapters,
     adapters::push::{PushError, PushProvider},
     api::app_router,
-    config::{AuthConfig, Config, NotificationConfig, PubSubConfig, RateLimitConfig, ServerConfig, StorageConfig},
+    config::{
+        AuthConfig, Config, MessagingConfig, NotificationConfig, PubSubConfig, RateLimitConfig, ServerConfig,
+        StorageConfig,
+    },
     proto::obscura::v1 as proto,
     services::notification_service::NotificationService,
 };
@@ -112,6 +115,11 @@ pub async fn ensure_storage_bucket(s3_client: &aws_sdk_s3::Client, bucket: &str)
     let _ = s3_client.create_bucket().bucket(bucket).send().await;
 }
 
+/// The Valkey server the tests run against.
+fn valkey_url() -> String {
+    std::env::var("OBSCURA_PUBSUB_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string())
+}
+
 pub fn get_test_config() -> Config {
     let database_url = std::env::var("OBSCURA_DATABASE_URL")
         .unwrap_or_else(|_| "postgres://user:password@localhost/signal_server".to_string());
@@ -140,10 +148,9 @@ pub fn get_test_config() -> Config {
             force_path_style: true,
             ..Default::default()
         },
-        pubsub: PubSubConfig {
-            url: std::env::var("OBSCURA_PUBSUB_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string()),
-            ..Default::default()
-        },
+        pubsub: PubSubConfig { url: valkey_url(), ..Default::default() },
+        // Long enough for any retry within a test, short enough not to pile up keys across runs.
+        messaging: MessagingConfig { idempotency_ttl_secs: 600, ..Default::default() },
         notifications: NotificationConfig {
             push_queue_key: format!("jobs:test:{run_id}"),
             channel_prefix: format!("test:{run_id}:"),
@@ -155,6 +162,39 @@ pub fn get_test_config() -> Config {
 
 pub fn generate_username(prefix: &str) -> String {
     format!("{prefix}_{}", &Uuid::new_v4().to_string()[..8])
+}
+
+/// Inserts a user with one device, without going through registration, and returns the device ID,
+/// which is also the user ID. For tests that need a device to exist but do not exercise the API.
+pub async fn insert_device(pool: &PgPool, username_prefix: &str) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
+        .bind(id)
+        .bind(generate_username(username_prefix))
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    id
+}
+
+pub async fn insert_push_token(pool: &PgPool, device_id: Uuid, token: &str) {
+    let mut conn = pool.acquire().await.unwrap();
+    adapters::database::push_token_repo::PushTokenRepository::new()
+        .upsert_token(&mut conn, device_id, token)
+        .await
+        .unwrap();
+}
+
+/// Inserts a device with the push token `token:{device_id}`, which `SharedMockPushProvider` counts.
+pub async fn insert_device_with_push_token(pool: &PgPool, username_prefix: &str) -> Uuid {
+    let id = insert_device(pool, username_prefix).await;
+    insert_push_token(pool, id, &format!("token:{id}")).await;
+    id
 }
 
 pub fn generate_signing_key() -> [u8; 32] {
@@ -307,6 +347,23 @@ pub struct TestApp {
     /// Keeps spawned workers alive: dropping a `JoinSet` aborts every task in it. Binding it to a
     /// local in `spawn_internal` would kill the workers when that function returns.
     _worker_tasks: Option<tokio::task::JoinSet<&'static str>>,
+}
+
+impl Drop for TestApp {
+    /// Deletes this run's push queue, which nothing else removes: jobs a test schedules but never sends
+    /// would otherwise stay in Valkey forever. Best effort, and it must not panic, because a failing test
+    /// drops its `TestApp` while unwinding.
+    ///
+    /// Connects to the real server, not `config.pubsub.url`: a test may route that through an in-process
+    /// proxy, which cannot respond while this blocking call holds the test's runtime thread.
+    fn drop(&mut self) {
+        if let Ok(client) = redis::Client::open(valkey_url())
+            && let Ok(mut conn) = client.get_connection_with_timeout(Duration::from_secs(1))
+        {
+            let _: redis::RedisResult<()> =
+                redis::cmd("DEL").arg(&self.config.notifications.push_queue_key).query(&mut conn);
+        }
+    }
 }
 
 impl TestApp {
@@ -595,6 +652,19 @@ impl TestApp {
         false
     }
 
+    /// Returns whether a push notification job is queued for the device.
+    pub(crate) async fn push_job_scheduled(&self, device_id: Uuid) -> bool {
+        let client = redis::Client::open(self.config.pubsub.url.clone()).unwrap();
+        let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+        let score: Option<f64> = redis::cmd("ZSCORE")
+            .arg(&self.config.notifications.push_queue_key)
+            .arg(device_id.to_string())
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        score.is_some()
+    }
+
     pub(crate) async fn assert_message_count(&self, device_id: Uuid, expected: i64) {
         let success = self
             .wait_until(
@@ -673,7 +743,12 @@ impl TestWsClient {
     }
 
     pub(crate) async fn send_ack(&mut self, message_id: Vec<u8>) {
-        let ack = proto::AckMessage { message_ids: vec![message_id] };
+        self.send_acks(vec![message_id]).await;
+    }
+
+    /// Sends one ACK frame carrying several message IDs. The server processes a session's ACKs in order.
+    pub(crate) async fn send_acks(&mut self, message_ids: Vec<Vec<u8>>) {
+        let ack = proto::AckMessage { message_ids };
         let frame = proto::WebSocketFrame { payload: Some(proto::web_socket_frame::Payload::Ack(ack)) };
         let mut buf = Vec::new();
         frame.encode(&mut buf).unwrap();

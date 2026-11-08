@@ -41,8 +41,8 @@ async fn test_refresh_token_flow() {
     let refresh_token_2 = json_refresh["refreshToken"].as_str().unwrap().to_string();
 
     // Assert rotation occurred
-    assert!(!user.token.is_empty());
-    assert!(!access_token_2.is_empty());
+    assert_ne!(user.token, "");
+    assert_ne!(access_token_2, "");
     assert_ne!(user.refresh_token, refresh_token_2, "Refresh token should rotate");
 
     // 3. Verify Old Refresh Token is Invalid (Rotation Check)
@@ -160,7 +160,7 @@ async fn test_request_id_propagation() {
 
     assert!(resp.headers().contains_key("x-request-id"));
     let generated_id = resp.headers().get("x-request-id").unwrap().to_str().unwrap();
-    assert!(!generated_id.is_empty());
+    assert_ne!(generated_id, "");
     // Should be a UUID (approx check)
     assert_eq!(generated_id.split('-').count(), 5);
 }
@@ -227,10 +227,42 @@ async fn test_login_requires_matching_device_id() {
     let resp_keys = app
         .client
         .get(format!("{}/v1/keys/{}", app.server_url, user.user_id))
-        .header("Authorization", format!("Bearer {}", device_token))
+        .header("Authorization", format!("Bearer {device_token}"))
         .send()
         .await
         .unwrap();
 
     assert_eq!(resp_keys.status(), StatusCode::OK, "Should be able to use token on /keys");
+}
+
+#[tokio::test]
+async fn test_rotated_refresh_token_gets_full_ttl() {
+    let app = common::TestApp::spawn().await;
+    let user = app.register_user(&common::generate_username("rotate")).await;
+
+    // Rotate twice, so the second refresh uses a token the server issued by rotation.
+    let mut refresh_token = user.refresh_token.clone();
+    for round in 1..=2 {
+        let resp = app
+            .client
+            .post(format!("{}/v1/session/refresh", app.server_url))
+            .json(&json!({ "refreshToken": refresh_token }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "refresh {round} should succeed");
+        let body: serde_json::Value = resp.json().await.unwrap();
+        refresh_token = body["refreshToken"].as_str().unwrap().to_string();
+    }
+
+    let expiries: Vec<time::OffsetDateTime> =
+        sqlx::query_scalar("SELECT expires_at FROM refresh_tokens WHERE device_id = $1")
+            .bind(user.device_id)
+            .fetch_all(&app.pool)
+            .await
+            .unwrap();
+    let ttl_days = app.config.auth.refresh_token_ttl_days;
+    let earliest_expected = time::OffsetDateTime::now_utc() + time::Duration::days(ttl_days - 1);
+    assert_eq!(expiries.len(), 1, "rotation replaces the old token");
+    assert!(expiries[0] > earliest_expected, "rotated token should expire about {ttl_days} days from now");
 }

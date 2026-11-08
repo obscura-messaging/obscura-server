@@ -450,7 +450,7 @@ wxOWCSTHCchvQGrMpJlCSygGPUKmT/nl464SFJsQcyZLhrwKKW8=\n\
     // ── Helpers ─────────────────────────────────────────────────────────
 
     /// Creates an `FcmPushProvider` whose HTTP traffic is routed to a local
-    /// mock server and whose token cache is pre-populated so no real OAuth2
+    /// mock server and whose token cache is pre-populated so no real `OAuth2`
     /// exchange is needed.
     fn mock_provider(fcm_base_url: &str) -> FcmPushProvider {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();

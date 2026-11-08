@@ -26,8 +26,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
+use tokio::sync::{Semaphore, mpsc};
 use tracing::Instrument;
-use uuid::Uuid;
 
 #[tokio::test]
 async fn test_scheduled_push_delivery() {
@@ -36,26 +36,8 @@ async fn test_scheduled_push_delivery() {
     config.notifications.worker_interval_secs = 1;
 
     let app = TestApp::spawn_with_workers(config).await;
-    let user_id = Uuid::new_v4();
 
-    {
-        let mut conn = app.pool.acquire().await.unwrap();
-        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
-            .bind(user_id)
-            .bind(format!("u_{}", &user_id.to_string()[..8]))
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
-            .bind(user_id)
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-        let token_repo = obscura_server::adapters::database::push_token_repo::PushTokenRepository::new();
-        token_repo.upsert_token(&mut conn, user_id, &format!("token:{user_id}")).await.unwrap();
-    }
+    let user_id = common::insert_device_with_push_token(&app.pool, "u").await;
 
     // 1. Notify MessageReceived
     app.notifier.notify(&[user_id], obscura_server::domain::notification::DeviceEvent::MessageReceived).await;
@@ -94,34 +76,17 @@ async fn test_push_cancellation_on_ack() {
     app.send_message(&sender.token, user.device_id, b"msg").await;
     let env = ws.receive_envelope().await.expect("Envelope missing");
 
+    // Sending schedules the fallback push before it responds, so the job must exist before the ACK.
+    // Without this, the test would also pass if no push had been scheduled at all.
+    assert!(app.push_job_scheduled(user.device_id).await, "sending should schedule a fallback push");
+
     // 3. Send an ACK
     ws.send_ack(env.id).await;
 
     // 4. Wait and verify it's removed from Redis
-    let success = app
-        .wait_until(
-            || {
-                let config = app.config.clone();
-                let pubsub_url = config.pubsub.url.clone();
-                let queue_key = config.notifications.push_queue_key;
-                let device_id = user.device_id;
-                async move {
-                    let client = redis::Client::open(pubsub_url).unwrap();
-                    let mut conn = client.get_multiplexed_async_connection().await.unwrap();
-                    let score: Option<f64> = redis::cmd("ZSCORE")
-                        .arg(&queue_key)
-                        .arg(device_id.to_string())
-                        .query_async(&mut conn)
-                        .await
-                        .unwrap();
-                    score.is_none()
-                }
-            },
-            Duration::from_secs(5),
-        )
-        .await;
-
-    assert!(success, "Push job was not removed from Redis on ACK");
+    let removed =
+        app.wait_until(|| async { !app.push_job_scheduled(user.device_id).await }, Duration::from_secs(5)).await;
+    assert!(removed, "Push job was not removed from Redis on ACK");
 }
 
 #[tokio::test]
@@ -175,26 +140,8 @@ async fn test_delivery_exactly_once_under_competition() {
     config.notifications.worker_interval_secs = 1;
 
     let app = TestApp::spawn_with_config(config).await;
-    let user_id = Uuid::new_v4();
 
-    {
-        let mut conn = app.pool.acquire().await.unwrap();
-        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
-            .bind(user_id)
-            .bind(format!("u_comp_{}", &user_id.to_string()[..8]))
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
-            .bind(user_id)
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-        let token_repo = obscura_server::adapters::database::push_token_repo::PushTokenRepository::new();
-        token_repo.upsert_token(&mut conn, user_id, &format!("token:{user_id}")).await.unwrap();
-    }
+    let user_id = common::insert_device_with_push_token(&app.pool, "u_comp").await;
 
     // Access internal components via Resources/Config
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -251,81 +198,112 @@ async fn test_push_coalescing() {
     config.notifications.worker_interval_secs = 1;
 
     let app = TestApp::spawn_with_workers(config).await;
-    let user_id = Uuid::new_v4();
 
-    {
-        let mut conn = app.pool.acquire().await.unwrap();
-        sqlx::query("INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')")
-            .bind(user_id)
-            .bind(format!("u_coal_{}", &user_id.to_string()[..8]))
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-        sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
-            .bind(user_id)
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-        let token_repo = obscura_server::adapters::database::push_token_repo::PushTokenRepository::new();
-        token_repo.upsert_token(&mut conn, user_id, &format!("token:{user_id}")).await.unwrap();
-    }
+    let user_id = common::insert_device_with_push_token(&app.pool, "u_coal").await;
 
     for _ in 0..5 {
         app.notifier.notify(&[user_id], obscura_server::domain::notification::DeviceEvent::MessageReceived).await;
     }
 
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    let sent =
+        app.wait_until(|| async { notification_counts().get(&user_id).is_some() }, Duration::from_secs(10)).await;
+    assert!(sent, "the coalesced push was never sent");
+
+    // The worker removes a job only after sending its push, so once the job is gone, no further push can
+    // come from it. A job kept after sending would be sent again when its lease expired.
+    let removed = app.wait_until(|| async { !app.push_job_scheduled(user_id).await }, Duration::from_secs(10)).await;
+    assert!(removed, "the push job should be removed once its push is sent");
 
     let count = notification_counts().get(&user_id).map_or(0, |c| *c);
     assert_eq!(count, 1, "Expected 1 coalesced notification, got {count}");
 }
 
-static IN_FLIGHT_COUNT: AtomicUsize = AtomicUsize::new(0);
-static PEAK_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+/// Leasing is what stops competing workers from sending the same push twice: of many concurrent leases
+/// for one due job, exactly one may get it.
+#[tokio::test]
+async fn test_concurrent_leases_are_exclusive() {
+    let app = TestApp::spawn().await;
+    let repo = Arc::new(NotificationRepository::new(app.resources.pubsub.clone(), &app.config.notifications));
+    let device_id = uuid::Uuid::new_v4();
+    repo.push_jobs(&[device_id], 0).await.unwrap();
 
-#[derive(Debug, Default)]
-struct ConcurrencyMockProvider;
+    let leases = futures::future::join_all((0..10).map(|_| {
+        let repo = Arc::clone(&repo);
+        async move { repo.lease_due_jobs(10, 30).await.unwrap() }
+    }))
+    .await;
+
+    let winners = leases.iter().filter(|leased| !leased.is_empty()).count();
+    assert_eq!(winners, 1, "exactly one concurrent lease should get the job: {leases:?}");
+}
+
+/// Holds every push until the test opens the gate, and records how many are in flight at once.
+#[derive(Debug)]
+struct GatedPushProvider {
+    gate: Semaphore,
+    in_flight: AtomicUsize,
+    peak: AtomicUsize,
+    sent: AtomicUsize,
+}
+
+impl GatedPushProvider {
+    fn new() -> Self {
+        Self {
+            gate: Semaphore::new(0),
+            in_flight: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+            sent: AtomicUsize::new(0),
+        }
+    }
+}
 
 #[async_trait]
-impl PushProvider for ConcurrencyMockProvider {
+impl PushProvider for GatedPushProvider {
     async fn send_push(&self, _token: &str) -> Result<(), PushError> {
-        let current = IN_FLIGHT_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
-
-        loop {
-            let prev = PEAK_IN_FLIGHT.load(Ordering::SeqCst);
-            if current <= prev
-                || PEAK_IN_FLIGHT.compare_exchange(prev, current, Ordering::SeqCst, Ordering::SeqCst).is_ok()
-            {
-                break;
-            }
-        }
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        IN_FLIGHT_COUNT.fetch_sub(1, Ordering::SeqCst);
+        let current = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(current, Ordering::SeqCst);
+        self.gate.acquire().await.expect("gate closed").forget();
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        self.sent.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
+}
+
+/// Runs one pass of the worker. A pass that waits for a permit instead of returning is a failure.
+async fn process_due_jobs(worker: &PushNotificationWorker, invalid_token_tx: &mpsc::Sender<String>) {
+    tokio::time::timeout(Duration::from_secs(5), worker.process_due_jobs(invalid_token_tx.clone()))
+        .await
+        .expect("process_due_jobs blocked waiting for a permit")
+        .expect("process_due_jobs failed");
+}
+
+/// Counts queued jobs scored in the future. Every job here is scheduled with no delay, so these are leased.
+async fn count_leased_jobs(app: &TestApp) -> i64 {
+    let client = redis::Client::open(app.config.pubsub.url.clone()).unwrap();
+    let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    redis::cmd("ZCOUNT")
+        .arg(&app.config.notifications.push_queue_key)
+        .arg(format!("({now}"))
+        .arg("+inf")
+        .query_async(&mut conn)
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
 async fn test_notification_worker_concurrency_limit() {
     common::setup_tracing();
-    PEAK_IN_FLIGHT.store(0, Ordering::SeqCst);
 
     let mut config = common::get_test_config();
     let concurrency = 2;
+    let jobs = 10;
     config.notifications.worker_concurrency = concurrency;
-    // Use a unique queue key for this test to avoid competition with the default TestApp worker
-    config.notifications.push_queue_key = format!("{}-concurrency", config.notifications.push_queue_key);
 
     let app = TestApp::spawn_with_config(config).await;
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let notification_repo =
         Arc::new(NotificationRepository::new(app.resources.pubsub.clone(), &app.config.notifications));
-
     let notification_service = obscura_server::services::notification_service::NotificationService::new(
         notification_repo.clone(),
         &app.config.notifications,
@@ -334,48 +312,45 @@ async fn test_notification_worker_concurrency_limit() {
         app.pool.clone(),
         obscura_server::adapters::database::push_token_repo::PushTokenRepository::new(),
     );
+    let provider = Arc::new(GatedPushProvider::new());
     let worker = PushNotificationWorker::new(
         notification_service,
         push_token_service,
-        Arc::new(ConcurrencyMockProvider),
+        provider.clone(),
         &app.config.notifications,
     );
+    let (invalid_token_tx, _invalid_token_rx) = mpsc::channel(16);
 
-    tokio::spawn(worker.run(shutdown_rx.clone()));
-
-    for i in 0..10 {
-        let user_id = Uuid::new_v4();
-        {
-            let mut conn = app.pool.acquire().await.unwrap();
-            let username = common::generate_username(&format!("conc_{i}"));
-            sqlx::query(
-                "INSERT INTO users (id, username, password_hash, identity_key) VALUES ($1, $2, 'hash', '\\x05')",
-            )
-            .bind(user_id)
-            .bind(username)
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-
-            sqlx::query("INSERT INTO devices (id, user_id, registration_id) VALUES ($1, $1, 1)")
-                .bind(user_id)
-                .execute(&mut *conn)
-                .await
-                .unwrap();
-
-            let token_repo = obscura_server::adapters::database::push_token_repo::PushTokenRepository::new();
-            token_repo.upsert_token(&mut conn, user_id, &format!("token:{user_id}")).await.unwrap();
-        }
+    for i in 0..jobs {
+        let user_id = common::insert_device_with_push_token(&app.pool, &format!("conc_{i}")).await;
         let _: anyhow::Result<()> = notification_repo.push_jobs(&[user_id], 0).await;
     }
 
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    // Driven directly rather than through `run`, so no timer decides when jobs are picked up.
+    // The worker leases jobs before dispatching them, so the lease count after a pass is exact.
+    process_due_jobs(&worker, &invalid_token_tx).await;
+    assert_eq!(count_leased_jobs(&app).await, 2, "a pass should lease only as many jobs as there are permits");
+    let both_started = app
+        .wait_until(|| async { provider.in_flight.load(Ordering::SeqCst) == concurrency }, Duration::from_secs(5))
+        .await;
+    assert!(both_started, "both permitted pushes should start");
 
-    let peak = PEAK_IN_FLIGHT.load(Ordering::SeqCst);
-    assert!(peak > 0);
-    assert!(peak <= concurrency, "Peak concurrency {peak} exceeded limit {concurrency}");
+    // Both permits are held by pushes stuck at the gate, so another pass must lease nothing.
+    process_due_jobs(&worker, &invalid_token_tx).await;
+    assert_eq!(count_leased_jobs(&app).await, 2, "a pass with no free permits should lease nothing");
 
-    let _ = shutdown_tx.send(true);
+    provider.gate.add_permits(jobs);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while provider.sent.load(Ordering::SeqCst) < jobs {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "only {} of {jobs} pushes were sent",
+            provider.sent.load(Ordering::SeqCst)
+        );
+        process_due_jobs(&worker, &invalid_token_tx).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(provider.peak.load(Ordering::SeqCst), concurrency, "pushes should run exactly {concurrency} at a time");
 }
 
 #[tokio::test]

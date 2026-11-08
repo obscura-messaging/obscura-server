@@ -65,8 +65,8 @@ async fn test_sub_batching_delivers_all_messages() {
     );
 
     // Verify content integrity — every sent message must arrive.
-    let expected_set: HashSet<&[u8]> = expected_contents.iter().map(|v| v.as_slice()).collect();
-    let received_set: HashSet<&[u8]> = received_contents.iter().map(|v| v.as_slice()).collect();
+    let expected_set: HashSet<&[u8]> = expected_contents.iter().map(Vec::as_slice).collect();
+    let received_set: HashSet<&[u8]> = received_contents.iter().map(Vec::as_slice).collect();
     assert_eq!(expected_set, received_set, "Message contents do not match");
 }
 
@@ -110,10 +110,10 @@ async fn test_mixed_size_messages_all_delivered() {
     let user_b = app.register_user(&common::generate_username("bob")).await;
 
     let mut expected_contents: Vec<Vec<u8>> = Vec::new();
-    for i in 0..15 {
+    for i in 0u8..15 {
         let content = if i % 3 == 0 {
             // ~3 KiB — exceeds max_batch_bytes on its own
-            vec![i as u8; 3000]
+            vec![i; 3000]
         } else {
             // Small message — multiple should fit in one batch
             format!("small {i}").into_bytes()
@@ -144,8 +144,8 @@ async fn test_mixed_size_messages_all_delivered() {
         received_contents.len()
     );
 
-    let expected_set: HashSet<&[u8]> = expected_contents.iter().map(|v| v.as_slice()).collect();
-    let received_set: HashSet<&[u8]> = received_contents.iter().map(|v| v.as_slice()).collect();
+    let expected_set: HashSet<&[u8]> = expected_contents.iter().map(Vec::as_slice).collect();
+    let received_set: HashSet<&[u8]> = received_contents.iter().map(Vec::as_slice).collect();
     assert_eq!(expected_set, received_set, "Message contents do not match");
 }
 
@@ -184,7 +184,7 @@ async fn test_batch_delivery_default_config() {
 
     assert_eq!(received.len(), message_count, "Expected {message_count} messages, got {}", received.len());
 
-    let expected_set: HashSet<&[u8]> = expected.iter().map(|v| v.as_slice()).collect();
-    let received_set: HashSet<&[u8]> = received.iter().map(|v| v.as_slice()).collect();
+    let expected_set: HashSet<&[u8]> = expected.iter().map(Vec::as_slice).collect();
+    let received_set: HashSet<&[u8]> = received.iter().map(Vec::as_slice).collect();
     assert_eq!(expected_set, received_set, "Message contents do not match");
 }

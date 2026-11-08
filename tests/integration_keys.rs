@@ -357,3 +357,39 @@ async fn test_fetch_one_device_bundle_consumes_only_that_device() {
     let resp = fetch(other.user_id, linked.device_id, other.token.clone()).await.unwrap();
     assert_eq!(resp.status(), 404, "a device of another user is not found");
 }
+
+#[tokio::test]
+async fn test_pre_key_batch_size_limit() {
+    let mut config = common::get_test_config();
+    config.messaging.max_pre_keys = 50;
+    let app = TestApp::spawn_with_config(config).await;
+    let user = app.register_user_with_keys(&common::generate_username("batch"), 123, 1).await;
+
+    let upload = |count: i32| {
+        let keys: Vec<_> =
+            (100..100 + count).map(|i| json!({ "keyId": i, "publicKey": STANDARD.encode([0x05; 33]) })).collect();
+        let (spk_pub, spk_sig) = common::generate_signed_pre_key(&user.identity_key);
+        let payload = json!({
+            "signedPreKey": { "keyId": 2, "publicKey": STANDARD.encode(&spk_pub), "signature": STANDARD.encode(&spk_sig) },
+            "oneTimePreKeys": keys
+        });
+        app.client
+            .post(format!("{}/v1/keys", app.server_url))
+            .header("Authorization", format!("Bearer {}", user.token))
+            .json(&payload)
+            .send()
+    };
+
+    let resp = upload(51).await.unwrap();
+    assert_eq!(resp.status(), 400, "a batch over max_pre_keys is rejected");
+
+    let resp = upload(50).await.unwrap();
+    assert_eq!(resp.status(), 204, "a batch of exactly max_pre_keys is accepted");
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_time_pre_keys WHERE device_id = $1")
+        .bind(user.device_id)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 50);
+}

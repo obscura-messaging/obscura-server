@@ -89,8 +89,8 @@ async fn test_complete_device_set_is_accepted() {
 
     let response = send(&app, &alice.token, &[(bob1.user_id, &[bob1.device_id, bob2.device_id])]).await;
 
-    assert!(response.invalid_device_ids.is_empty());
-    assert!(response.device_mismatches.is_empty());
+    assert!(response.invalid_device_ids.is_empty(), "{:?}", response.invalid_device_ids);
+    assert!(response.device_mismatches.is_empty(), "{:?}", response.device_mismatches);
     app.assert_message_count(bob1.device_id, 1).await;
     app.assert_message_count(bob2.device_id, 1).await;
 }
@@ -106,7 +106,7 @@ async fn test_missing_device_rejects_all_of_that_users_submissions() {
 
     let response = send(&app, &alice.token, &[(bob1.user_id, &[bob1.device_id])]).await;
 
-    assert!(response.invalid_device_ids.is_empty());
+    assert!(response.invalid_device_ids.is_empty(), "{:?}", response.invalid_device_ids);
     assert_eq!(response.device_mismatches, vec![mismatch(bob1.user_id, &sorted(vec![bob2.device_id, bob3.device_id]))]);
     app.assert_message_count(bob1.device_id, 0).await;
 }
@@ -121,14 +121,14 @@ async fn test_self_sync_excludes_the_sending_device() {
 
     let response =
         send(&app, &alice1.token, &[(alice1.user_id, &[alice2.device_id]), (bob.user_id, &[bob.device_id])]).await;
-    assert!(response.invalid_device_ids.is_empty());
-    assert!(response.device_mismatches.is_empty());
+    assert!(response.invalid_device_ids.is_empty(), "{:?}", response.invalid_device_ids);
+    assert!(response.device_mismatches.is_empty(), "{:?}", response.device_mismatches);
     app.assert_message_count(alice2.device_id, 1).await;
     app.assert_message_count(bob.device_id, 1).await;
 
     let response = send(&app, &alice2.token, &[(alice1.user_id, &[alice1.device_id])]).await;
-    assert!(response.invalid_device_ids.is_empty());
-    assert!(response.device_mismatches.is_empty());
+    assert!(response.invalid_device_ids.is_empty(), "{:?}", response.invalid_device_ids);
+    assert!(response.device_mismatches.is_empty(), "{:?}", response.device_mismatches);
     app.assert_message_count(alice1.device_id, 1).await;
 
     // Targeting the sending device itself is a structural error (400 Bad Request).
@@ -163,7 +163,7 @@ async fn test_mixed_batch_rejects_only_the_incomplete_user() {
     )
     .await;
 
-    assert!(response.invalid_device_ids.is_empty());
+    assert!(response.invalid_device_ids.is_empty(), "{:?}", response.invalid_device_ids);
     assert_eq!(response.device_mismatches, vec![mismatch(bob1.user_id, &[bob1.device_id])]);
     app.assert_message_count(bob2.device_id, 0).await;
     app.assert_message_count(carol1.device_id, 1).await;
@@ -180,7 +180,7 @@ async fn test_unknown_device_fails_individually() {
     let response = send(&app, &alice.token, &[(bob.user_id, &[bob.device_id, unknown_device])]).await;
 
     assert_eq!(response.invalid_device_ids, vec![unknown_device.as_bytes().to_vec()]);
-    assert!(response.device_mismatches.is_empty());
+    assert!(response.device_mismatches.is_empty(), "{:?}", response.device_mismatches);
     app.assert_message_count(bob.device_id, 1).await;
 }
 
@@ -242,7 +242,7 @@ async fn test_device_added_during_send_is_not_silently_skipped() {
 
     let new_device = Uuid::parse_str(registering.await.unwrap()["deviceId"].as_str().unwrap()).unwrap();
     let response = proto::SendMessageResponse::decode(sending.await.unwrap()).unwrap();
-    assert!(response.invalid_device_ids.is_empty());
+    assert!(response.invalid_device_ids.is_empty(), "{:?}", response.invalid_device_ids);
     assert_eq!(response.device_mismatches, vec![mismatch(bob.user_id, &[new_device])]);
     app.assert_message_count(bob.device_id, 0).await;
 }
@@ -259,10 +259,10 @@ async fn test_concurrent_sends_to_the_same_recipient_do_not_block_each_other() {
     let mut holder = app.pool.begin().await.unwrap();
     let holder_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *holder).await.unwrap();
     sqlx::query(
-        r#"
+        r"
         INSERT INTO messages (sender_user_id, sender_device_id, device_id, idempotency_key, content, expires_at)
         VALUES ($1, $2, $3, $4, 'held', NOW() + INTERVAL '1 day')
-        "#,
+        ",
     )
     .bind(alice.user_id)
     .bind(alice.device_id)
@@ -285,14 +285,14 @@ async fn test_concurrent_sends_to_the_same_recipient_do_not_block_each_other() {
         tokio::time::timeout(Duration::from_secs(5), send(&app, &carol.token, &[(bob.user_id, &[bob.device_id])]))
             .await
             .expect("a send must not wait for another send to the same recipient");
-    assert!(response.invalid_device_ids.is_empty());
-    assert!(response.device_mismatches.is_empty());
+    assert!(response.invalid_device_ids.is_empty(), "{:?}", response.invalid_device_ids);
+    assert!(response.device_mismatches.is_empty(), "{:?}", response.device_mismatches);
     app.assert_message_count(bob.device_id, 1).await;
 
     holder.rollback().await.unwrap();
     let response = proto::SendMessageResponse::decode(held_send.await.unwrap()).unwrap();
-    assert!(response.invalid_device_ids.is_empty());
-    assert!(response.device_mismatches.is_empty());
+    assert!(response.invalid_device_ids.is_empty(), "{:?}", response.invalid_device_ids);
+    assert!(response.device_mismatches.is_empty(), "{:?}", response.device_mismatches);
     app.assert_message_count(bob.device_id, 2).await;
 }
 
@@ -320,8 +320,8 @@ async fn test_idempotency_key_reuse_returns_the_cached_mismatch() {
 
     let retry = send_raw(&app.client, &app.server_url, &alice.token, Uuid::new_v4(), complete).await;
     let retry = proto::SendMessageResponse::decode(retry).unwrap();
-    assert!(retry.invalid_device_ids.is_empty());
-    assert!(retry.device_mismatches.is_empty());
+    assert!(retry.invalid_device_ids.is_empty(), "{:?}", retry.invalid_device_ids);
+    assert!(retry.device_mismatches.is_empty(), "{:?}", retry.device_mismatches);
     app.assert_message_count(bob1.device_id, 1).await;
     app.assert_message_count(bob2.device_id, 1).await;
 }
@@ -335,7 +335,7 @@ async fn test_a_listed_recipient_with_no_targets_is_checked() {
 
     let response = send(&app, &alice.token, &[(bob.user_id, &[])]).await;
 
-    assert!(response.invalid_device_ids.is_empty());
+    assert!(response.invalid_device_ids.is_empty(), "{:?}", response.invalid_device_ids);
     assert_eq!(response.device_mismatches, vec![mismatch(bob.user_id, &sorted(vec![bob.device_id, bob2.device_id]))]);
 }
 

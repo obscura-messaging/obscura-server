@@ -124,8 +124,11 @@ async fn test_body_size_cap() {
     let primary = app.register_user(&common::generate_username("ls_size")).await;
     let id = app.create_link_session(&primary.username).await;
 
-    assert_eq!(app.approve_link_session(&primary.token, &id, &[7; 64 * 1024 + 1]).await, StatusCode::PAYLOAD_TOO_LARGE);
-    assert_eq!(app.approve_link_session(&primary.token, &id, &[7; 64 * 1024]).await, StatusCode::NO_CONTENT);
+    assert_eq!(
+        app.approve_link_session(&primary.token, &id, &vec![7; 64 * 1024 + 1]).await,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(app.approve_link_session(&primary.token, &id, &vec![7; 64 * 1024]).await, StatusCode::NO_CONTENT);
     assert_eq!(get(&app, &id).await.1.len(), 64 * 1024);
 }
 

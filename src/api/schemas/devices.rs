@@ -156,4 +156,19 @@ mod tests {
         let result = NewDeviceKeys::try_from(req);
         assert_eq!(result.expect_err("should fail for bad signature"), "Invalid signature");
     }
+
+    #[test]
+    fn test_device_name_limit_is_100_characters() {
+        // Two-byte characters, so a byte-length check would wrongly reject the 100-character name.
+        let mut req = mock_device_request(vec![]);
+        req.name = Some("é".repeat(100));
+        assert!(NewDeviceKeys::try_from(req).is_ok(), "a 100-character name is allowed");
+
+        let mut req = mock_device_request(vec![]);
+        req.name = Some("é".repeat(101));
+        assert_eq!(
+            NewDeviceKeys::try_from(req).expect_err("a 101-character name is rejected"),
+            "Device name must not exceed 100 characters"
+        );
+    }
 }
