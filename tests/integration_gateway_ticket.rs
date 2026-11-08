@@ -1,4 +1,5 @@
 #![allow(
+    // For helper functions: clippy.toml allows unwrap only inside #[test] functions.
     clippy::unwrap_used,
     clippy::panic,
     clippy::todo,

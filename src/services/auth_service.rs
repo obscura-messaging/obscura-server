@@ -198,6 +198,8 @@ impl AuthService {
     }
 
     fn issue_access_token(&self, user_id: Uuid, device_id: Uuid) -> Result<(String, i64)> {
+        // JWT times are seconds since the epoch (RFC 7519), so the clock is read that way here rather than
+        // as the `OffsetDateTime` used elsewhere.
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0)).as_secs();
         let claims = Claims::expiring(user_id, device_id, now, self.config.access_token_ttl_secs.get())
             .ok_or(AppError::Internal)?;

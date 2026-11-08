@@ -13,7 +13,7 @@ const REFRESH_MARGIN_SECS: u64 = 300;
 /// Lifetime of the signed assertion exchanged for an access token. Google accepts at most an hour.
 const ASSERTION_TTL_SECS: u64 = 3600;
 
-/// Seconds since the UNIX epoch.
+/// Seconds since the UNIX epoch, the unit of JWT times and of Google's `expires_in`.
 fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
 }
@@ -42,7 +42,7 @@ impl std::fmt::Debug for ServiceAccountKey {
 
 /// JWT claims for the Google `OAuth2` token exchange.
 #[derive(Debug, Serialize)]
-struct Claims {
+struct AssertionClaims {
     iss: String,
     scope: String,
     aud: String,
@@ -50,9 +50,9 @@ struct Claims {
     exp: u64,
 }
 
-impl Claims {
+impl AssertionClaims {
     /// The assertion a service account signs at `now` to request an access token from `audience`.
-    fn assertion(client_email: &str, audience: &str, now: u64) -> Self {
+    fn new(client_email: &str, audience: &str, now: u64) -> Self {
         Self {
             iss: client_email.to_string(),
             scope: FCM_SCOPE.to_string(),
@@ -343,7 +343,7 @@ impl FcmPushProvider {
     /// Performs the JWT bearer assertion flow to obtain a new access token.
     #[tracing::instrument(level = "debug", skip(self), err)]
     async fn fetch_access_token(&self, now: u64) -> Result<CachedToken, PushError> {
-        let claims = Claims::assertion(&self.client_email, &self.token_endpoint, now);
+        let claims = AssertionClaims::new(&self.client_email, &self.token_endpoint, now);
 
         let header = Header::new(Algorithm::RS256);
         let assertion = jsonwebtoken::encode(&header, &claims, &self.encoding_key)
@@ -543,7 +543,7 @@ wxOWCSTHCchvQGrMpJlCSygGPUKmT/nl464SFJsQcyZLhrwKKW8=\n\
 
     #[test]
     fn assertion_is_valid_for_its_ttl() {
-        let claims = Claims::assertion("sa@example.com", "https://token.example", 1_000);
+        let claims = AssertionClaims::new("sa@example.com", "https://token.example", 1_000);
         assert_eq!((claims.iat, claims.exp), (1_000, 1_000 + ASSERTION_TTL_SECS));
         assert_eq!((claims.iss.as_str(), claims.aud.as_str()), ("sa@example.com", "https://token.example"));
         assert_eq!(claims.scope, FCM_SCOPE);

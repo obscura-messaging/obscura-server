@@ -16,6 +16,10 @@ pub enum ConfigError {
     PartialFcm { missing: &'static str },
 }
 
+// Integer types follow what a value is used for: `u32` for limits passed to SQL (each fits the `i64` that
+// Postgres takes), `usize` for sizes of in-memory buffers and channels, and `u64` for seconds. A limit is
+// `NonZero` when 0 would crash the server or silently disable a feature.
+
 // Build non-zero defaults. Only called with literals.
 const fn non_zero_u32(n: u32) -> NonZeroU32 {
     NonZeroU32::new(n).expect("config defaults are non-zero")
@@ -27,6 +31,13 @@ const fn non_zero_u64(n: u64) -> NonZeroU64 {
 
 const fn non_zero_usize(n: usize) -> NonZeroUsize {
     NonZeroUsize::new(n).expect("config defaults are non-zero")
+}
+
+/// Parses a ratio from 0.0 to 1.0. The trace sampler silently clamps anything outside that range, so a
+/// percentage such as `10` would sample every trace instead of a tenth of them.
+fn parse_ratio(value: &str) -> Result<f64, String> {
+    let ratio: f64 = value.parse().map_err(|e| format!("{e}"))?;
+    if (0.0..=1.0).contains(&ratio) { Ok(ratio) } else { Err(format!("{ratio} is not between 0.0 and 1.0")) }
 }
 
 #[derive(Clone, Debug, Parser)]
@@ -247,7 +258,8 @@ pub struct TelemetryConfig {
     #[arg(
         long = "telemetry-trace-sampling-ratio",
         env = "OBSCURA_TELEMETRY_TRACE_SAMPLING_RATIO",
-        default_value_t = TelemetryConfig::default().trace_sampling_ratio
+        default_value_t = TelemetryConfig::default().trace_sampling_ratio,
+        value_parser = parse_ratio
     )]
     pub trace_sampling_ratio: f64,
 
@@ -896,6 +908,20 @@ mod tests {
     }
 
     #[test]
+    fn test_sampling_ratio_must_be_between_zero_and_one() {
+        let parse = |value: &str| {
+            Config::try_parse_from(["obscura-server", "--telemetry-trace-sampling-ratio", value])
+                .map(|config| config.telemetry.trace_sampling_ratio)
+        };
+        assert_eq!(parse("0").unwrap(), 0.0);
+        assert_eq!(parse("0.25").unwrap(), 0.25);
+        assert_eq!(parse("1").unwrap(), 1.0);
+        for value in ["10", "1.01", "-0.1", "NaN", "abc"] {
+            assert!(parse(value).is_err(), "a sampling ratio of {value} should not parse");
+        }
+    }
+
+    #[test]
     fn test_inverted_attachment_sizes_are_rejected() {
         let mut config = Config::default();
         config.attachment.min_size_bytes = 11;
@@ -937,6 +963,7 @@ mod tests {
     #[test]
     #[allow(clippy::panic)]
     fn test_docs_up_to_date() {
+        const AT_LEAST_ONE: &str = "At least 1.";
         let docs = std::fs::read_to_string("docs/CONFIGURATION.md").expect("Could not read CONFIGURATION.md");
         let cmd = Config::command();
 
@@ -978,7 +1005,7 @@ mod tests {
                 // Extract the default value from the markdown table row
                 // Pattern: | --flag | ENV_VAR | Default | Description |
                 let row_pattern =
-                    format!(r"\| `--{}` \| `{}` \| ([^|]+) \|", regex::escape(long), regex::escape(&env_name));
+                    format!(r"\| `--{}` \| `{}` \| ([^|]+) \| (.*) \|", regex::escape(long), regex::escape(&env_name));
                 let re = regex::Regex::new(&row_pattern).expect("Invalid regex pattern");
 
                 if let Some(caps) = re.captures(&docs) {
@@ -986,6 +1013,19 @@ mod tests {
                     assert_eq!(
                         actual_default, expected_default,
                         "Default value mismatch for flag --{long}. Expected '{expected_default}', found '{actual_default}' in docs"
+                    );
+
+                    // An integer option whose type rejects 0 must say so, and only those may.
+                    let description = caps.get(2).expect("Missing capture group").as_str();
+                    let integer = expected_default.parse::<i64>().is_ok();
+                    let rejects_zero =
+                        integer && Config::try_parse_from(["obscura-server", &format!("--{long}"), "0"]).is_err();
+                    assert_eq!(
+                        description.contains(AT_LEAST_ONE),
+                        rejects_zero,
+                        "--{long} {} 0, so its description must {}contain \"{AT_LEAST_ONE}\"",
+                        if rejects_zero { "rejects" } else { "accepts" },
+                        if rejects_zero { "" } else { "not " },
                     );
                 } else {
                     panic!(

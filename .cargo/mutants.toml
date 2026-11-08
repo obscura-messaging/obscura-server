@@ -1,0 +1,18 @@
+# cargo-mutants configuration, read by `just mutants` (scripts/mutants.sh) and plain `cargo mutants`.
+#
+# Excluded here: code whose behavior is observable only to a person or an external system, so a
+# surviving mutant says nothing about the test suite. Everything else that survives is worth a look.
+
+exclude_globs = [
+    # Process entry point: boot, listeners and shutdown orchestration. Covered by running the binary.
+    "src/main.rs",
+    # Log, trace and metric export. Its output goes to the collector, which tests do not inspect.
+    "src/telemetry.rs",
+]
+
+exclude_re = [
+    # Process-level wiring: OS signals and the panic hook.
+    "replace (setup_panic_hook|shutdown_signal|spawn_signal_handler) with \\(\\)",
+    # Hand-written Debug impls only shape log output.
+    "impl std::fmt::Debug for",
+]

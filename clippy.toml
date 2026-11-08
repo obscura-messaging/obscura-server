@@ -1,2 +1,3 @@
-# Test code may unwrap: a panic is how a test reports failure.
+# Test code may unwrap: a panic is how a test reports failure. This covers #[test] functions only;
+# test helper functions outside them (such as in tests/common.rs) allow `unwrap_used` themselves.
 allow-unwrap-in-tests = true

@@ -22,6 +22,8 @@ use uuid::Uuid;
 
 const INVALID_LINK_SESSION: &str = "Invalid link session";
 const IDENTITY_KEY_MISMATCH: &str = "Identity key does not match the account identity";
+// Fixed, unlike the limits in `Config`, because neither depends on the deployment: the TTL is how long a
+// person has to finish linking on the new device, and the body is one sealed provisioning message.
 const LINK_SESSION_TTL: Duration = Duration::from_secs(600);
 const MAX_LINK_SESSION_BODY_BYTES: usize = 64 * 1024;
 
@@ -249,7 +251,7 @@ impl DeviceService {
         }
 
         let device_count = self.device_repo.count_by_user(&mut tx, user_id).await?;
-        if device_count >= i64::from(self.max_devices_per_user.get()) {
+        if device_count >= self.max_devices_per_user.get() {
             return Err(AppError::Forbidden(format!(
                 "Device limit reached. Maximum allowed is {}.",
                 self.max_devices_per_user

@@ -50,9 +50,8 @@ pub struct PreKeyStatus {
 impl PreKeyStatus {
     /// The status of a device holding `count` one-time pre-keys, or `None` if it is not below `threshold`.
     #[must_use]
-    pub fn if_low(count: i64, threshold: u32) -> Option<Self> {
-        let count = u32::try_from(count).ok().filter(|count| *count < threshold)?;
-        Some(Self { count, threshold })
+    pub const fn if_low(count: u32, threshold: u32) -> Option<Self> {
+        if count < threshold { Some(Self { count, threshold }) } else { None }
     }
 
     #[must_use]
@@ -81,9 +80,9 @@ pub fn check_pre_key_batch(max_pre_keys: NonZeroU32, len: usize) -> Result<(), A
 /// How many of a device's oldest one-time pre-keys to delete so that its `current` keys plus `incoming` new
 /// ones fit within `max_pre_keys`.
 #[must_use]
-pub fn excess_pre_keys(max_pre_keys: NonZeroU32, current: i64, incoming: usize) -> i64 {
-    let total = current.saturating_add(i64::try_from(incoming).unwrap_or(i64::MAX));
-    total.saturating_sub(i64::from(max_pre_keys.get())).max(0)
+pub fn excess_pre_keys(max_pre_keys: NonZeroU32, current: u32, incoming: usize) -> u32 {
+    let incoming = u32::try_from(incoming).unwrap_or(u32::MAX);
+    current.saturating_add(incoming).saturating_sub(max_pre_keys.get())
 }
 
 #[derive(Debug, Clone)]
@@ -124,5 +123,6 @@ mod tests {
         assert_eq!(excess_pre_keys(limit(50), 40, 10), 0, "exactly at the limit");
         assert_eq!(excess_pre_keys(limit(50), 0, 0), 0);
         assert_eq!(excess_pre_keys(limit(50), 60, 0), 10, "already over, from before a lower limit");
+        assert_eq!(excess_pre_keys(limit(50), u32::MAX, usize::MAX), u32::MAX - 50, "saturates, never wraps");
     }
 }
