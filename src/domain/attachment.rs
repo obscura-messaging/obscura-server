@@ -71,14 +71,13 @@ pub fn etag(id: Uuid) -> String {
 /// Whether an `If-None-Match` request header matches the attachment `id`.
 ///
 /// Follows RFC 9110's weak comparison: `*`, or any tag in a comma-separated list, with or without a `W/`
-/// prefix. A bare unquoted ID also matches, as earlier versions accepted it.
+/// prefix.
 #[must_use]
 pub fn etag_matches(id: Uuid, if_none_match: &str) -> bool {
     let quoted = etag(id);
-    let bare = id.to_string();
     if_none_match.split(',').map(str::trim).any(|tag| {
         let tag = tag.strip_prefix("W/").unwrap_or(tag);
-        tag == "*" || tag == quoted || tag == bare
+        tag == "*" || tag == quoted
     })
 }
 
@@ -101,7 +100,7 @@ mod tests {
         assert!(matches(&format!("W/\"{id}\"")), "weak comparison ignores W/");
         assert!(matches(&format!("\"{other}\", \"{id}\"")), "any tag in a list");
         assert!(matches("*"));
-        assert!(matches(&id.to_string()), "bare IDs keep working");
+        assert!(!matches(&id.to_string()), "an unquoted ID is not an entity tag");
         assert!(!matches(&format!("\"{other}\"")));
         assert!(!matches(""));
         assert!(!matches(&format!("\"{id}")), "a malformed tag does not match");

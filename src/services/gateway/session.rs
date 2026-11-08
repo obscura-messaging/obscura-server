@@ -144,8 +144,13 @@ impl Session {
                                             }
 
                                             if !uuids.is_empty() {
-                                                // Immediately cancel push notifications to avoid "phantom buzzes"
-                                                // Run as fire-and-forget task to avoid blocking the WebSocket loop
+                                                // Cancel the pending push so the device does not buzz for messages it
+                                                // already has. Spawned so Redis latency cannot stall this loop.
+                                                //
+                                                // Known race (issue #199): the push job is per device, not per
+                                                // message, and this task may run after a newer message has scheduled
+                                                // it. That cancels the fallback push for a message this ack does not
+                                                // cover, which is only lost if the device drops before receiving it.
                                                 let notifier_clone = notifier.clone();
                                                 tokio::spawn(async move {
                                                     notifier_clone.cancel_pending_notifications(device_id).await;

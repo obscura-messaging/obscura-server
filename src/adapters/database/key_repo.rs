@@ -209,17 +209,17 @@ impl KeyRepository {
         Ok(bundles)
     }
 
-    /// Counts the remaining one-time pre-keys for a device.
+    /// Counts the remaining one-time pre-keys for a device, saturating at `u32::MAX`.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn count_one_time_pre_keys(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<i64> {
+    pub(crate) async fn count_one_time_pre_keys(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<u32> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_time_pre_keys WHERE device_id = $1")
             .bind(device_id)
             .fetch_one(conn)
             .await?;
-        Ok(count)
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
     }
 
     /// Finds the maximum signed pre-key ID currently stored for a device.
@@ -267,7 +267,7 @@ impl KeyRepository {
         &self,
         conn: &mut PgConnection,
         device_id: Uuid,
-        limit: i64,
+        limit: u32,
     ) -> Result<()> {
         sqlx::query(
             r#"
@@ -281,7 +281,7 @@ impl KeyRepository {
             "#,
         )
         .bind(device_id)
-        .bind(limit)
+        .bind(i64::from(limit))
         .execute(conn)
         .await?;
         Ok(())

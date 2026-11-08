@@ -1,5 +1,4 @@
 #![allow(
-    clippy::unwrap_used,
     clippy::panic,
     clippy::todo,
     clippy::missing_panics_doc,

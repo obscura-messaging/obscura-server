@@ -144,15 +144,15 @@ impl DeviceRepository {
         Ok(exists)
     }
 
-    /// Counts the number of devices for a user.
+    /// Counts the number of devices for a user, saturating at `u32::MAX`.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn count_by_user(&self, conn: &mut PgConnection, user_id: Uuid) -> Result<i64> {
+    pub(crate) async fn count_by_user(&self, conn: &mut PgConnection, user_id: Uuid) -> Result<u32> {
         let count: i64 =
             sqlx::query_scalar("SELECT count(*) FROM devices WHERE user_id = $1").bind(user_id).fetch_one(conn).await?;
 
-        Ok(count)
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
     }
 }
