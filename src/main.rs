@@ -33,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
         let s3_client = obscura_server::initialize_s3_client(&config.storage).await;
 
         // Phase 2: Component Wiring (Pure logic, no side effects)
-        let push_provider: Arc<dyn adapters::push::PushProvider> = if let Some(fcm) = config.fcm.settings()? {
+        let push_provider: Arc<dyn adapters::push::PushProvider> = if let Some(fcm) = config.fcm.credentials()? {
             tracing::info!("FCM credentials configured, using real FCM push provider");
             Arc::new(
                 adapters::push::fcm::FcmPushProvider::new(fcm, config.fcm.ttl_secs)

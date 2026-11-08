@@ -106,7 +106,8 @@ async fn pubsub_listener_survives_outage_longer_than_the_retry_budget() {
 
     let (_shutdown_tx, shutdown_rx) = watch::channel(false);
     let config = fast_pubsub_config(proxy.url());
-    let client = RedisClient::new(&config, 128, shutdown_rx).await.expect("redis client");
+    let client =
+        RedisClient::new(&config, std::num::NonZeroUsize::new(128).unwrap(), shutdown_rx).await.expect("redis client");
 
     let pattern = format!("outage-test:{}:*", Uuid::new_v4());
     let channel = pattern.replace('*', "device");
@@ -132,7 +133,8 @@ async fn pubsub_listener_recovers_from_connection_loss() {
 
     let (_shutdown_tx, shutdown_rx) = watch::channel(false);
     let config = fast_pubsub_config(proxy.url());
-    let client = RedisClient::new(&config, 128, shutdown_rx).await.expect("redis client");
+    let client =
+        RedisClient::new(&config, std::num::NonZeroUsize::new(128).unwrap(), shutdown_rx).await.expect("redis client");
 
     let pattern = format!("cut-test:{}:*", Uuid::new_v4());
     let channel = pattern.replace('*', "device");

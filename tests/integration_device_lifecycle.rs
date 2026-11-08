@@ -257,8 +257,8 @@ async fn test_account_reset() {
 #[tokio::test]
 async fn test_account_reset_is_rate_limited_like_auth() {
     let mut config = common::get_test_config();
-    config.rate_limit.auth_per_second = 1;
-    config.rate_limit.auth_burst = 1;
+    config.rate_limit.auth_per_second = std::num::NonZeroU32::new(1).unwrap();
+    config.rate_limit.auth_burst = std::num::NonZeroU32::new(1).unwrap();
     let app = TestApp::spawn_with_config(config).await;
     let user: TestUser = app.register_user(&common::generate_username("reset_rl")).await;
     let ip = format!("10.9.{}.{}", rand::random::<u8>(), rand::random::<u8>());

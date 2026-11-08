@@ -35,14 +35,23 @@ async fn test_message_cleanup_worker_full_orchestration() {
     };
 
     let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let pubsub = RedisClient::new(&PubSubConfig::default(), 1024, shutdown_rx).await.unwrap();
+    let pubsub = RedisClient::new(&PubSubConfig::default(), std::num::NonZeroUsize::new(1024).unwrap(), shutdown_rx)
+        .await
+        .unwrap();
     let notif_config = NotificationConfig::default();
     let notifier = NotificationService::new(
         Arc::new(NotificationRepository::new(Arc::clone(&pubsub), &notif_config)),
         &notif_config,
     );
     let submission_cache = RedisCache::new(pubsub, "test:idemp:".to_string(), 60);
-    let service = MessageService::new(pool.clone(), repo, notifier, submission_cache, config.max_inbox_size, 30);
+    let service = MessageService::new(
+        pool.clone(),
+        repo,
+        notifier,
+        submission_cache,
+        config.max_inbox_size,
+        std::num::NonZeroU32::new(30).unwrap(),
+    );
     let worker = MessageCleanupWorker::new(service, config.cleanup_interval_secs);
 
     // --- Part 1: Overflow Pruning ---

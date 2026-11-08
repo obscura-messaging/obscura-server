@@ -3,6 +3,7 @@ use crate::config::NotificationConfig;
 use crate::services::notification_service::NotificationService;
 use crate::services::push_token_service::PushTokenService;
 use opentelemetry::{KeyValue, global, metrics::Counter};
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Semaphore, mpsc};
@@ -41,11 +42,11 @@ pub struct PushNotificationWorker {
     notification_service: NotificationService,
     push_token_service: PushTokenService,
     provider: Arc<dyn PushProvider>,
-    interval_secs: u64,
-    visibility_timeout_secs: u64,
-    invalid_token_cleanup_interval_secs: u64,
-    invalid_token_cleanup_batch_size: usize,
-    invalid_token_cleanup_channel_capacity: usize,
+    interval_secs: NonZeroU64,
+    visibility_timeout_secs: NonZeroU64,
+    invalid_token_cleanup_interval_secs: NonZeroU64,
+    invalid_token_cleanup_batch_size: NonZeroUsize,
+    invalid_token_cleanup_channel_capacity: NonZeroUsize,
     semaphore: Arc<Semaphore>,
     metrics: Metrics,
 }
@@ -66,16 +67,17 @@ impl PushNotificationWorker {
             invalid_token_cleanup_interval_secs: config.invalid_token_cleanup_interval_secs,
             invalid_token_cleanup_batch_size: config.invalid_token_cleanup_batch_size,
             invalid_token_cleanup_channel_capacity: config.invalid_token_cleanup_channel_capacity,
-            semaphore: Arc::new(Semaphore::new(config.worker_concurrency)),
+            semaphore: Arc::new(Semaphore::new(config.worker_concurrency.get())),
             metrics: Metrics::new(),
         }
     }
 
     pub async fn run(self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
-        let mut interval = tokio::time::interval(Duration::from_secs(self.interval_secs));
-        let mut cleanup_interval = tokio::time::interval(Duration::from_secs(self.invalid_token_cleanup_interval_secs));
+        let mut interval = tokio::time::interval(Duration::from_secs(self.interval_secs.get()));
+        let mut cleanup_interval =
+            tokio::time::interval(Duration::from_secs(self.invalid_token_cleanup_interval_secs.get()));
         let (invalid_token_tx, mut invalid_token_rx) =
-            mpsc::channel::<String>(self.invalid_token_cleanup_channel_capacity);
+            mpsc::channel::<String>(self.invalid_token_cleanup_channel_capacity.get());
 
         let mut cleanup_batch = Vec::new();
 
@@ -105,7 +107,7 @@ impl PushNotificationWorker {
                 res = invalid_token_rx.recv() => {
                     if let Some(token) = res {
                         cleanup_batch.push(token);
-                        if cleanup_batch.len() >= self.invalid_token_cleanup_batch_size {
+                        if cleanup_batch.len() >= self.invalid_token_cleanup_batch_size.get() {
                             Self::flush_invalid_tokens(&self.push_token_service, &mut cleanup_batch).await;
                         }
                     }
@@ -148,7 +150,8 @@ impl PushNotificationWorker {
         // We poll up to 'available' jobs, which is naturally capped by worker_concurrency
         let limit = available.cast_signed();
         // If the worker crashes, the job will become visible again after this period.
-        let device_ids = self.notification_service.lease_due_push_jobs(limit, self.visibility_timeout_secs).await?;
+        let device_ids =
+            self.notification_service.lease_due_push_jobs(limit, self.visibility_timeout_secs.get()).await?;
 
         if device_ids.is_empty() {
             tracing::debug!("No due push notification jobs found");

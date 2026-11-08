@@ -37,8 +37,8 @@ async fn test_push_worker_invalidates_unregistered_tokens() {
     common::setup_tracing();
     let mut config = common::get_test_config();
     // Speed up intervals for the test
-    config.notifications.worker_interval_secs = 1;
-    config.notifications.invalid_token_cleanup_interval_secs = 1;
+    config.notifications.worker_interval_secs = std::num::NonZeroU64::new(1).unwrap();
+    config.notifications.invalid_token_cleanup_interval_secs = std::num::NonZeroU64::new(1).unwrap();
     // Use a unique queue key for this test to avoid competition with the default TestApp worker
     config.notifications.push_queue_key = format!("{}-cleanup", config.notifications.push_queue_key);
 
@@ -51,8 +51,13 @@ async fn test_push_worker_invalidates_unregistered_tokens() {
 
     // 2. Schedule a push
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let pubsub =
-        obscura_server::adapters::redis::RedisClient::new(&config.pubsub, 1024, shutdown_rx.clone()).await.unwrap();
+    let pubsub = obscura_server::adapters::redis::RedisClient::new(
+        &config.pubsub,
+        std::num::NonZeroUsize::new(1024).unwrap(),
+        shutdown_rx.clone(),
+    )
+    .await
+    .unwrap();
     let notification_repo = Arc::new(NotificationRepository::new(pubsub.clone(), &config.notifications));
     let _: anyhow::Result<()> = notification_repo.push_jobs(&[user_id], 0).await;
 
@@ -110,9 +115,9 @@ async fn test_push_worker_removes_job_when_user_has_no_token() {
     common::setup_tracing();
     let mut config = common::get_test_config();
     // Speed up intervals for the test
-    config.notifications.worker_interval_secs = 1;
+    config.notifications.worker_interval_secs = std::num::NonZeroU64::new(1).unwrap();
     // Set visibility timeout to small value so job reappears quickly if not deleted
-    config.notifications.visibility_timeout_secs = 2;
+    config.notifications.visibility_timeout_secs = std::num::NonZeroU64::new(2).unwrap();
     // Use a unique queue key for this test
     config.notifications.push_queue_key = format!("{}-no-token", config.notifications.push_queue_key);
 
@@ -123,8 +128,13 @@ async fn test_push_worker_removes_job_when_user_has_no_token() {
 
     // 2. Schedule a push job
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let redis_client =
-        obscura_server::adapters::redis::RedisClient::new(&config.pubsub, 1024, shutdown_rx.clone()).await.unwrap();
+    let redis_client = obscura_server::adapters::redis::RedisClient::new(
+        &config.pubsub,
+        std::num::NonZeroUsize::new(1024).unwrap(),
+        shutdown_rx.clone(),
+    )
+    .await
+    .unwrap();
     let notification_repo = Arc::new(NotificationRepository::new(redis_client.clone(), &config.notifications));
 
     // Push the job

@@ -6,6 +6,7 @@ use opentelemetry::{
     KeyValue, global,
     metrics::{Counter, Histogram, UpDownCounter},
 };
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -56,7 +57,7 @@ impl Metrics {
 pub struct NotificationService {
     repo: Arc<NotificationRepository>,
     channels: Arc<DashMap<Uuid, broadcast::Sender<DeviceEvent>>>,
-    device_channel_capacity: usize,
+    device_channel_capacity: NonZeroUsize,
     push_delay_secs: u64,
     metrics: Metrics,
 }
@@ -123,7 +124,7 @@ impl NotificationService {
             .entry(device_id)
             .or_insert_with(|| {
                 self.metrics.active_channels.add(1, &[]);
-                let (tx, _rx) = broadcast::channel(self.device_channel_capacity);
+                let (tx, _rx) = broadcast::channel(self.device_channel_capacity.get());
                 tx
             })
             .value()
@@ -200,10 +201,13 @@ mod tests {
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         let config = NotificationConfig::default();
 
-        let pubsub =
-            crate::adapters::redis::RedisClient::new(&crate::config::PubSubConfig::default(), 1024, shutdown_rx)
-                .await
-                .expect("Redis client creation");
+        let pubsub = crate::adapters::redis::RedisClient::new(
+            &crate::config::PubSubConfig::default(),
+            NonZeroUsize::new(1024).unwrap(),
+            shutdown_rx,
+        )
+        .await
+        .expect("Redis client creation");
 
         let repo = Arc::new(NotificationRepository::new(pubsub, &config));
         let service = NotificationService::new(repo, &config);

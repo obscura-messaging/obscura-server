@@ -86,7 +86,7 @@ pub fn init_telemetry(config: &TelemetryConfig) -> anyhow::Result<TelemetryGuard
         let exporter = opentelemetry_otlp::SpanExporter::builder()
             .with_tonic()
             .with_endpoint(endpoint.clone())
-            .with_timeout(std::time::Duration::from_secs(config.export_timeout_secs))
+            .with_timeout(std::time::Duration::from_secs(config.export_timeout_secs.get()))
             .build()?;
 
         let tracer_provider = SdkTracerProvider::builder()
@@ -102,11 +102,11 @@ pub fn init_telemetry(config: &TelemetryConfig) -> anyhow::Result<TelemetryGuard
         let exporter = opentelemetry_otlp::MetricExporter::builder()
             .with_tonic()
             .with_endpoint(endpoint.clone())
-            .with_timeout(std::time::Duration::from_secs(config.export_timeout_secs))
+            .with_timeout(std::time::Duration::from_secs(config.export_timeout_secs.get()))
             .build()?;
 
         let reader = PeriodicReader::builder(exporter)
-            .with_interval(std::time::Duration::from_secs(config.metrics_export_interval_secs))
+            .with_interval(std::time::Duration::from_secs(config.metrics_export_interval_secs.get()))
             .build();
         let meter_provider = SdkMeterProvider::builder().with_resource(resource.clone()).with_reader(reader).build();
         global::set_meter_provider(meter_provider.clone());
@@ -115,7 +115,7 @@ pub fn init_telemetry(config: &TelemetryConfig) -> anyhow::Result<TelemetryGuard
         let exporter = opentelemetry_otlp::LogExporter::builder()
             .with_tonic()
             .with_endpoint(endpoint.clone())
-            .with_timeout(std::time::Duration::from_secs(config.export_timeout_secs))
+            .with_timeout(std::time::Duration::from_secs(config.export_timeout_secs.get()))
             .build()?;
 
         let logger_provider = SdkLoggerProvider::builder()

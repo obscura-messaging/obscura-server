@@ -39,7 +39,7 @@ async fn test_push_visibility_timeout_retry() {
     common::setup_tracing();
     let mut config = common::get_test_config();
     // Set a very short visibility timeout to test retry logic quickly
-    config.notifications.visibility_timeout_secs = 2;
+    config.notifications.visibility_timeout_secs = std::num::NonZeroU64::new(2).unwrap();
 
     let app = TestApp::spawn_with_config(config.clone()).await;
 
@@ -47,10 +47,13 @@ async fn test_push_visibility_timeout_retry() {
     let user_id = common::insert_device_with_push_token(&app.pool, "retry").await;
 
     // 2. Schedule a job
-    let pubsub =
-        obscura_server::adapters::redis::RedisClient::new(&config.pubsub, 1024, tokio::sync::watch::channel(false).1)
-            .await
-            .unwrap();
+    let pubsub = obscura_server::adapters::redis::RedisClient::new(
+        &config.pubsub,
+        std::num::NonZeroUsize::new(1024).unwrap(),
+        tokio::sync::watch::channel(false).1,
+    )
+    .await
+    .unwrap();
     let notification_repo = Arc::new(NotificationRepository::new(pubsub.clone(), &config.notifications));
     notification_repo.push_jobs(&[user_id], 0).await.unwrap();
 

@@ -53,7 +53,7 @@ impl Session {
 
         // Components are initialized here inside the 'websocket_session' span
         // to ensure they are recorded as child spans in traces.
-        let (outbound_tx, mut outbound_rx) = mpsc::channel(config.outbound_buffer_size);
+        let (outbound_tx, mut outbound_rx) = mpsc::channel(config.outbound_buffer_size.get());
 
         let ack_batcher = AckBatcher::new(
             device_id,
@@ -82,7 +82,7 @@ impl Session {
         message_pump.notify();
 
         let mut last_seen = tokio::time::Instant::now();
-        let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(config.ping_interval_secs.max(1)));
+        let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(config.ping_interval_secs.get()));
         // First tick happens immediately, we skip it to start probing after the first interval.
         ping_interval.tick().await;
         ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -108,7 +108,7 @@ impl Session {
 
                 _ = ping_interval.tick() => {
                     let now = tokio::time::Instant::now();
-                    let timeout = std::time::Duration::from_secs(config.ping_interval_secs + config.ping_timeout_secs);
+                    let timeout = std::time::Duration::from_secs(config.ping_interval_secs.get().saturating_add(config.ping_timeout_secs));
 
                     if now.duration_since(last_seen) > timeout {
                         tracing::warn!(

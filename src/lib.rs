@@ -198,8 +198,13 @@ impl AppBuilder {
 
         // Initialize Core Services
         let notifier = NotificationService::new(notification_repo, &config.notifications);
-        let key_service =
-            KeyService::new(pool.clone(), KeyRepository::new(), notifier.clone(), config.messaging.clone());
+        let key_service = KeyService::new(
+            pool.clone(),
+            KeyRepository::new(),
+            notifier.clone(),
+            config.messaging.max_pre_keys,
+            config.messaging.pre_key_refill_threshold,
+        );
         let auth_service = AuthService::new(
             config.auth.clone(),
             pool.clone(),
@@ -210,10 +215,10 @@ impl AppBuilder {
         let submission_cache = RedisCache::new(
             Arc::clone(&pubsub),
             "idempotency:submission:".to_string(),
-            config.messaging.idempotency_ttl_secs,
+            config.messaging.idempotency_ttl_secs.get(),
         );
         let ws_ticket_cache =
-            RedisCache::new(Arc::clone(&pubsub), "ws:ticket:".to_string(), config.websocket.ticket_ttl_secs);
+            RedisCache::new(Arc::clone(&pubsub), "ws:ticket:".to_string(), config.websocket.ticket_ttl_secs.get());
         let message_service = MessageService::new(
             pool.clone(),
             MessageRepository::new(),

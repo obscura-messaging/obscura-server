@@ -34,9 +34,9 @@ use uuid::Uuid;
 /// One connection, and a short acquire timeout so starvation fails fast.
 fn starvable_config() -> Config {
     let mut config = common::get_test_config();
-    config.database.max_connections = 1;
+    config.database.max_connections = std::num::NonZeroU32::new(1).unwrap();
     config.database.min_connections = 1;
-    config.database.acquire_timeout_secs = 1;
+    config.database.acquire_timeout_secs = std::num::NonZeroU64::new(1).unwrap();
     config
 }
 
@@ -65,7 +65,7 @@ async fn message_survives_a_transient_fetch_failure() {
     // connection: every test binary shares one Postgres, and the default pool reserves twenty.
     let side_pool = common::get_test_pool_with(&obscura_server::config::DatabaseConfig {
         url: config.database.url.clone(),
-        max_connections: 1,
+        max_connections: std::num::NonZeroU32::new(1).unwrap(),
         min_connections: 1,
         ..Default::default()
     })

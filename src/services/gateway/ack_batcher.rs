@@ -1,5 +1,6 @@
 use crate::services::gateway::Metrics;
 use crate::services::message_service::MessageService;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -17,11 +18,11 @@ impl AckBatcher {
         device_id: Uuid,
         message_service: MessageService,
         metrics: Metrics,
-        buffer_size: usize,
-        batch_size: usize,
+        buffer_size: NonZeroUsize,
+        batch_size: NonZeroUsize,
         flush_interval_ms: u64,
     ) -> Self {
-        let (tx, rx) = mpsc::channel(buffer_size);
+        let (tx, rx) = mpsc::channel(buffer_size.get());
 
         let batcher_metrics = metrics.clone();
         tokio::spawn(
@@ -49,7 +50,7 @@ impl AckBatcher {
         mut rx: mpsc::Receiver<Uuid>,
         message_service: MessageService,
         metrics: Metrics,
-        batch_size: usize,
+        batch_size: NonZeroUsize,
         flush_interval_ms: u64,
     ) {
         loop {
@@ -67,7 +68,7 @@ impl AckBatcher {
             tokio::pin!(timeout);
 
             loop {
-                if batch.len() >= batch_size {
+                if batch.len() >= batch_size.get() {
                     break;
                 }
 

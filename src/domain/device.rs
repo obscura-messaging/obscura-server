@@ -5,7 +5,27 @@ pub struct Device {
     pub id: Uuid,
     pub user_id: Uuid,
     pub name: Option<String>,
-    pub is_primary: bool,
+    pub role: DeviceRole,
+}
+
+/// Whether a device is its account's primary device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceRole {
+    Primary,
+    Linked,
+}
+
+impl DeviceRole {
+    /// For the database and API, which store and show the role as a flag.
+    #[must_use]
+    pub const fn from_is_primary(is_primary: bool) -> Self {
+        if is_primary { Self::Primary } else { Self::Linked }
+    }
+
+    #[must_use]
+    pub const fn is_primary(self) -> bool {
+        matches!(self, Self::Primary)
+    }
 }
 
 /// Validated push notification token for a device (non-empty, trimmed, at most 4096 bytes).

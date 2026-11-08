@@ -23,10 +23,8 @@ impl RefreshTokenRepository {
         conn: &mut PgConnection,
         device_id: Uuid,
         token_hash: &[u8],
-        ttl_days: i64,
+        expires_at: OffsetDateTime,
     ) -> Result<()> {
-        let expires_at = OffsetDateTime::now_utc() + time::Duration::days(ttl_days);
-
         sqlx::query("DELETE FROM refresh_tokens WHERE device_id = $1")
             .bind(device_id)
             .execute(&mut *conn)
@@ -57,10 +55,8 @@ impl RefreshTokenRepository {
         conn: &mut PgConnection,
         old_hash: &[u8],
         new_hash: &[u8],
-        ttl_days: i64,
+        expires_at: OffsetDateTime,
     ) -> Result<Option<(Uuid, Uuid)>> {
-        let expires_at = OffsetDateTime::now_utc() + time::Duration::days(ttl_days);
-
         let row = sqlx::query_as::<_, (Uuid, Uuid)>(
             r#"
             WITH deleted AS (

@@ -128,7 +128,7 @@ pub fn get_test_config() -> Config {
     let run_id = Uuid::new_v4().to_string()[..8].to_string();
 
     Config {
-        ttl_days: 30,
+        ttl_days: std::num::NonZeroU32::new(30).unwrap(),
         database: obscura_server::config::DatabaseConfig { url: database_url, ..Default::default() },
         server: ServerConfig {
             port: 0,
@@ -137,7 +137,12 @@ pub fn get_test_config() -> Config {
             ..Default::default()
         },
         auth: AuthConfig { jwt_secret: "test_secret".to_string(), ..Default::default() },
-        rate_limit: RateLimitConfig { per_second: 10000, burst: 10000, auth_per_second: 10000, auth_burst: 10000 },
+        rate_limit: RateLimitConfig {
+            per_second: std::num::NonZeroU32::new(10000).unwrap(),
+            burst: std::num::NonZeroU32::new(10000).unwrap(),
+            auth_per_second: std::num::NonZeroU32::new(10000).unwrap(),
+            auth_burst: std::num::NonZeroU32::new(10000).unwrap(),
+        },
         storage: StorageConfig {
             bucket: "test-bucket".to_string(),
             endpoint: Some(
@@ -150,7 +155,10 @@ pub fn get_test_config() -> Config {
         },
         pubsub: PubSubConfig { url: valkey_url(), ..Default::default() },
         // Long enough for any retry within a test, short enough not to pile up keys across runs.
-        messaging: MessagingConfig { idempotency_ttl_secs: 600, ..Default::default() },
+        messaging: MessagingConfig {
+            idempotency_ttl_secs: std::num::NonZeroU64::new(600).unwrap(),
+            ..Default::default()
+        },
         notifications: NotificationConfig {
             push_queue_key: format!("jobs:test:{run_id}"),
             channel_prefix: format!("test:{run_id}:"),

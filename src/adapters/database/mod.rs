@@ -21,9 +21,9 @@ pub type DbPool = Pool<Postgres>;
 /// Returns `sqlx::Error` if the connection fails.
 pub async fn init_pool(config: &DatabaseConfig) -> Result<DbPool, sqlx::Error> {
     PgPoolOptions::new()
-        .max_connections(config.max_connections)
+        .max_connections(config.max_connections.get())
         .min_connections(config.min_connections)
-        .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs))
+        .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs.get()))
         .idle_timeout(Duration::from_secs(config.idle_timeout_secs))
         .max_lifetime(Duration::from_secs(config.max_lifetime_secs))
         .connect(&config.url)

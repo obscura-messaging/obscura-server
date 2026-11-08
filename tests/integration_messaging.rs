@@ -88,7 +88,7 @@ async fn test_message_pagination_large_backlog() {
 #[tokio::test]
 async fn test_ack_batching_behavior() {
     let mut config = common::get_test_config();
-    config.websocket.ack_batch_size = 5;
+    config.websocket.ack_batch_size = std::num::NonZeroUsize::new(5).unwrap();
     config.websocket.ack_flush_interval_ms = 1000;
 
     let app = TestApp::spawn_with_workers(config).await;
@@ -373,8 +373,8 @@ async fn test_websocket_auth_failure() {
 #[tokio::test]
 async fn test_ack_buffer_saturation() {
     let mut config = common::get_test_config();
-    config.websocket.ack_buffer_size = 5;
-    config.websocket.ack_batch_size = 1;
+    config.websocket.ack_buffer_size = std::num::NonZeroUsize::new(5).unwrap();
+    config.websocket.ack_batch_size = std::num::NonZeroUsize::new(1).unwrap();
 
     let app = TestApp::spawn_with_config(config).await;
     let user = app.register_user(&common::generate_username("ack_sat")).await;

@@ -33,7 +33,7 @@ use tracing::Instrument;
 async fn test_scheduled_push_delivery() {
     let mut config = common::get_test_config();
     config.notifications.push_delay_secs = 1;
-    config.notifications.worker_interval_secs = 1;
+    config.notifications.worker_interval_secs = std::num::NonZeroU64::new(1).unwrap();
 
     let app = TestApp::spawn_with_workers(config).await;
 
@@ -137,7 +137,7 @@ async fn test_push_cancellation_on_websocket_connect() {
 async fn test_delivery_exactly_once_under_competition() {
     let mut config = common::get_test_config();
     config.notifications.push_delay_secs = 0;
-    config.notifications.worker_interval_secs = 1;
+    config.notifications.worker_interval_secs = std::num::NonZeroU64::new(1).unwrap();
 
     let app = TestApp::spawn_with_config(config).await;
 
@@ -195,7 +195,7 @@ async fn test_delivery_exactly_once_under_competition() {
 async fn test_push_coalescing() {
     let mut config = common::get_test_config();
     config.notifications.push_delay_secs = 2;
-    config.notifications.worker_interval_secs = 1;
+    config.notifications.worker_interval_secs = std::num::NonZeroU64::new(1).unwrap();
 
     let app = TestApp::spawn_with_workers(config).await;
 
@@ -298,7 +298,7 @@ async fn test_notification_worker_concurrency_limit() {
     let mut config = common::get_test_config();
     let concurrency = 2;
     let jobs = 10;
-    config.notifications.worker_concurrency = concurrency;
+    config.notifications.worker_concurrency = std::num::NonZeroUsize::new(concurrency).unwrap();
 
     let app = TestApp::spawn_with_config(config).await;
 
@@ -423,7 +423,7 @@ async fn test_register_push_token_unauthorized() {
 async fn test_notification_lag_recovery() {
     common::setup_tracing();
     let mut config = common::get_test_config();
-    config.websocket.outbound_buffer_size = 10;
+    config.websocket.outbound_buffer_size = std::num::NonZeroUsize::new(10).unwrap();
 
     let app = TestApp::spawn_with_workers(config).await;
 

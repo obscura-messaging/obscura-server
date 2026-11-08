@@ -70,7 +70,7 @@ async fn test_concurrent_messages_and_prekeys_no_drops() {
 #[tokio::test]
 async fn test_ack_batcher_does_not_drop_on_disconnect() {
     let mut config = common::get_test_config();
-    config.websocket.ack_batch_size = 10;
+    config.websocket.ack_batch_size = std::num::NonZeroUsize::new(10).unwrap();
     // Set a very long flush interval so it definitely won't naturally flush during the test
     config.websocket.ack_flush_interval_ms = 10_000;
 

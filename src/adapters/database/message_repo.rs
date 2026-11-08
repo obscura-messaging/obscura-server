@@ -2,7 +2,7 @@ use crate::adapters::database::records::MessageRecord;
 use crate::domain::message::Message;
 use crate::error::{AppError, Result};
 use sqlx::PgConnection;
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Default)]
@@ -65,13 +65,11 @@ impl MessageRepository {
         sender_device_id: Uuid,
         idempotency_key: Uuid,
         messages: Vec<(Uuid, Vec<u8>)>,
-        ttl_days: i64,
+        expires_at: OffsetDateTime,
     ) -> Result<Vec<Uuid>> {
         if messages.is_empty() {
             return Ok(Vec::new());
         }
-
-        let expires_at = OffsetDateTime::now_utc() + Duration::days(ttl_days);
 
         let mut device_ids = Vec::with_capacity(messages.len());
         let mut contents = Vec::with_capacity(messages.len());

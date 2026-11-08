@@ -1,4 +1,4 @@
-use crate::domain::device::Device;
+use crate::domain::device::{Device, DeviceRole};
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -30,20 +30,6 @@ impl Claims {
     pub(crate) fn expiring(user_id: Uuid, device_id: Uuid, now: u64, ttl_secs: u64) -> Option<Self> {
         let exp = usize::try_from(now.checked_add(ttl_secs)?).ok()?;
         Some(Self::new(user_id, device_id, exp))
-    }
-}
-
-/// Whether a device is its account's primary device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeviceRole {
-    Primary,
-    Linked,
-}
-
-impl DeviceRole {
-    #[must_use]
-    pub const fn from_is_primary(is_primary: bool) -> Self {
-        if is_primary { Self::Primary } else { Self::Linked }
     }
 }
 
@@ -100,7 +86,7 @@ impl Caller {
         }
         match target {
             None => Err(AppError::NotFound),
-            Some(device) if device.is_primary => {
+            Some(device) if device.role == DeviceRole::Primary => {
                 Err(AppError::Forbidden("The primary device cannot be deleted; reset the account instead".into()))
             }
             Some(_) => Ok(()),
@@ -158,7 +144,8 @@ mod tests {
         let user = Uuid::new_v4();
         let (primary_id, linked_id, other_linked_id, missing_id) =
             (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
-        let device = |id, is_primary| Device { id, user_id: user, name: None, is_primary };
+        let device =
+            |id, is_primary| Device { id, user_id: user, name: None, role: DeviceRole::from_is_primary(is_primary) };
         let primary = Caller::new(user, primary_id, DeviceRole::Primary);
         let linked = Caller::new(user, linked_id, DeviceRole::Linked);
 
