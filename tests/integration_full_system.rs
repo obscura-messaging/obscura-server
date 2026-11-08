@@ -139,36 +139,37 @@ async fn test_full_system_flow() {
     assert_eq!(received_count, 49, "Did not receive all 49 valid messages on Node C");
     assert!(expected_content.is_empty(), "Some messages were missed or mismatched: {expected_content:?}");
 
+    // Wait for the ACKs to be processed. Each ACK also cancels pending pushes in the background, and those
+    // cancels must finish before step 12, or they would remove the fast-path push job instead of its own ACK.
+    app_c.assert_message_count(receiver.device_id, 0).await;
+
     // 11. Verify Push Job Cleanup (Explicit Redis Check)
     // The push job should be removed from the ZSET because the user connected (or acknowledged).
     // Note: The job might have been removed by the worker *processing* it (step 8),
     // BUT since we are testing system consistency, we ensure it's definitely gone now.
-    let client = redis::Client::open(config.pubsub.url.clone()).unwrap();
-    let mut conn = client.get_multiplexed_async_connection().await.unwrap();
-    let score: Option<f64> = redis::cmd("ZSCORE")
-        .arg(&config.notifications.push_queue_key)
-        .arg(receiver.device_id.to_string())
-        .query_async(&mut conn)
-        .await
-        .unwrap();
-
-    assert!(score.is_none(), "Push job should be removed from Redis");
+    assert!(!app_a.push_job_scheduled(receiver.device_id).await, "Push job should be removed from Redis");
 
     // 12. Verify Fast Path (No Extra Push)
     // Send 1 more message
     let single_msg_content = b"Fast Path".to_vec();
     app_a.send_message(&sender.token, receiver.device_id, &single_msg_content).await;
 
+    // notify() always schedules a fallback push, before the send responds.
+    assert!(app_a.push_job_scheduled(receiver.device_id).await, "sending should schedule a fallback push");
+
     let env = ws.receive_envelope().await.expect("Failed to receive fast-path message");
     assert_eq!(env.message, single_msg_content);
+    assert!(app_a.push_job_scheduled(receiver.device_id).await, "only the ACK should cancel the fallback push");
 
     // ACK the message so the server cancels the scheduled push job.
-    // (notify() always schedules a fallback push; the ACK triggers cancel_pending_notifications.)
     ws.send_ack(env.id).await;
 
-    // Ensure NO extra push was sent for this fast-path message
-    // Wait a bit to be sure
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // The worker removes a job only after sending its push, so once the job is gone, any push it sent has
+    // already been counted. A missed cancellation shows up as a second push, with no fixed wait.
+    let removed = app_a
+        .wait_until(|| async { !app_a.push_job_scheduled(receiver.device_id).await }, Duration::from_secs(10))
+        .await;
+    assert!(removed, "fallback push job was never removed");
     let final_push_count = notification_counts().get(&receiver.device_id).map_or(0, |c| *c);
     assert_eq!(final_push_count, 1, "Fast-path message should not trigger push");
 }

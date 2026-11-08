@@ -428,29 +428,35 @@ async fn test_bulk_ack_processing() {
 
 #[tokio::test]
 async fn test_ack_security_cross_user_deletion() {
-    let app = TestApp::spawn().await;
+    let mut config = common::get_test_config();
+    // Only makes the test faster; it does not depend on this timing.
+    config.websocket.ack_flush_interval_ms = 50;
+    let app = TestApp::spawn_with_config(config).await;
 
     let user_a = app.register_user(&common::generate_username("alice_sec")).await;
     let user_b = app.register_user(&common::generate_username("bob_sec")).await;
     let user_c = app.register_user(&common::generate_username("eve_sec")).await;
 
-    // A sends to B
     app.send_message(&user_a.token, user_b.device_id, b"Secret").await;
+    app.send_message(&user_a.token, user_c.device_id, b"For Eve").await;
 
-    // B connects and gets the message ID
     let mut ws_b = app.connect_ws(&user_b.token).await;
-    let env = ws_b.receive_envelope().await.expect("Bob should receive message");
-    let target_msg_id = env.id;
+    let bob_msg_id = ws_b.receive_envelope().await.expect("Bob should receive his message").id;
 
-    // C tries to ACK B's message
     let mut ws_c = app.connect_ws(&user_c.token).await;
-    ws_c.send_ack(target_msg_id.clone()).await;
+    let eve_msg_id = ws_c.receive_envelope().await.expect("Eve should receive her message").id;
 
-    // Wait for async processing
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Eve ACKs Bob's message and then her own, in one frame. Her session processes ACKs in order, so once
+    // her own message is deleted, the server has already handled Bob's ID.
+    ws_c.send_acks(vec![bob_msg_id, eve_msg_id]).await;
+    app.assert_message_count(user_c.device_id, 0).await;
 
-    // Assert message is STILL there for B (count should be 1)
-    app.assert_message_count(user_b.device_id, 1).await;
+    let bob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE device_id = $1")
+        .bind(user_b.device_id)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(bob_count, 1, "Eve's ACK must not delete Bob's message");
 }
 
 #[tokio::test]

@@ -595,6 +595,19 @@ impl TestApp {
         false
     }
 
+    /// Returns whether a push notification job is queued for the device.
+    pub(crate) async fn push_job_scheduled(&self, device_id: Uuid) -> bool {
+        let client = redis::Client::open(self.config.pubsub.url.clone()).unwrap();
+        let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+        let score: Option<f64> = redis::cmd("ZSCORE")
+            .arg(&self.config.notifications.push_queue_key)
+            .arg(device_id.to_string())
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        score.is_some()
+    }
+
     pub(crate) async fn assert_message_count(&self, device_id: Uuid, expected: i64) {
         let success = self
             .wait_until(
@@ -673,7 +686,12 @@ impl TestWsClient {
     }
 
     pub(crate) async fn send_ack(&mut self, message_id: Vec<u8>) {
-        let ack = proto::AckMessage { message_ids: vec![message_id] };
+        self.send_acks(vec![message_id]).await;
+    }
+
+    /// Sends one ACK frame carrying several message IDs. The server processes a session's ACKs in order.
+    pub(crate) async fn send_acks(&mut self, message_ids: Vec<Vec<u8>>) {
+        let ack = proto::AckMessage { message_ids };
         let frame = proto::WebSocketFrame { payload: Some(proto::web_socket_frame::Payload::Ack(ack)) };
         let mut buf = Vec::new();
         frame.encode(&mut buf).unwrap();
