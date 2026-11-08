@@ -1,6 +1,5 @@
 use crate::error::AppError;
 use thiserror::Error;
-use uuid::Uuid;
 
 /// Allowed attachment sizes in bytes, inclusive at both ends. Only constructed through [`SizeLimits::new`],
 /// so the minimum never exceeds the maximum.
@@ -62,49 +61,9 @@ impl From<SizeViolation> for AppError {
     }
 }
 
-/// The `ETag` of an attachment: its ID, quoted. Attachments never change, so the ID identifies the content.
-#[must_use]
-pub fn etag(id: Uuid) -> String {
-    format!("\"{id}\"")
-}
-
-/// Whether an `If-None-Match` request header matches the attachment `id`.
-///
-/// Follows RFC 9110's weak comparison: `*`, or any tag in a comma-separated list, with or without a `W/`
-/// prefix.
-#[must_use]
-pub fn etag_matches(id: Uuid, if_none_match: &str) -> bool {
-    let quoted = etag(id);
-    if_none_match.split(',').map(str::trim).any(|tag| {
-        let tag = tag.strip_prefix("W/").unwrap_or(tag);
-        tag == "*" || tag == quoted
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_etag_header_value_is_the_quoted_id() {
-        let id = Uuid::new_v4();
-        assert_eq!(etag(id), format!("\"{id}\""));
-    }
-
-    #[test]
-    fn test_etag_matches() {
-        let id = Uuid::new_v4();
-        let other = Uuid::new_v4();
-        let matches = |header: &str| etag_matches(id, header);
-        assert!(matches(&format!("\"{id}\"")));
-        assert!(matches(&format!("W/\"{id}\"")), "weak comparison ignores W/");
-        assert!(matches(&format!("\"{other}\", \"{id}\"")), "any tag in a list");
-        assert!(matches("*"));
-        assert!(!matches(&id.to_string()), "an unquoted ID is not an entity tag");
-        assert!(!matches(&format!("\"{other}\"")));
-        assert!(!matches(""));
-        assert!(!matches(&format!("\"{id}")), "a malformed tag does not match");
-    }
 
     #[test]
     fn test_new_rejects_inverted_limits() {

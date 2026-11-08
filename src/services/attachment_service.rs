@@ -1,8 +1,8 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::attachment_repo::AttachmentRepository;
 use crate::adapters::storage::{ObjectStorage, StorageError, StorageStream};
-use crate::config::AttachmentConfig;
-use crate::domain::attachment::{SizeLimits, etag_matches};
+use crate::config::{AttachmentConfig, ConfigError};
+use crate::domain::attachment::SizeLimits;
 use crate::domain::expires_after_days;
 use crate::error::{AppError, Result};
 use opentelemetry::{
@@ -48,8 +48,8 @@ impl Metrics {
 
 /// The outcome of a download request.
 pub(crate) enum Download {
-    /// The client already holds this attachment.
-    NotModified,
+    /// The client already holds this attachment, so no content is sent.
+    AlreadyHeld,
     Content {
         length: u64,
         stream: StorageStream,
@@ -62,6 +62,7 @@ pub struct AttachmentService {
     repo: AttachmentRepository,
     storage: Arc<dyn ObjectStorage>,
     attachment_config: AttachmentConfig,
+    /// Derived from `attachment_config` once, in [`AttachmentService::new`].
     size_limits: SizeLimits,
     ttl_days: NonZeroU32,
     metrics: Metrics,
@@ -79,16 +80,17 @@ impl std::fmt::Debug for AttachmentService {
 }
 
 impl AttachmentService {
-    #[must_use]
+    /// # Errors
+    /// Returns [`ConfigError::AttachmentSizeLimits`] if the minimum size exceeds the maximum.
     pub fn new(
         pool: DbPool,
         repo: AttachmentRepository,
         storage: Arc<dyn ObjectStorage>,
         attachment_config: AttachmentConfig,
-        size_limits: SizeLimits,
         ttl_days: NonZeroU32,
-    ) -> Self {
-        Self { pool, repo, storage, attachment_config, size_limits, ttl_days, metrics: Metrics::new() }
+    ) -> std::result::Result<Self, ConfigError> {
+        let size_limits = attachment_config.size_limits()?;
+        Ok(Self { pool, repo, storage, attachment_config, size_limits, ttl_days, metrics: Metrics::new() })
     }
 
     /// Uploads an attachment to storage.
@@ -129,26 +131,27 @@ impl AttachmentService {
         Ok((id, expires_at.unix_timestamp()))
     }
 
-    /// Downloads an attachment, unless the client's `If-None-Match` shows it already has this attachment.
+    /// Downloads an attachment, unless `client_has_copy` says the client already holds it. Attachments
+    /// never change, so a copy the client holds is always current.
     ///
     /// # Errors
     /// Returns `AppError::NotFound` if the attachment does not exist or has expired, even when the client
-    /// holds a matching tag: it should not keep using content that is gone.
+    /// has a copy: it should not keep using content that is gone.
     /// Returns `AppError::Internal` if storage fails.
     #[tracing::instrument(
         err(level = "warn"),
         skip(self),
         fields(attachment_id = %id, attachment_size = tracing::field::Empty)
     )]
-    pub(crate) async fn download(&self, id: Uuid, if_none_match: Option<&str>) -> Result<Download> {
+    pub(crate) async fn download(&self, id: Uuid, client_has_copy: bool) -> Result<Download> {
         let mut conn = self.pool.acquire().await?;
         if !self.repo.exists_unexpired(&mut conn, id).await? {
             return Err(AppError::NotFound);
         }
         drop(conn);
 
-        if if_none_match.is_some_and(|header| etag_matches(id, header)) {
-            return Ok(Download::NotModified);
+        if client_has_copy {
+            return Ok(Download::AlreadyHeld);
         }
 
         // Stream from Storage
@@ -271,9 +274,9 @@ mod tests {
             AttachmentRepository::new(),
             Arc::new(FailingStorage(error)),
             AttachmentConfig::default(),
-            AttachmentConfig::default().size_limits().expect("default limits are valid"),
             NonZeroU32::new(30).unwrap(),
-        );
+        )
+        .expect("default limits are valid");
         let stream: StorageStream = futures::stream::iter([Ok(Bytes::from_static(b"data"))]).boxed();
         service.upload(None, stream).await.expect_err("a storage error should fail the upload")
     }

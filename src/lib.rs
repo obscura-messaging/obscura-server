@@ -251,9 +251,8 @@ impl AppBuilder {
             AttachmentRepository::new(),
             storage,
             config.attachment.clone(),
-            config.attachment.size_limits()?,
             config.ttl_days,
-        );
+        )?;
         let health_service = HealthService::new(
             pool,
             s3_client,
