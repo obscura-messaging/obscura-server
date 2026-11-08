@@ -1,6 +1,6 @@
 use crate::api::AppState;
-use crate::api::middleware::AuthUser;
 use crate::api::schemas::auth::{AuthResponse, LoginRequest, RefreshRequest};
+use crate::domain::auth::Caller;
 use crate::error::Result;
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 
@@ -33,7 +33,7 @@ pub(crate) async fn refresh(
 ///
 /// # Errors
 /// Returns `AppError::Unauthorized` if the user is not authorized.
-pub(crate) async fn logout(auth_user: AuthUser, State(state): State<AppState>) -> Result<impl IntoResponse> {
-    state.auth_service.logout(auth_user.device_id).await?;
+pub(crate) async fn logout(auth_user: Caller, State(state): State<AppState>) -> Result<impl IntoResponse> {
+    state.auth_service.logout(auth_user.device_id()).await?;
     Ok(StatusCode::NO_CONTENT)
 }

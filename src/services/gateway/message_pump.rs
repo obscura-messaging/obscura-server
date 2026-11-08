@@ -140,16 +140,7 @@ impl MessagePump {
             *cursor = Some((last_msg.created_at, last_msg.id));
         }
 
-        let envelopes: Vec<proto::Envelope> = messages
-            .into_iter()
-            .map(|msg| proto::Envelope {
-                id: msg.id.as_bytes().to_vec(),
-                sender_user_id: msg.sender_user_id.as_bytes().to_vec(),
-                sender_device_id: msg.sender_device_id.as_bytes().to_vec(),
-                timestamp: u64::try_from(msg.created_at.unix_timestamp_nanos() / 1_000_000).unwrap_or(0),
-                message: msg.content,
-            })
-            .collect();
+        let envelopes: Vec<proto::Envelope> = messages.into_iter().map(proto::Envelope::from).collect();
 
         // Split envelopes into sub-batches that stay under the WebSocket frame
         // size limit, sending each as a separate EnvelopeBatch frame.

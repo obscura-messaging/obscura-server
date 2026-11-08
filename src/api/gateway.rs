@@ -12,10 +12,10 @@ use tower_http::request_id::RequestId;
 /// # Errors
 /// Returns `AppError::Internal` if the ticket cannot be cached.
 pub(crate) async fn generate_ticket(
-    auth: crate::api::middleware::AuthUser,
+    auth: crate::domain::auth::Caller,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, crate::error::AppError> {
-    let ticket = state.gateway_service.issue_ticket(auth.device_id).await?;
+    let ticket = state.gateway_service.issue_ticket(auth.device_id()).await?;
     Ok((axum::http::StatusCode::CREATED, axum::Json(TicketResponse { ticket })))
 }
 

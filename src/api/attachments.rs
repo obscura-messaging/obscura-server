@@ -1,6 +1,6 @@
 use crate::api::AppState;
-use crate::api::middleware::AuthUser;
 use crate::api::schemas::attachments::AttachmentResponse;
+use crate::domain::auth::Caller;
 use crate::error::{AppError, Result};
 use axum::{
     Json,
@@ -18,7 +18,7 @@ use uuid::Uuid;
 /// Returns `AppError::LengthRequired` if the Content-Length header is missing.
 /// Returns `AppError::Internal` if there is an error during upload.
 pub(crate) async fn upload_attachment(
-    _auth: AuthUser,
+    _auth: Caller,
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Body,
@@ -45,7 +45,7 @@ pub(crate) async fn upload_attachment(
 /// # Panics
 /// Panics if the default Content-Type cannot be parsed.
 pub(crate) async fn download_attachment(
-    _auth: AuthUser,
+    _auth: Caller,
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
