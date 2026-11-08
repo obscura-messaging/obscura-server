@@ -40,7 +40,7 @@ pub struct PreKeyBundle {
 }
 
 /// A device's one-time pre-key count, reported because it is below the refill threshold. Only
-/// [`PreKeyStatus::if_low`] creates one, so a status always means the device is low.
+/// [`PreKeyStatus::below_threshold`] creates one, so a status always means the device is low.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreKeyStatus {
     count: u32,
@@ -50,7 +50,7 @@ pub struct PreKeyStatus {
 impl PreKeyStatus {
     /// The status of a device holding `count` one-time pre-keys, or `None` if it is not below `threshold`.
     #[must_use]
-    pub const fn if_low(count: u32, threshold: u32) -> Option<Self> {
+    pub const fn below_threshold(count: u32, threshold: u32) -> Option<Self> {
         if count < threshold { Some(Self { count, threshold }) } else { None }
     }
 
@@ -100,12 +100,12 @@ mod tests {
     }
 
     #[test]
-    fn test_if_low_is_strictly_below_the_threshold() {
-        assert_eq!(PreKeyStatus::if_low(20, 20), None);
-        let status = PreKeyStatus::if_low(19, 20).unwrap();
+    fn test_below_threshold_is_strict() {
+        assert_eq!(PreKeyStatus::below_threshold(20, 20), None);
+        let status = PreKeyStatus::below_threshold(19, 20).unwrap();
         assert_eq!((status.count(), status.threshold()), (19, 20));
-        assert_eq!(PreKeyStatus::if_low(0, 20).map(|s| s.count()), Some(0));
-        assert_eq!(PreKeyStatus::if_low(0, 0), None, "a threshold of 0 never reports");
+        assert_eq!(PreKeyStatus::below_threshold(0, 20).map(|s| s.count()), Some(0));
+        assert_eq!(PreKeyStatus::below_threshold(0, 0), None, "a threshold of 0 never reports");
     }
 
     #[test]

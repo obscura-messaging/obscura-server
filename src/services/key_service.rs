@@ -1,5 +1,6 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::key_repo::KeyRepository;
+use crate::config::MessagingConfig;
 use crate::domain::keys::{
     OneTimePreKey, PreKeyBundle, PreKeyStatus, PreKeyUpload, SignedPreKey, check_pre_key_batch, excess_pre_keys,
 };
@@ -40,14 +41,15 @@ pub struct KeyService {
 
 impl KeyService {
     #[must_use]
-    pub fn new(
-        pool: DbPool,
-        repo: KeyRepository,
-        notifier: NotificationService,
-        max_pre_keys: NonZeroU32,
-        pre_key_refill_threshold: u32,
-    ) -> Self {
-        Self { pool, repo, notifier, max_pre_keys, pre_key_refill_threshold, metrics: Metrics::new() }
+    pub fn new(pool: DbPool, repo: KeyRepository, notifier: NotificationService, config: &MessagingConfig) -> Self {
+        Self {
+            pool,
+            repo,
+            notifier,
+            max_pre_keys: config.max_pre_keys,
+            pre_key_refill_threshold: config.pre_key_refill_threshold,
+            metrics: Metrics::new(),
+        }
     }
 
     /// The most one-time pre-keys a device may hold or upload at once.
@@ -97,7 +99,7 @@ impl KeyService {
     pub async fn check_pre_key_status(&self, device_id: Uuid) -> Result<Option<PreKeyStatus>> {
         let mut conn = self.pool.acquire().await?;
         let count = self.repo.count_one_time_pre_keys(&mut conn, device_id).await?;
-        let status = PreKeyStatus::if_low(count, self.pre_key_refill_threshold);
+        let status = PreKeyStatus::below_threshold(count, self.pre_key_refill_threshold);
         if status.is_some() {
             self.metrics.prekey_low_total.add(1, &[]);
         }
