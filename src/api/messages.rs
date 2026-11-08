@@ -1,6 +1,6 @@
 use crate::api::AppState;
-use crate::api::middleware::AuthUser;
 use crate::api::schemas::messaging::parse_send_request;
+use crate::domain::auth::Caller;
 use crate::error::{AppError, Result};
 use crate::proto::obscura::v1 as proto;
 use axum::{body::Bytes, extract::State, http::HeaderMap, response::IntoResponse};
@@ -13,7 +13,7 @@ use uuid::Uuid;
 /// Returns `AppError::BadRequest` if the request protobuf is malformed or missing the idempotency key.
 /// Returns `AppError::PayloadTooLarge` if the batch size exceeds the limit.
 pub(crate) async fn send_messages(
-    auth: AuthUser,
+    auth: Caller,
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Bytes,
@@ -27,10 +27,10 @@ pub(crate) async fn send_messages(
     let request = proto::SendMessageRequest::decode(body)
         .map_err(|e| AppError::BadRequest(format!("Invalid SendMessageRequest protobuf: {e}")))?;
 
-    let batch_limit = usize::try_from(state.config.messaging.send_batch_limit).unwrap_or(0);
-    let recipients = parse_send_request(auth.device_id, batch_limit, request)?;
+    let batch_limit = state.config.messaging.send_batch_limit.get();
+    let recipients = parse_send_request(auth.device_id(), batch_limit, request)?;
 
-    let outcome = state.message_service.send(auth.user_id, auth.device_id, idempotency_key, recipients).await?;
+    let outcome = state.message_service.send(auth.user_id(), auth.device_id(), idempotency_key, recipients).await?;
 
     Ok(proto::SendMessageResponse::from(outcome).encode_to_vec())
 }

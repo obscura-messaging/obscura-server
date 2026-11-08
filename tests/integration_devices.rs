@@ -115,7 +115,7 @@ async fn test_device_crud_lifecycle() {
 #[tokio::test]
 async fn test_device_limit_enforced() {
     let mut config = common::get_test_config();
-    config.auth.max_devices_per_user = 3;
+    config.auth.max_devices_per_user = std::num::NonZeroU32::new(3).unwrap();
     let app = common::TestApp::spawn_with_config(config).await;
 
     // 1. A primary and two linked devices fill the limit

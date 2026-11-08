@@ -1,6 +1,6 @@
 use crate::api::AppState;
-use crate::api::middleware::AuthUser;
 use crate::api::schemas::keys::{PreKeyBundleListResponse, PreKeyBundleResponse, PreKeyUploadRequest};
+use crate::domain::auth::Caller;
 use crate::error::{AppError, Result};
 use axum::{
     Json,
@@ -15,7 +15,7 @@ use uuid::Uuid;
 /// # Errors
 /// Returns `AppError::NotFound` if the user has no registered devices or keys.
 pub(crate) async fn get_pre_key_bundles(
-    _auth: AuthUser,
+    _auth: Caller,
     State(state): State<AppState>,
     Path(user_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
@@ -34,7 +34,7 @@ pub(crate) async fn get_pre_key_bundles(
 /// # Errors
 /// Returns `AppError::NotFound` if the user has no such device.
 pub(crate) async fn get_device_pre_key_bundle(
-    _auth: AuthUser,
+    _auth: Caller,
     State(state): State<AppState>,
     Path((user_id, device_id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
@@ -49,11 +49,11 @@ pub(crate) async fn get_device_pre_key_bundle(
 /// # Errors
 /// Returns `AppError::BadRequest` if the keys are malformed or validation fails.
 pub(crate) async fn upload_keys(
-    auth: AuthUser,
+    auth: Caller,
     State(state): State<AppState>,
     Json(payload): Json<PreKeyUploadRequest>,
 ) -> Result<impl IntoResponse> {
     let upload = payload.try_into().map_err(AppError::BadRequest)?;
-    state.key_service.upload_keys(auth.device_id, upload).await?;
+    state.key_service.upload_keys(auth.device_id(), upload).await?;
     Ok(StatusCode::NO_CONTENT)
 }

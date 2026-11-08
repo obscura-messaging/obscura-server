@@ -1,3 +1,4 @@
+use crate::domain::attachment::{SizeLimits, SizeViolation};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
@@ -9,10 +10,8 @@ pub use s3::S3Storage;
 
 #[derive(Error, Debug)]
 pub enum StorageError {
-    #[error("Storage limit exceeded")]
-    ExceedsLimit,
-    #[error("Upload size below minimum required")]
-    BelowMinSize,
+    #[error(transparent)]
+    Size(#[from] SizeViolation),
     #[error("Object not found")]
     NotFound,
     #[error("Internal storage error: {0}")]
@@ -29,9 +28,8 @@ pub trait ObjectStorage: Send + Sync + 'static {
         &self,
         key: &str,
         stream: StorageStream,
-        content_len: Option<usize>,
-        min_size: usize,
-        max_size: usize,
+        content_len: Option<u64>,
+        limits: SizeLimits,
     ) -> StorageResult<u64>;
     async fn get(&self, key: &str) -> StorageResult<(u64, StorageStream)>;
     async fn delete(&self, key: &str) -> StorageResult<()>;

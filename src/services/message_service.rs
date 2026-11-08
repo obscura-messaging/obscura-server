@@ -10,6 +10,7 @@ use opentelemetry::{
     metrics::{Counter, Histogram},
 };
 use std::collections::{BTreeSet, HashMap};
+use std::num::NonZeroU32;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -93,7 +94,7 @@ pub struct MessageService {
     repo: MessageRepository,
     notifier: NotificationService,
     submission_cache: RedisCache,
-    max_inbox_size: i64,
+    max_inbox_size: NonZeroU32,
     ttl_days: i64,
     metrics: Metrics,
 }
@@ -105,7 +106,7 @@ impl MessageService {
         repo: MessageRepository,
         notifier: NotificationService,
         submission_cache: RedisCache,
-        max_inbox_size: i64,
+        max_inbox_size: NonZeroU32,
         ttl_days: i64,
     ) -> Self {
         Self { pool, repo, notifier, submission_cache, max_inbox_size, ttl_days, metrics: Metrics::new() }
@@ -239,7 +240,7 @@ impl MessageService {
         }
 
         let res_overflow = if let Ok(mut conn) = self.pool.acquire().await {
-            self.repo.delete_global_overflow(&mut conn, self.max_inbox_size).await
+            self.repo.delete_global_overflow(&mut conn, i64::from(self.max_inbox_size.get())).await
         } else {
             Err(crate::error::AppError::Internal)
         };

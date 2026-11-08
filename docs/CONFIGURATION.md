@@ -4,6 +4,8 @@ Every option is a flag or an environment variable; flags win. `cargo run -- --he
 
 For production, set at least the JWT secret and the database, Valkey and storage options. Storage credentials fall back to the AWS SDK's default chain when unset.
 
+Startup fails on a configuration that cannot work: an inbox, device, pre-key or batch limit below 1, an attachment minimum above the maximum, or only one of the two FCM values.
+
 | Flag | Environment variable | Default | Description |
 |---|---|---|---|
 | **General** | | | |
@@ -62,7 +64,7 @@ For production, set at least the JWT secret and the database, Valkey and storage
 | **Attachments** | | | |
 | `--attachment-prefix` | `OBSCURA_ATTACHMENT_PREFIX` | `attachments/` | S3 key prefix. |
 | `--attachment-max-size-bytes` | `OBSCURA_ATTACHMENT_MAX_SIZE_BYTES` | `52428800` | 50 MiB. |
-| `--attachment-min-size-bytes` | `OBSCURA_ATTACHMENT_MIN_SIZE_BYTES` | `1` | Minimum size. |
+| `--attachment-min-size-bytes` | `OBSCURA_ATTACHMENT_MIN_SIZE_BYTES` | `1` | Minimum size. Must not exceed the maximum, or startup fails. |
 | `--attachment-timeout-secs` | `OBSCURA_ATTACHMENT_TIMEOUT_SECS` | `120` | Upload/download request timeout. |
 | `--attachment-cleanup-interval-secs` | `OBSCURA_ATTACHMENT_CLEANUP_INTERVAL_SECS` | `3600` | Expired attachment sweep. |
 | `--attachment-cleanup-batch-size` | `OBSCURA_ATTACHMENT_CLEANUP_BATCH_SIZE` | `100` | Attachments deleted per batch. |
@@ -89,7 +91,7 @@ For production, set at least the JWT secret and the database, Valkey and storage
 | `--health-db-timeout-ms` | `OBSCURA_HEALTH_DB_TIMEOUT_MS` | `2000` | `/readyz` database check. |
 | `--health-storage-timeout-ms` | `OBSCURA_HEALTH_STORAGE_TIMEOUT_MS` | `2000` | `/readyz` bucket check. |
 | `--health-pubsub-timeout-ms` | `OBSCURA_HEALTH_PUBSUB_TIMEOUT_MS` | `2000` | `/readyz` Valkey check. |
-| **Push (FCM)**: both of the first two are required, else pushes are only logged | | | |
+| **Push (FCM)**: set both of the first two, or neither to only log pushes. Setting one alone fails startup. | | | |
 | `--fcm-project-id` | `OBSCURA_FCM_PROJECT_ID` | None | Google Cloud project ID. |
 | `--fcm-credentials-file` | `OBSCURA_FCM_CREDENTIALS_FILE` | None | Service account JSON path. |
 | `--fcm-ttl-secs` | `OBSCURA_FCM_TTL_SECS` | `604800` | Push TTL (7 days). |

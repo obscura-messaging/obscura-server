@@ -131,21 +131,16 @@ impl Session {
                                 WsMessage::Binary(bin) => {
                                     if let Ok(frame) = proto::WebSocketFrame::decode(bin.as_ref()) {
                                         if let Some(proto::web_socket_frame::Payload::Ack(ack)) = frame.payload {
-                                            let mut uuids = Vec::new();
-
                                             if !ack.message_ids.is_empty() {
                                                 metrics.acks_received_total.add(1, &[]);
                                             }
-                                            for id_bytes in ack.message_ids {
-                                                if let Ok(id) = Uuid::from_slice(&id_bytes) {
-                                                    uuids.push(id);
-                                                } else {
-                                                    tracing::warn!(
-                                                        len = id_bytes.len(),
-                                                        hex = %hex::encode(&id_bytes),
-                                                        "Received ACK with invalid UUID bytes in list (expected 16)"
-                                                    );
-                                                }
+                                            let (uuids, invalid) = parse_ack_ids(ack.message_ids);
+                                            for id_bytes in invalid {
+                                                tracing::warn!(
+                                                    len = id_bytes.len(),
+                                                    hex = %hex::encode(&id_bytes),
+                                                    "Received ACK with invalid UUID bytes in list (expected 16)"
+                                                );
                                             }
 
                                             if !uuids.is_empty() {
@@ -225,5 +220,33 @@ impl Session {
 
         metrics.active_connections.add(-1, &[]);
         tracing::info!("WebSocket disconnected");
+    }
+}
+
+/// Decodes acknowledged message IDs into the valid IDs, in order, and the raw bytes of any that are not
+/// 16-byte UUIDs.
+fn parse_ack_ids(raw: Vec<Vec<u8>>) -> (Vec<Uuid>, Vec<Vec<u8>>) {
+    let mut ids = Vec::with_capacity(raw.len());
+    let mut invalid = Vec::new();
+    for bytes in raw {
+        match Uuid::from_slice(&bytes) {
+            Ok(id) => ids.push(id),
+            Err(_) => invalid.push(bytes),
+        }
+    }
+    (ids, invalid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_ack_ids_separates_invalid_ids() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let raw = vec![a.as_bytes().to_vec(), vec![1, 2, 3], b.as_bytes().to_vec(), vec![]];
+        let (ids, invalid) = parse_ack_ids(raw);
+        assert_eq!(ids, vec![a, b]);
+        assert_eq!(invalid, vec![vec![1, 2, 3], vec![]]);
     }
 }

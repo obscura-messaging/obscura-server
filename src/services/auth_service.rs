@@ -3,7 +3,7 @@ use crate::adapters::database::device_repo::DeviceRepository;
 use crate::adapters::database::refresh_token_repo::RefreshTokenRepository;
 use crate::adapters::database::user_repo::UserRepository;
 use crate::config::AuthConfig;
-use crate::domain::auth::{AuthSession, Claims, Jwt};
+use crate::domain::auth::{AuthSession, Caller, Claims, DeviceRole, Jwt};
 use crate::domain::crypto::{generate_opaque_token, hash_opaque_token};
 use crate::error::{AppError, Result};
 use argon2::{
@@ -191,10 +191,11 @@ impl AuthService {
 
     fn issue_access_token(&self, user_id: Uuid, device_id: Uuid) -> Result<(String, i64)> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0)).as_secs();
-        let exp = now.checked_add(self.config.access_token_ttl_secs).ok_or(AppError::Internal)?;
-        let claims = Claims::new(user_id, device_id, usize::try_from(exp).map_err(|_| AppError::Internal)?);
+        let claims =
+            Claims::expiring(user_id, device_id, now, self.config.access_token_ttl_secs).ok_or(AppError::Internal)?;
+        let expires_at = i64::try_from(claims.exp).map_err(|_| AppError::Internal)?;
         let jwt = self.encode_jwt(&claims)?;
-        Ok((jwt.0, i64::try_from(exp).map_err(|_| AppError::Internal)?))
+        Ok((jwt.0, expires_at))
     }
 
     /// Logs out a device by deleting its refresh tokens.
@@ -218,17 +219,17 @@ impl AuthService {
         self.refresh_repo.delete_expired(&mut conn).await
     }
 
-    /// Verifies a JWT access token and that its device still exists. Returns (`user_id`, `device_id`, `is_primary`).
+    /// Verifies a JWT access token and that its device still exists, and returns the device as a [`Caller`].
     ///
     /// # Errors
     /// Returns `AppError::Unauthorized` if the token is invalid, expired, or names a deleted device.
     /// Returns `AppError::Database` if the device lookup fails.
-    pub(crate) async fn authenticate(&self, jwt: &Jwt) -> Result<(Uuid, Uuid, bool)> {
+    pub(crate) async fn authenticate(&self, jwt: &Jwt) -> Result<Caller> {
         let (user_id, device_id) = self.verify_token(jwt)?;
         let mut conn = self.pool.acquire().await?;
         let is_primary =
             self.device_repo.find_is_primary(&mut conn, device_id, user_id).await?.ok_or(AppError::Unauthorized)?;
-        Ok((user_id, device_id, is_primary))
+        Ok(Caller::new(user_id, device_id, DeviceRole::from_is_primary(is_primary)))
     }
 
     /// Checks whether a device still exists.
@@ -276,7 +277,7 @@ mod tests {
             access_token_ttl_secs: 3600,
             refresh_token_ttl_days: 7,
             refresh_token_cleanup_interval_secs: 3600,
-            max_devices_per_user: 10,
+            max_devices_per_user: std::num::NonZeroU32::new(10).unwrap(),
         };
         let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("Valid test pool");
         AuthService::new(config, pool, UserRepository::new(), RefreshTokenRepository::new(), DeviceRepository::new())

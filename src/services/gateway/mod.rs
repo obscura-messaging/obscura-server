@@ -135,16 +135,8 @@ impl GatewayService {
         // to prevent exhausting their bundle during an active session.
         match self.key_service.check_pre_key_status(device_id).await {
             Ok(Some(status)) => {
-                let frame = proto::WebSocketFrame {
-                    payload: Some(proto::web_socket_frame::Payload::PreKeyStatus(proto::PreKeyStatus {
-                        one_time_pre_key_count: status.one_time_pre_key_count,
-                        min_threshold: status.min_threshold,
-                    })),
-                };
-                let mut buf = Vec::new();
-                if frame.encode(&mut buf).is_ok() {
-                    let _ = socket.send(WsMessage::Binary(buf.into())).await;
-                }
+                let frame = proto::WebSocketFrame::from(status).encode_to_vec();
+                let _ = socket.send(WsMessage::Binary(frame.into())).await;
             }
 
             Err(e) => {

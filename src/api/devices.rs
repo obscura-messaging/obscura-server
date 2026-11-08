@@ -1,9 +1,9 @@
 use crate::api::AppState;
-use crate::api::middleware::AuthUser;
 use crate::api::schemas::auth::{AuthResponse, RegistrationRequest, ResetAccountRequest};
 use crate::api::schemas::devices::{
     CreateDeviceRequest, CreateLinkSessionRequest, DeviceListResponse, DeviceResponse, LinkSessionResponse,
 };
+use crate::domain::auth::Caller;
 use crate::error::{AppError, Result};
 use crate::services::device_service::NewLinkedDevice;
 use axum::{
@@ -73,12 +73,12 @@ pub(crate) async fn create_link_session(
 /// Returns `AppError::Conflict` if the session is already approved.
 /// Returns `AppError::PayloadTooLarge` if the body exceeds the size cap.
 pub(crate) async fn approve_link_session(
-    auth: AuthUser,
+    auth: Caller,
     State(state): State<AppState>,
     Path(id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse> {
-    state.device_service.approve_link_session(auth.user_id, auth.is_primary, &id, &body).await?;
+    state.device_service.approve_link_session(&auth, &id, &body).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -117,8 +117,8 @@ pub(crate) async fn create_device(
 ///
 /// # Errors
 /// Returns `AppError::Database` if the query fails.
-pub(crate) async fn list_devices(auth_user: AuthUser, State(state): State<AppState>) -> Result<impl IntoResponse> {
-    let devices = state.device_service.list_devices(auth_user.user_id).await?;
+pub(crate) async fn list_devices(auth_user: Caller, State(state): State<AppState>) -> Result<impl IntoResponse> {
+    let devices = state.device_service.list_devices(auth_user.user_id()).await?;
 
     let response = DeviceListResponse { devices: devices.into_iter().map(DeviceResponse::from).collect() };
 
@@ -131,10 +131,10 @@ pub(crate) async fn list_devices(auth_user: AuthUser, State(state): State<AppSta
 /// Returns `AppError::NotFound` if the device doesn't exist or isn't owned by the user.
 /// Returns `AppError::Forbidden` if the caller may not delete the device.
 pub(crate) async fn delete_device(
-    auth: AuthUser,
+    auth: Caller,
     State(state): State<AppState>,
     Path(device_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    state.device_service.delete_device(auth.user_id, auth.device_id, auth.is_primary, device_id).await?;
+    state.device_service.delete_device(&auth, device_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -1,7 +1,9 @@
 use crate::api::AppState;
-use crate::api::middleware::AuthUser;
 use crate::api::schemas::attachments::AttachmentResponse;
+use crate::domain::attachment::etag;
+use crate::domain::auth::Caller;
 use crate::error::{AppError, Result};
+use crate::services::attachment_service::Download;
 use axum::{
     Json,
     body::Body,
@@ -18,14 +20,14 @@ use uuid::Uuid;
 /// Returns `AppError::LengthRequired` if the Content-Length header is missing.
 /// Returns `AppError::Internal` if there is an error during upload.
 pub(crate) async fn upload_attachment(
-    _auth: AuthUser,
+    _auth: Caller,
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Body,
 ) -> Result<impl IntoResponse> {
     let content_len = headers
         .get(header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok().and_then(|s| s.parse::<usize>().ok()))
+        .and_then(|v| v.to_str().ok().and_then(|s| s.parse::<u64>().ok()))
         .ok_or(AppError::LengthRequired)?;
 
     // Bridge Axum Body -> StorageStream (using neutral std::io::Error)
@@ -45,22 +47,18 @@ pub(crate) async fn upload_attachment(
 /// # Panics
 /// Panics if the default Content-Type cannot be parsed.
 pub(crate) async fn download_attachment(
-    _auth: AuthUser,
+    _auth: Caller,
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
     // 1. Immutable Caching Shortcut: If ID matches ETag, it's definitely the same file.
-    if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) {
-        let if_none_match_id = if_none_match.trim_matches('"');
-        if if_none_match_id == id.to_string() {
-            return Ok(StatusCode::NOT_MODIFIED.into_response());
-        }
-    }
+    let if_none_match = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok());
+    let (content_length, stream) = match state.attachment_service.download(id, if_none_match).await? {
+        Download::NotModified => return Ok(StatusCode::NOT_MODIFIED.into_response()),
+        Download::Content { length, stream } => (length, stream),
+    };
 
-    let (content_length, stream) = state.attachment_service.download(id).await?;
-
-    // Bridge StorageStream -> Axum Body
     let body = Body::from_stream(stream);
     let mut response = Response::new(body);
 
@@ -69,10 +67,7 @@ pub(crate) async fn download_attachment(
         header::CONTENT_LENGTH,
         HeaderValue::from_str(&content_length.to_string()).map_err(|_| AppError::Internal)?,
     );
-    // Use the ID as the ETag for caching
-    response
-        .headers_mut()
-        .insert(header::ETAG, HeaderValue::from_str(&format!("\"{id}\"")).map_err(|_| AppError::Internal)?);
+    response.headers_mut().insert(header::ETAG, HeaderValue::from_str(&etag(id)).map_err(|_| AppError::Internal)?);
 
     Ok(response)
 }

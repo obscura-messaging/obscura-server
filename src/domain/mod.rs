@@ -1,3 +1,4 @@
+pub mod attachment;
 pub mod auth;
 pub mod crypto;
 pub mod device;

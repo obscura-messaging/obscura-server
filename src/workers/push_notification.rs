@@ -160,15 +160,10 @@ impl PushNotificationWorker {
         // 1. Batch lookup tokens for all devices
         let device_token_pairs = self.push_token_service.find_tokens_for_devices(&device_ids).await?;
 
-        let devices_with_tokens: std::collections::HashSet<Uuid> =
-            device_token_pairs.iter().map(|(id, _)| *id).collect();
-
-        // 2. Identify and remove jobs for devices who have no token
-        for device_id in &device_ids {
-            if !devices_with_tokens.contains(device_id) {
-                tracing::info!(%device_id, "Device has no registered push token, removing job");
-                let _ = self.notification_service.complete_push_job(*device_id).await;
-            }
+        // 2. Remove the jobs of devices with no token, which can never be sent
+        for device_id in devices_without_tokens(&device_ids, &device_token_pairs) {
+            tracing::info!(%device_id, "Device has no registered push token, removing job");
+            let _ = self.notification_service.complete_push_job(device_id).await;
         }
 
         // 3. Dispatch concurrently, bounded by the semaphore
@@ -188,33 +183,18 @@ impl PushNotificationWorker {
                 async move {
                     let _permit = permit;
 
-                    match provider.send_push(&token).await {
-                        Ok(()) => {
-                            tracing::debug!("Push notification sent successfully");
-                            metrics.sent.add(1, &[]);
-                            // Success: Remove job from Redis
+                    let result = provider.send_push(&token).await;
+                    record_outcome(&metrics, &result);
+                    match JobAction::for_result(&result) {
+                        JobAction::Complete => {
                             let _ = notification_service.complete_push_job(device_id).await;
                         }
-                        Err(PushError::Unregistered) => {
-                            tracing::info!("Token unregistered, reporting to invalid token cleanup");
-                            metrics.invalidated_tokens.add(1, &[]);
-
-                            // Definitively failed: Remove job from Redis anyway
+                        JobAction::CompleteAndInvalidateToken => {
                             let _ = notification_service.complete_push_job(device_id).await;
-
                             // Send to cleanup for batch DB deletion
                             let _ = tx.send(token).await;
                         }
-                        Err(PushError::QuotaExceeded) => {
-                            tracing::warn!("Push quota exceeded, allowing visibility timeout to trigger retry");
-                            metrics.errors.add(1, &[KeyValue::new("reason", "quota_exceeded")]);
-                            // We do NOT delete the job; it will be retried when the lease expires.
-                        }
-                        Err(PushError::Other(e)) => {
-                            tracing::error!(error = %e, "Failed to send push notification, will retry");
-                            metrics.errors.add(1, &[KeyValue::new("reason", "other")]);
-                            // We do NOT delete the job; it will be retried when the lease expires.
-                        }
+                        JobAction::Retry => {}
                     }
                 }
                 .instrument(tracing::debug_span!("dispatch_push", %device_id)),
@@ -222,5 +202,75 @@ impl PushNotificationWorker {
         }
 
         Ok(())
+    }
+}
+
+/// What to do with a leased push job once its push has been attempted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JobAction {
+    /// The push was delivered: remove the job.
+    Complete,
+    /// The device token will never work again: remove the job, and the token too.
+    CompleteAndInvalidateToken,
+    /// A failure that may pass: keep the job, so it is retried when its lease expires.
+    Retry,
+}
+
+impl JobAction {
+    const fn for_result(result: &Result<(), PushError>) -> Self {
+        match result {
+            Ok(()) => Self::Complete,
+            Err(PushError::Unregistered) => Self::CompleteAndInvalidateToken,
+            Err(PushError::QuotaExceeded | PushError::Other(_)) => Self::Retry,
+        }
+    }
+}
+
+fn record_outcome(metrics: &Metrics, result: &Result<(), PushError>) {
+    match result {
+        Ok(()) => {
+            tracing::debug!("Push notification sent successfully");
+            metrics.sent.add(1, &[]);
+        }
+        Err(PushError::Unregistered) => {
+            tracing::info!("Token unregistered, reporting to invalid token cleanup");
+            metrics.invalidated_tokens.add(1, &[]);
+        }
+        Err(PushError::QuotaExceeded) => {
+            tracing::warn!("Push quota exceeded, allowing visibility timeout to trigger retry");
+            metrics.errors.add(1, &[KeyValue::new("reason", "quota_exceeded")]);
+        }
+        Err(PushError::Other(e)) => {
+            tracing::error!(error = %e, "Failed to send push notification, will retry");
+            metrics.errors.add(1, &[KeyValue::new("reason", "other")]);
+        }
+    }
+}
+
+/// The leased devices that have no push token, in lease order.
+fn devices_without_tokens(leased: &[Uuid], tokens: &[(Uuid, String)]) -> Vec<Uuid> {
+    let with_tokens: std::collections::HashSet<Uuid> = tokens.iter().map(|(id, _)| *id).collect();
+    leased.iter().copied().filter(|id| !with_tokens.contains(id)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_job_action_for_result() {
+        assert_eq!(JobAction::for_result(&Ok(())), JobAction::Complete);
+        assert_eq!(JobAction::for_result(&Err(PushError::Unregistered)), JobAction::CompleteAndInvalidateToken);
+        assert_eq!(JobAction::for_result(&Err(PushError::QuotaExceeded)), JobAction::Retry);
+        assert_eq!(JobAction::for_result(&Err(PushError::Other(anyhow::anyhow!("boom")))), JobAction::Retry);
+    }
+
+    #[test]
+    fn test_devices_without_tokens() {
+        let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let tokens = vec![(b, "token-b".to_string())];
+        assert_eq!(devices_without_tokens(&[a, b, c], &tokens), vec![a, c]);
+        assert_eq!(devices_without_tokens(&[b], &tokens), Vec::<Uuid>::new());
+        assert_eq!(devices_without_tokens(&[], &tokens), Vec::<Uuid>::new());
     }
 }

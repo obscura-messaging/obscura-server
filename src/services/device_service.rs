@@ -3,8 +3,10 @@ use crate::adapters::database::device_repo::DeviceRepository;
 use crate::adapters::database::link_session_repo::LinkSessionRepository;
 use crate::adapters::database::user_repo::UserRepository;
 use crate::domain::auth::AuthSession;
+use crate::domain::auth::Caller;
 use crate::domain::crypto::{PublicKey, generate_opaque_token, hash_opaque_token};
 use crate::domain::device::Device;
+use crate::domain::keys::check_pre_key_batch;
 use crate::domain::keys::{OneTimePreKey, SignedPreKey};
 use crate::domain::notification::DeviceEvent;
 use crate::error::{AppError, Result};
@@ -12,6 +14,7 @@ use crate::services::auth_service::AuthService;
 use crate::services::key_service::KeyService;
 use crate::services::notification_service::NotificationService;
 use opentelemetry::{global, metrics::Counter};
+use std::num::NonZeroU32;
 use std::time::Duration;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -85,7 +88,7 @@ pub struct DeviceService {
     auth_service: AuthService,
     notifier: NotificationService,
     metrics: Metrics,
-    max_devices_per_user: i64,
+    max_devices_per_user: NonZeroU32,
 }
 
 impl DeviceService {
@@ -99,7 +102,7 @@ impl DeviceService {
         key_service: KeyService,
         auth_service: AuthService,
         notifier: NotificationService,
-        max_devices_per_user: i64,
+        max_devices_per_user: NonZeroU32,
     ) -> Self {
         Self {
             pool,
@@ -131,7 +134,7 @@ impl DeviceService {
         password: String,
         keys: NewDeviceKeys,
     ) -> Result<AuthSession> {
-        self.key_service.check_batch_size(&keys.one_time_pre_keys)?;
+        check_pre_key_batch(self.key_service.max_pre_keys(), keys.one_time_pre_keys.len())?;
         let password_hash = self.auth_service.hash_password(&password).await?;
 
         let mut tx = self.pool.begin().await?;
@@ -175,17 +178,10 @@ impl DeviceService {
     /// Returns `AppError::PayloadTooLarge` if the body exceeds the size cap.
     /// Returns `AppError::NotFound` if the session is unknown, expired, or another user's.
     /// Returns `AppError::Conflict` if the session is already approved.
-    #[tracing::instrument(skip(self, id, body), fields(user.id = %user_id, body.len = body.len()), err(level = "warn"))]
-    pub(crate) async fn approve_link_session(
-        &self,
-        user_id: Uuid,
-        caller_is_primary: bool,
-        id: &str,
-        body: &[u8],
-    ) -> Result<()> {
-        if !caller_is_primary {
-            return Err(AppError::Forbidden("Primary device required".into()));
-        }
+    #[tracing::instrument(skip(self, caller, id, body), fields(user.id = %caller.user_id(), body.len = body.len()), err(level = "warn"))]
+    pub(crate) async fn approve_link_session(&self, caller: &Caller, id: &str, body: &[u8]) -> Result<()> {
+        caller.require_primary()?;
+        let user_id = caller.user_id();
         if body.len() > MAX_LINK_SESSION_BODY_BYTES {
             return Err(AppError::PayloadTooLarge);
         }
@@ -234,7 +230,7 @@ impl DeviceService {
         err(level = "warn")
     )]
     pub(crate) async fn create_linked_device(&self, device: NewLinkedDevice) -> Result<AuthSession> {
-        self.key_service.check_batch_size(&device.keys.one_time_pre_keys)?;
+        check_pre_key_batch(self.key_service.max_pre_keys(), device.keys.one_time_pre_keys.len())?;
         let id_hash = hash_opaque_token(&device.link_session_id);
         let mut tx = self.pool.begin().await?;
 
@@ -252,7 +248,7 @@ impl DeviceService {
         }
 
         let device_count = self.device_repo.count_by_user(&mut tx, user_id).await?;
-        if device_count >= self.max_devices_per_user {
+        if device_count >= i64::from(self.max_devices_per_user.get()) {
             return Err(AppError::Forbidden(format!(
                 "Device limit reached. Maximum allowed is {}.",
                 self.max_devices_per_user
@@ -306,24 +302,13 @@ impl DeviceService {
     /// # Errors
     /// Returns `AppError::NotFound` if the device doesn't exist or isn't owned by the user.
     /// Returns `AppError::Forbidden` if the caller may not delete the device.
-    #[tracing::instrument(skip(self), fields(user.id = %user_id, device.id = %device_id), err(level = "warn"))]
-    pub(crate) async fn delete_device(
-        &self,
-        user_id: Uuid,
-        caller_device_id: Uuid,
-        caller_is_primary: bool,
-        device_id: Uuid,
-    ) -> Result<()> {
-        if caller_device_id != device_id && !caller_is_primary {
-            return Err(AppError::Forbidden("Only the primary device can delete other devices".into()));
-        }
-
+    #[tracing::instrument(skip(self, caller), fields(user.id = %caller.user_id(), device.id = %device_id), err(level = "warn"))]
+    pub(crate) async fn delete_device(&self, caller: &Caller, device_id: Uuid) -> Result<()> {
+        let user_id = caller.user_id();
         let mut tx = self.pool.begin().await?;
         self.user_repo.lock_identity_key(&mut tx, user_id).await?;
-        let target = self.device_repo.find_by_id(&mut tx, device_id, user_id).await?.ok_or(AppError::NotFound)?;
-        if target.is_primary {
-            return Err(AppError::Forbidden("The primary device cannot be deleted; reset the account instead".into()));
-        }
+        let target = self.device_repo.find_by_id(&mut tx, device_id, user_id).await?;
+        caller.authorize_deletion(device_id, target.as_ref())?;
         self.device_repo.delete(&mut tx, device_id, user_id).await?;
         tx.commit().await?;
 
@@ -353,7 +338,7 @@ impl DeviceService {
         password: &str,
         keys: NewDeviceKeys,
     ) -> Result<AuthSession> {
-        self.key_service.check_batch_size(&keys.one_time_pre_keys)?;
+        check_pre_key_batch(self.key_service.max_pre_keys(), keys.one_time_pre_keys.len())?;
         let user_id = self.auth_service.verify_credentials(username, password).await?;
 
         let mut tx = self.pool.begin().await?;

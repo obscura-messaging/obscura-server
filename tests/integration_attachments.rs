@@ -122,7 +122,7 @@ async fn test_attachment_cleanup() {
     }
 
     // 2. Put file in S3
-    let key = format!("{}{}", config.attachment.prefix, id);
+    let key = config.attachment.object_key(id);
     app.s3_client
         .put_object()
         .bucket(&config.storage.bucket)
@@ -139,6 +139,7 @@ async fn test_attachment_cleanup() {
         AttachmentRepository::new(),
         storage_adapter,
         config.attachment.clone(),
+        config.attachment.size_limits().unwrap(),
         config.ttl_days,
     );
     let worker = AttachmentCleanupWorker::new(service, config.attachment.cleanup_interval_secs);
@@ -297,7 +298,7 @@ async fn test_expired_attachment_is_not_downloadable() {
     app.s3_client
         .put_object()
         .bucket(&config.storage.bucket)
-        .key(format!("{}{}", config.attachment.prefix, id))
+        .key(config.attachment.object_key(id))
         .body(aws_sdk_s3::primitives::ByteStream::from(b"expired data".to_vec()))
         .send()
         .await
@@ -334,6 +335,34 @@ async fn test_attachment_missing_from_storage_is_not_found() {
         .client
         .get(format!("{}/v1/attachments/{}", app.server_url, id))
         .header("Authorization", format!("Bearer {}", user.token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_expired_attachment_is_not_found_even_with_a_matching_etag() {
+    let mut config = common::get_test_config();
+    config.storage.bucket = format!("test-att-etag-{}", &Uuid::new_v4().to_string()[..8]);
+
+    let app = common::TestApp::spawn_with_config(config.clone()).await;
+    common::ensure_storage_bucket(&app.s3_client, &config.storage.bucket).await;
+    let user = app.register_user(&common::generate_username("att_etag")).await;
+
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO attachments (id, expires_at) VALUES ($1, NOW() - INTERVAL '1 day')")
+        .bind(id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    // A client still holding the expired content must not be told its copy is current.
+    let resp = app
+        .client
+        .get(format!("{}/v1/attachments/{}", app.server_url, id))
+        .header("Authorization", format!("Bearer {}", user.token))
+        .header("If-None-Match", format!("\"{id}\""))
         .send()
         .await
         .unwrap();

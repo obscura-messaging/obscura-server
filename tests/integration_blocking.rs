@@ -22,7 +22,7 @@ mod common;
 async fn test_ping_pong_under_load() {
     // 1. Setup with large batch limit
     let mut config = common::get_test_config();
-    config.websocket.message_fetch_batch_size = 100;
+    config.websocket.message_fetch_batch_size = std::num::NonZeroU32::new(100).unwrap();
 
     let app = common::TestApp::spawn_with_config(config).await;
 

@@ -327,7 +327,7 @@ async fn test_batch_empty() {
 #[tokio::test]
 async fn test_batch_too_large() {
     let mut config = common::get_test_config();
-    config.messaging.send_batch_limit = 5;
+    config.messaging.send_batch_limit = std::num::NonZeroUsize::new(5).unwrap();
 
     let app = TestApp::spawn_with_config(config).await;
     let user = app.register_user(&common::generate_username("limit")).await;

@@ -368,7 +368,7 @@ async fn test_a_listed_recipient_whose_known_devices_are_gone_reports_the_curren
 #[tokio::test]
 async fn test_too_many_recipients_is_rejected_with_413() {
     let mut config = common::get_test_config();
-    config.messaging.send_batch_limit = 2;
+    config.messaging.send_batch_limit = std::num::NonZeroUsize::new(2).unwrap();
     let app = TestApp::spawn_with_config(config).await;
     let alice = app.register_user(&common::generate_username("cd_limit")).await;
 

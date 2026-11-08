@@ -1,4 +1,5 @@
 use crate::adapters::storage::{ObjectStorage, StorageError, StorageResult, StorageStream};
+use crate::domain::attachment::{SizeLimits, SizeViolation};
 use async_trait::async_trait;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::primitives::ByteStream;
@@ -34,9 +35,8 @@ impl ObjectStorage for S3Storage {
         &self,
         key: &str,
         mut stream: StorageStream,
-        content_len: Option<usize>,
-        min_size: usize,
-        max_size: usize,
+        content_len: Option<u64>,
+        limits: SizeLimits,
     ) -> StorageResult<u64> {
         let (tx, rx) = mpsc::channel(2);
         let limit_exceeded = Arc::new(AtomicBool::new(false));
@@ -51,9 +51,9 @@ impl ObjectStorage for S3Storage {
                 while let Some(item) = stream.next().await {
                     match item {
                         Ok(bytes) => {
-                            current_total += u64::try_from(bytes.len()).unwrap_or(0);
-                            if current_total > u64::try_from(max_size).unwrap_or(u64::MAX) {
-                                tracing::warn!(current_total = %current_total, max_size = %max_size, "Size limit exceeded in bridge task");
+                            current_total += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                            if limits.check_partial(current_total).is_err() {
+                                tracing::warn!(current_total = %current_total, limits = ?limits, "Size limit exceeded in bridge task");
                                 limit_signal.store(true, Ordering::SeqCst);
                                 break;
                             }
@@ -88,16 +88,16 @@ impl ObjectStorage for S3Storage {
 
         // PRIORITIZE: Check if we manually triggered a size limit abortion
         if limit_exceeded.load(Ordering::SeqCst) {
-            return Err(StorageError::ExceedsLimit);
+            return Err(SizeViolation::TooLarge.into());
         }
 
         match res {
             Ok(_) => {
                 let final_total = total_uploaded.load(Ordering::SeqCst);
-                if final_total < u64::try_from(min_size).unwrap_or(0) {
+                if let Err(violation) = limits.check(final_total) {
                     // Cleanup failed upload
                     let _ = self.delete(key).await;
-                    return Err(StorageError::BelowMinSize);
+                    return Err(violation.into());
                 }
                 Ok(final_total)
             }
@@ -106,7 +106,7 @@ impl ObjectStorage for S3Storage {
                 if !bridge_handle.is_finished() {
                     let _ = bridge_handle.await;
                     if limit_exceeded.load(Ordering::SeqCst) {
-                        return Err(StorageError::ExceedsLimit);
+                        return Err(SizeViolation::TooLarge.into());
                     }
                 }
 

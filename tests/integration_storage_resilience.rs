@@ -15,6 +15,7 @@
 )]
 use futures::{StreamExt, stream};
 use obscura_server::adapters::storage::{ObjectStorage, S3Storage};
+use obscura_server::domain::attachment::SizeLimits;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -37,7 +38,7 @@ async fn test_s3_storage_faulty_stream_resilience() {
 
     // 2. Attempt 'put'
     let key = "faulty-test-key";
-    let res = storage.put(key, faulty_stream, None, 0, 1024).await;
+    let res = storage.put(key, faulty_stream, None, SizeLimits::new(0, 1024).unwrap()).await;
 
     // 3. Verify it failed
     assert!(res.is_err(), "Storage 'put' should fail on faulty stream");
@@ -64,7 +65,7 @@ async fn test_s3_storage_max_size_enforcement() {
 
     // 2. Attempt 'put'
     let key = "too-large-key";
-    let res = storage.put(key, stream, None, 0, 100).await;
+    let res = storage.put(key, stream, None, SizeLimits::new(0, 100).unwrap()).await;
 
     // 3. Verify it failed
     assert!(res.is_err(), "Storage 'put' should fail when exceeding max size");
@@ -90,7 +91,7 @@ async fn test_s3_storage_min_size_enforcement() {
 
     // 2. Attempt 'put'
     let key = "too-small-key";
-    let res = storage.put(key, stream, None, 10, 100).await;
+    let res = storage.put(key, stream, None, SizeLimits::new(10, 100).unwrap()).await;
 
     // 3. Verify it failed (min_size violation returns error)
     assert!(res.is_err(), "Storage 'put' should fail when below min size");

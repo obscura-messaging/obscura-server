@@ -1,6 +1,7 @@
 use crate::api::schemas::crypto::{PublicKey, Signature};
 use crate::domain::crypto;
 use crate::domain::keys;
+use crate::proto::obscura::v1 as proto;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,9 +81,37 @@ impl TryFrom<PreKeyUploadRequest> for keys::PreKeyUpload {
     }
 }
 
+impl From<keys::PreKeyStatus> for proto::PreKeyStatus {
+    fn from(status: keys::PreKeyStatus) -> Self {
+        Self {
+            one_time_pre_key_count: i32::try_from(status.count()).unwrap_or(i32::MAX),
+            min_threshold: i32::try_from(status.threshold()).unwrap_or(i32::MAX),
+        }
+    }
+}
+
+impl From<keys::PreKeyStatus> for proto::WebSocketFrame {
+    fn from(status: keys::PreKeyStatus) -> Self {
+        Self { payload: Some(proto::web_socket_frame::Payload::PreKeyStatus(status.into())) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_pre_key_status_frame() {
+        let status = keys::PreKeyStatus::if_low(5, 20).unwrap();
+        let frame = proto::WebSocketFrame::from(status);
+        assert_eq!(
+            frame.payload,
+            Some(proto::web_socket_frame::Payload::PreKeyStatus(proto::PreKeyStatus {
+                one_time_pre_key_count: 5,
+                min_threshold: 20,
+            }))
+        );
+    }
     use crate::api::schemas::crypto::PublicKey as SchemaPublicKey;
     use crate::domain::crypto::DJB_KEY_PREFIX;
     use base64::{Engine as _, engine::general_purpose::STANDARD};

@@ -25,7 +25,7 @@ use std::time::Duration;
 #[tokio::test]
 async fn test_sub_batching_delivers_all_messages() {
     let mut config = common::get_test_config();
-    config.websocket.message_fetch_batch_size = 20;
+    config.websocket.message_fetch_batch_size = std::num::NonZeroU32::new(20).unwrap();
     // 1 KiB limit forces virtually every message into its own sub-batch.
     config.websocket.max_batch_bytes = 1024;
 
@@ -76,7 +76,7 @@ async fn test_sub_batching_delivers_all_messages() {
 #[tokio::test]
 async fn test_oversized_single_message_still_delivered() {
     let mut config = common::get_test_config();
-    config.websocket.message_fetch_batch_size = 10;
+    config.websocket.message_fetch_batch_size = std::num::NonZeroU32::new(10).unwrap();
     // 1 KiB limit — each 4 KiB message exceeds it on its own.
     config.websocket.max_batch_bytes = 1024;
 
@@ -100,7 +100,7 @@ async fn test_oversized_single_message_still_delivered() {
 #[tokio::test]
 async fn test_mixed_size_messages_all_delivered() {
     let mut config = common::get_test_config();
-    config.websocket.message_fetch_batch_size = 20;
+    config.websocket.message_fetch_batch_size = std::num::NonZeroU32::new(20).unwrap();
     // 2 KiB limit — small messages batch together, large ones force splits.
     config.websocket.max_batch_bytes = 2048;
 
