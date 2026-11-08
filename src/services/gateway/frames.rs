@@ -58,7 +58,7 @@ mod tests {
 
     #[test]
     fn test_pre_key_status_frame() {
-        let status = PreKeyStatus::if_low(5, 20).unwrap();
+        let status = PreKeyStatus::below_threshold(5, 20).unwrap();
         let frame = proto::WebSocketFrame::from(status);
         assert_eq!(
             frame.payload,
