@@ -1,12 +1,15 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::key_repo::KeyRepository;
 use crate::config::MessagingConfig;
-use crate::domain::keys::{OneTimePreKey, PreKeyBundle, PreKeyLimit, PreKeyStatus, PreKeyUpload, SignedPreKey};
+use crate::domain::keys::{
+    OneTimePreKey, PreKeyBundle, PreKeyStatus, PreKeyUpload, SignedPreKey, check_pre_key_batch, excess_pre_keys,
+};
 use crate::domain::notification::DeviceEvent;
 use crate::error::{AppError, Result};
 use crate::services::notification_service::NotificationService;
 use opentelemetry::{global, metrics::Counter};
 use sqlx::PgConnection;
+use std::num::NonZeroU32;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -32,21 +35,19 @@ pub struct KeyService {
     repo: KeyRepository,
     notifier: NotificationService,
     config: MessagingConfig,
-    pre_key_limit: PreKeyLimit,
     metrics: Metrics,
 }
 
 impl KeyService {
     #[must_use]
     pub fn new(pool: DbPool, repo: KeyRepository, notifier: NotificationService, config: MessagingConfig) -> Self {
-        let pre_key_limit = PreKeyLimit::new(config.max_pre_keys);
-        Self { pool, repo, notifier, config, pre_key_limit, metrics: Metrics::new() }
+        Self { pool, repo, notifier, config, metrics: Metrics::new() }
     }
 
     /// The most one-time pre-keys a device may hold or upload at once.
     #[must_use]
-    pub(crate) const fn pre_key_limit(&self) -> PreKeyLimit {
-        self.pre_key_limit
+    pub(crate) const fn max_pre_keys(&self) -> NonZeroU32 {
+        self.config.max_pre_keys
     }
 
     /// Fetches one pre-key bundle for each of a user's devices, or for `device_id` only, consuming a
@@ -105,7 +106,7 @@ impl KeyService {
     /// Returns `AppError::Database` if the database operation fails.
     #[tracing::instrument(skip(self, upload), fields(device.id = %device_id), err(level = "warn"))]
     pub(crate) async fn upload_keys(&self, device_id: Uuid, upload: PreKeyUpload) -> Result<()> {
-        self.pre_key_limit.check_batch(upload.one_time_pre_keys.len())?;
+        check_pre_key_batch(self.config.max_pre_keys, upload.one_time_pre_keys.len())?;
 
         let mut tx = self.pool.begin().await?;
 
@@ -124,7 +125,7 @@ impl KeyService {
         }
 
         let current_count = self.repo.count_one_time_pre_keys(&mut tx, device_id).await?;
-        let excess = self.pre_key_limit.excess(current_count, upload.one_time_pre_keys.len());
+        let excess = excess_pre_keys(self.config.max_pre_keys, current_count, upload.one_time_pre_keys.len());
         if excess > 0 {
             self.repo.delete_oldest_one_time_pre_keys(&mut tx, device_id, excess).await?;
         }
@@ -149,7 +150,7 @@ impl KeyService {
         signed_pre_key: &SignedPreKey,
         one_time_pre_keys: &[OneTimePreKey],
     ) -> Result<()> {
-        self.pre_key_limit.check_batch(one_time_pre_keys.len())?;
+        check_pre_key_batch(self.config.max_pre_keys, one_time_pre_keys.len())?;
         self.store_pre_keys(conn, device_id, signed_pre_key, one_time_pre_keys).await
     }
 

@@ -1,6 +1,6 @@
 use crate::api::AppState;
 use crate::api::schemas::attachments::AttachmentResponse;
-use crate::domain::attachment::AttachmentEtag;
+use crate::domain::attachment::etag;
 use crate::domain::auth::Caller;
 use crate::error::{AppError, Result};
 use crate::services::attachment_service::Download;
@@ -67,10 +67,7 @@ pub(crate) async fn download_attachment(
         header::CONTENT_LENGTH,
         HeaderValue::from_str(&content_length.to_string()).map_err(|_| AppError::Internal)?,
     );
-    response.headers_mut().insert(
-        header::ETAG,
-        HeaderValue::from_str(&AttachmentEtag::new(id).header_value()).map_err(|_| AppError::Internal)?,
-    );
+    response.headers_mut().insert(header::ETAG, HeaderValue::from_str(&etag(id)).map_err(|_| AppError::Internal)?);
 
     Ok(response)
 }

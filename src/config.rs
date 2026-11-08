@@ -1,4 +1,4 @@
-use crate::domain::attachment::{InvertedSizeLimits, SizeLimits};
+use crate::domain::attachment::SizeLimits;
 use clap::{Args, Parser};
 use ipnetwork::IpNetwork;
 use std::num::{NonZeroU32, NonZeroUsize};
@@ -8,8 +8,8 @@ use uuid::Uuid;
 /// A configuration whose values parse individually but contradict each other.
 #[derive(Error, Debug)]
 pub enum ConfigError {
-    #[error(transparent)]
-    AttachmentSizeLimits(#[from] InvertedSizeLimits),
+    #[error("Attachment minimum size {min} exceeds maximum size {max}")]
+    AttachmentSizeLimits { min: u64, max: u64 },
     #[error(
         "FCM is half configured: {missing} is not set. Set both OBSCURA_FCM_PROJECT_ID and OBSCURA_FCM_CREDENTIALS_FILE, or neither"
     )]
@@ -699,9 +699,13 @@ impl Default for AttachmentConfig {
 
 impl AttachmentConfig {
     /// # Errors
-    /// Returns [`InvertedSizeLimits`] if the minimum size exceeds the maximum.
-    pub const fn size_limits(&self) -> Result<SizeLimits, InvertedSizeLimits> {
-        SizeLimits::new(self.min_size_bytes, self.max_size_bytes)
+    /// Returns [`ConfigError::AttachmentSizeLimits`] if the minimum size exceeds the maximum.
+    pub const fn size_limits(&self) -> Result<SizeLimits, ConfigError> {
+        let (min, max) = (self.min_size_bytes, self.max_size_bytes);
+        match SizeLimits::new(min, max) {
+            Some(limits) => Ok(limits),
+            None => Err(ConfigError::AttachmentSizeLimits { min, max }),
+        }
     }
 
     /// The storage key of an attachment.
@@ -879,7 +883,7 @@ mod tests {
         let mut config = Config::default();
         config.attachment.min_size_bytes = 11;
         config.attachment.max_size_bytes = 10;
-        assert!(matches!(config.validate(), Err(ConfigError::AttachmentSizeLimits(_))));
+        assert!(matches!(config.validate(), Err(ConfigError::AttachmentSizeLimits { min: 11, max: 10 })));
     }
 
     #[test]

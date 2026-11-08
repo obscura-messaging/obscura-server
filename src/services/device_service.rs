@@ -6,6 +6,7 @@ use crate::domain::auth::AuthSession;
 use crate::domain::auth::Caller;
 use crate::domain::crypto::{PublicKey, generate_opaque_token, hash_opaque_token};
 use crate::domain::device::Device;
+use crate::domain::keys::check_pre_key_batch;
 use crate::domain::keys::{OneTimePreKey, SignedPreKey};
 use crate::domain::notification::DeviceEvent;
 use crate::error::{AppError, Result};
@@ -133,7 +134,7 @@ impl DeviceService {
         password: String,
         keys: NewDeviceKeys,
     ) -> Result<AuthSession> {
-        self.key_service.pre_key_limit().check_batch(keys.one_time_pre_keys.len())?;
+        check_pre_key_batch(self.key_service.max_pre_keys(), keys.one_time_pre_keys.len())?;
         let password_hash = self.auth_service.hash_password(&password).await?;
 
         let mut tx = self.pool.begin().await?;
@@ -229,7 +230,7 @@ impl DeviceService {
         err(level = "warn")
     )]
     pub(crate) async fn create_linked_device(&self, device: NewLinkedDevice) -> Result<AuthSession> {
-        self.key_service.pre_key_limit().check_batch(device.keys.one_time_pre_keys.len())?;
+        check_pre_key_batch(self.key_service.max_pre_keys(), device.keys.one_time_pre_keys.len())?;
         let id_hash = hash_opaque_token(&device.link_session_id);
         let mut tx = self.pool.begin().await?;
 
@@ -337,7 +338,7 @@ impl DeviceService {
         password: &str,
         keys: NewDeviceKeys,
     ) -> Result<AuthSession> {
-        self.key_service.pre_key_limit().check_batch(keys.one_time_pre_keys.len())?;
+        check_pre_key_batch(self.key_service.max_pre_keys(), keys.one_time_pre_keys.len())?;
         let user_id = self.auth_service.verify_credentials(username, password).await?;
 
         let mut tx = self.pool.begin().await?;

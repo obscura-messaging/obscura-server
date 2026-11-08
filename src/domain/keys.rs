@@ -1,7 +1,6 @@
 use crate::domain::crypto::{PublicKey, Signature};
 use crate::error::AppError;
 use std::num::NonZeroU32;
-use thiserror::Error;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -67,49 +66,24 @@ impl PreKeyStatus {
     }
 }
 
-/// The most one-time pre-keys a device may hold, which is also the most one upload may carry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PreKeyLimit(NonZeroU32);
-
-#[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
-#[error("Batch too large. Limit is {limit}")]
-pub struct BatchTooLarge {
-    pub limit: u32,
+/// Checks that an upload of `len` one-time pre-keys stays within `max_pre_keys`, the most a device may hold,
+/// which is also the most one upload may carry.
+///
+/// # Errors
+/// Returns `AppError::BadRequest` if the upload is larger.
+pub fn check_pre_key_batch(max_pre_keys: NonZeroU32, len: usize) -> Result<(), AppError> {
+    if u32::try_from(len).map_or(true, |len| len > max_pre_keys.get()) {
+        return Err(AppError::BadRequest(format!("Batch too large. Limit is {max_pre_keys}")));
+    }
+    Ok(())
 }
 
-impl From<BatchTooLarge> for AppError {
-    fn from(error: BatchTooLarge) -> Self {
-        Self::BadRequest(error.to_string())
-    }
-}
-
-impl PreKeyLimit {
-    #[must_use]
-    pub const fn new(max: NonZeroU32) -> Self {
-        Self(max)
-    }
-
-    #[must_use]
-    pub const fn get(self) -> u32 {
-        self.0.get()
-    }
-
-    /// # Errors
-    /// Returns [`BatchTooLarge`] if an upload of `len` keys exceeds the limit.
-    pub fn check_batch(self, len: usize) -> Result<(), BatchTooLarge> {
-        if u32::try_from(len).map_or(true, |len| len > self.get()) {
-            return Err(BatchTooLarge { limit: self.get() });
-        }
-        Ok(())
-    }
-
-    /// How many of a device's oldest keys to delete so that its `current` keys plus `incoming` new ones
-    /// fit within the limit.
-    #[must_use]
-    pub fn excess(self, current: i64, incoming: usize) -> i64 {
-        let total = current.saturating_add(i64::try_from(incoming).unwrap_or(i64::MAX));
-        total.saturating_sub(i64::from(self.get())).max(0)
-    }
+/// How many of a device's oldest one-time pre-keys to delete so that its `current` keys plus `incoming` new
+/// ones fit within `max_pre_keys`.
+#[must_use]
+pub fn excess_pre_keys(max_pre_keys: NonZeroU32, current: i64, incoming: usize) -> i64 {
+    let total = current.saturating_add(i64::try_from(incoming).unwrap_or(i64::MAX));
+    total.saturating_sub(i64::from(max_pre_keys.get())).max(0)
 }
 
 #[derive(Debug, Clone)]
@@ -122,8 +96,8 @@ pub struct PreKeyUpload {
 mod tests {
     use super::*;
 
-    fn limit(max: u32) -> PreKeyLimit {
-        PreKeyLimit::new(NonZeroU32::new(max).unwrap())
+    fn limit(max: u32) -> NonZeroU32 {
+        NonZeroU32::new(max).unwrap()
     }
 
     #[test]
@@ -137,16 +111,18 @@ mod tests {
 
     #[test]
     fn test_check_batch_allows_exactly_the_limit() {
-        assert_eq!(limit(50).check_batch(50), Ok(()));
-        assert_eq!(limit(50).check_batch(51), Err(BatchTooLarge { limit: 50 }));
-        assert_eq!(limit(50).check_batch(0), Ok(()));
+        assert!(check_pre_key_batch(limit(50), 50).is_ok());
+        assert!(
+            matches!(check_pre_key_batch(limit(50), 51), Err(AppError::BadRequest(msg)) if msg == "Batch too large. Limit is 50")
+        );
+        assert!(check_pre_key_batch(limit(50), 0).is_ok());
     }
 
     #[test]
     fn test_excess_is_what_does_not_fit() {
-        assert_eq!(limit(50).excess(40, 20), 10);
-        assert_eq!(limit(50).excess(40, 10), 0, "exactly at the limit");
-        assert_eq!(limit(50).excess(0, 0), 0);
-        assert_eq!(limit(50).excess(60, 0), 10, "already over, from before a lower limit");
+        assert_eq!(excess_pre_keys(limit(50), 40, 20), 10);
+        assert_eq!(excess_pre_keys(limit(50), 40, 10), 0, "exactly at the limit");
+        assert_eq!(excess_pre_keys(limit(50), 0, 0), 0);
+        assert_eq!(excess_pre_keys(limit(50), 60, 0), 10, "already over, from before a lower limit");
     }
 }

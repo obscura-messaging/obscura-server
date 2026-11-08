@@ -19,21 +19,14 @@ pub enum SizeViolation {
     TooLarge,
 }
 
-#[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
-#[error("Attachment minimum size {min} exceeds maximum size {max}")]
-pub struct InvertedSizeLimits {
-    pub min: u64,
-    pub max: u64,
-}
-
 impl SizeLimits {
-    /// # Errors
-    /// Returns [`InvertedSizeLimits`] if `min` exceeds `max`, which would reject every size.
-    pub const fn new(min: u64, max: u64) -> Result<Self, InvertedSizeLimits> {
+    /// The limits from `min` to `max`, or `None` if `min` exceeds `max`, which would reject every size.
+    #[must_use]
+    pub const fn new(min: u64, max: u64) -> Option<Self> {
         if min > max {
-            return Err(InvertedSizeLimits { min, max });
+            return None;
         }
-        Ok(Self { min, max })
+        Some(Self { min, max })
     }
 
     /// Checks the size of a complete attachment.
@@ -69,33 +62,24 @@ impl From<SizeViolation> for AppError {
     }
 }
 
-/// The entity tag of an attachment. Attachments never change, so the ID alone identifies the content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AttachmentEtag(Uuid);
+/// The `ETag` of an attachment: its ID, quoted. Attachments never change, so the ID identifies the content.
+#[must_use]
+pub fn etag(id: Uuid) -> String {
+    format!("\"{id}\"")
+}
 
-impl AttachmentEtag {
-    #[must_use]
-    pub const fn new(id: Uuid) -> Self {
-        Self(id)
-    }
-
-    /// The value of the `ETag` response header: the ID as a quoted string.
-    #[must_use]
-    pub fn header_value(&self) -> String {
-        format!("\"{}\"", self.0)
-    }
-
-    /// Whether an `If-None-Match` request header matches this tag. Follows RFC 9110's weak comparison:
-    /// `*`, or any tag in a comma-separated list, with or without a `W/` prefix. A bare unquoted ID also
-    /// matches, as earlier versions accepted it.
-    #[must_use]
-    pub fn matches(&self, if_none_match: &str) -> bool {
-        let quoted = self.header_value();
-        if_none_match.split(',').map(str::trim).any(|tag| {
-            let tag = tag.strip_prefix("W/").unwrap_or(tag);
-            tag == "*" || tag == quoted || tag == self.0.to_string()
-        })
-    }
+/// Whether an `If-None-Match` request header matches the attachment `id`.
+///
+/// Follows RFC 9110's weak comparison: `*`, or any tag in a comma-separated list, with or without a `W/`
+/// prefix. A bare unquoted ID also matches, as earlier versions accepted it.
+#[must_use]
+pub fn etag_matches(id: Uuid, if_none_match: &str) -> bool {
+    let quoted = etag(id);
+    let bare = id.to_string();
+    if_none_match.split(',').map(str::trim).any(|tag| {
+        let tag = tag.strip_prefix("W/").unwrap_or(tag);
+        tag == "*" || tag == quoted || tag == bare
+    })
 }
 
 #[cfg(test)]
@@ -105,29 +89,29 @@ mod tests {
     #[test]
     fn test_etag_header_value_is_the_quoted_id() {
         let id = Uuid::new_v4();
-        assert_eq!(AttachmentEtag::new(id).header_value(), format!("\"{id}\""));
+        assert_eq!(etag(id), format!("\"{id}\""));
     }
 
     #[test]
     fn test_etag_matches() {
         let id = Uuid::new_v4();
         let other = Uuid::new_v4();
-        let etag = AttachmentEtag::new(id);
-        assert!(etag.matches(&format!("\"{id}\"")));
-        assert!(etag.matches(&format!("W/\"{id}\"")), "weak comparison ignores W/");
-        assert!(etag.matches(&format!("\"{other}\", \"{id}\"")), "any tag in a list");
-        assert!(etag.matches("*"));
-        assert!(etag.matches(&id.to_string()), "bare IDs keep working");
-        assert!(!etag.matches(&format!("\"{other}\"")));
-        assert!(!etag.matches(""));
-        assert!(!etag.matches(&format!("\"{id}")), "a malformed tag does not match");
+        let matches = |header: &str| etag_matches(id, header);
+        assert!(matches(&format!("\"{id}\"")));
+        assert!(matches(&format!("W/\"{id}\"")), "weak comparison ignores W/");
+        assert!(matches(&format!("\"{other}\", \"{id}\"")), "any tag in a list");
+        assert!(matches("*"));
+        assert!(matches(&id.to_string()), "bare IDs keep working");
+        assert!(!matches(&format!("\"{other}\"")));
+        assert!(!matches(""));
+        assert!(!matches(&format!("\"{id}")), "a malformed tag does not match");
     }
 
     #[test]
     fn test_new_rejects_inverted_limits() {
-        assert_eq!(SizeLimits::new(11, 10), Err(InvertedSizeLimits { min: 11, max: 10 }));
-        assert!(SizeLimits::new(10, 10).is_ok(), "equal limits allow exactly one size");
-        assert!(SizeLimits::new(0, 10).is_ok());
+        assert_eq!(SizeLimits::new(11, 10), None);
+        assert!(SizeLimits::new(10, 10).is_some(), "equal limits allow exactly one size");
+        assert!(SizeLimits::new(0, 10).is_some());
     }
 
     #[test]

@@ -2,7 +2,7 @@ use crate::adapters::database::DbPool;
 use crate::adapters::database::attachment_repo::AttachmentRepository;
 use crate::adapters::storage::{ObjectStorage, StorageError, StorageStream};
 use crate::config::AttachmentConfig;
-use crate::domain::attachment::{AttachmentEtag, SizeLimits};
+use crate::domain::attachment::{SizeLimits, etag_matches};
 use crate::error::{AppError, Result};
 use opentelemetry::{
     global,
@@ -145,7 +145,7 @@ impl AttachmentService {
         }
         drop(conn);
 
-        if if_none_match.is_some_and(|header| AttachmentEtag::new(id).matches(header)) {
+        if if_none_match.is_some_and(|header| etag_matches(id, header)) {
             return Ok(Download::NotModified);
         }
 
