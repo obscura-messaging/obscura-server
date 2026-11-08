@@ -158,7 +158,7 @@ async fn test_send_message_recipient_not_found() {
     let body = resp.bytes().await.unwrap();
     let response = proto::SendMessageResponse::decode(body).unwrap();
     assert_eq!(response.invalid_device_ids, vec![bad_device.as_bytes().to_vec()]);
-    assert!(response.device_mismatches.is_empty());
+    assert!(response.device_mismatches.is_empty(), "{:?}", response.device_mismatches);
 }
 
 #[tokio::test]
@@ -290,7 +290,7 @@ async fn test_batch_partial_success() {
 
     // Verify Response: Should list ONLY the invalid device
     assert_eq!(response.invalid_device_ids, vec![bad_device.as_bytes().to_vec()]);
-    assert!(response.device_mismatches.is_empty());
+    assert!(response.device_mismatches.is_empty(), "{:?}", response.device_mismatches);
 
     // Verify Delivery: Bob and Charlie should have messages
     app.assert_message_count(user_b.device_id, 1).await;
@@ -320,8 +320,8 @@ async fn test_batch_empty() {
     assert_eq!(resp.status(), 200);
     let body = resp.bytes().await.unwrap();
     let response = proto::SendMessageResponse::decode(body).unwrap();
-    assert!(response.invalid_device_ids.is_empty());
-    assert!(response.device_mismatches.is_empty());
+    assert!(response.invalid_device_ids.is_empty(), "{:?}", response.invalid_device_ids);
+    assert!(response.device_mismatches.is_empty(), "{:?}", response.device_mismatches);
 }
 
 #[tokio::test]

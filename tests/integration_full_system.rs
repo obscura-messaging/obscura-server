@@ -62,7 +62,7 @@ async fn test_full_system_flow() {
         app_a.send_message(&sender.token, receiver.device_id, &content).await;
     }
 
-    let last_content = "Valid Message 48".as_bytes().to_vec();
+    let last_content = b"Valid Message 48".to_vec();
     expected_content.insert(last_content.clone());
     let invalid_device_id = Uuid::new_v4();
     let request = proto::SendMessageRequest {
@@ -102,7 +102,7 @@ async fn test_full_system_flow() {
 
     // 7. Verify Partial Success
     assert_eq!(response.invalid_device_ids, vec![invalid_device_id.as_bytes().to_vec()]);
-    assert!(response.device_mismatches.is_empty());
+    assert!(response.device_mismatches.is_empty(), "{:?}", response.device_mismatches);
 
     // 8. Verify Push Coalescing
     // Receiver is offline, so push notification should fire.

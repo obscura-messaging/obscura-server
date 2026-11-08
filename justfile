@@ -24,7 +24,7 @@ fmt-check:
 
 # Run clippy lints
 clippy:
-    cargo clippy -- -D warnings
+    cargo clippy --all-targets -- -D warnings
 
 # Run tests
 test:

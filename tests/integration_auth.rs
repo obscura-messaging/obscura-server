@@ -41,8 +41,8 @@ async fn test_refresh_token_flow() {
     let refresh_token_2 = json_refresh["refreshToken"].as_str().unwrap().to_string();
 
     // Assert rotation occurred
-    assert!(!user.token.is_empty());
-    assert!(!access_token_2.is_empty());
+    assert_ne!(user.token, "");
+    assert_ne!(access_token_2, "");
     assert_ne!(user.refresh_token, refresh_token_2, "Refresh token should rotate");
 
     // 3. Verify Old Refresh Token is Invalid (Rotation Check)
@@ -160,7 +160,7 @@ async fn test_request_id_propagation() {
 
     assert!(resp.headers().contains_key("x-request-id"));
     let generated_id = resp.headers().get("x-request-id").unwrap().to_str().unwrap();
-    assert!(!generated_id.is_empty());
+    assert_ne!(generated_id, "");
     // Should be a UUID (approx check)
     assert_eq!(generated_id.split('-').count(), 5);
 }
@@ -227,7 +227,7 @@ async fn test_login_requires_matching_device_id() {
     let resp_keys = app
         .client
         .get(format!("{}/v1/keys/{}", app.server_url, user.user_id))
-        .header("Authorization", format!("Bearer {}", device_token))
+        .header("Authorization", format!("Bearer {device_token}"))
         .send()
         .await
         .unwrap();

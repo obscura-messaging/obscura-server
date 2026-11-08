@@ -50,7 +50,7 @@ async fn test_device_crud_lifecycle() {
     let resp_list = app
         .client
         .get(format!("{}/v1/devices", app.server_url))
-        .header("Authorization", format!("Bearer {}", device1_token))
+        .header("Authorization", format!("Bearer {device1_token}"))
         .send()
         .await
         .unwrap();
@@ -79,7 +79,7 @@ async fn test_device_crud_lifecycle() {
     let resp_delete = app
         .client
         .delete(format!("{}/v1/devices/{}", app.server_url, device2_id))
-        .header("Authorization", format!("Bearer {}", device1_token))
+        .header("Authorization", format!("Bearer {device1_token}"))
         .send()
         .await
         .unwrap();
@@ -90,7 +90,7 @@ async fn test_device_crud_lifecycle() {
     let resp_list_after = app
         .client
         .get(format!("{}/v1/devices", app.server_url))
-        .header("Authorization", format!("Bearer {}", device1_token))
+        .header("Authorization", format!("Bearer {device1_token}"))
         .send()
         .await
         .unwrap();
