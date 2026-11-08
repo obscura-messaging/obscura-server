@@ -53,7 +53,7 @@ impl ObjectStorage for S3Storage {
                         Ok(bytes) => {
                             current_total += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
                             if limits.check_partial(current_total).is_err() {
-                                tracing::warn!(current_total = %current_total, max_size = %limits.max(), "Size limit exceeded in bridge task");
+                                tracing::warn!(current_total = %current_total, limits = ?limits, "Size limit exceeded in bridge task");
                                 limit_signal.store(true, Ordering::SeqCst);
                                 break;
                             }

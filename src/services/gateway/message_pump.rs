@@ -142,25 +142,9 @@ impl MessagePump {
 
         let envelopes: Vec<proto::Envelope> = messages.into_iter().map(proto::Envelope::from).collect();
 
-        // Split envelopes into sub-batches that stay under the WebSocket frame
-        // size limit, sending each as a separate EnvelopeBatch frame.
-        let mut current_batch: Vec<proto::Envelope> = Vec::new();
-        let mut current_size: usize = 0;
-
-        for envelope in envelopes {
-            let envelope_size = envelope.encoded_len();
-
-            if !current_batch.is_empty() && current_size + envelope_size > tuning.max_batch_bytes {
-                Self::send_batch(std::mem::take(&mut current_batch), outbound_tx, metrics).await;
-                current_size = 0;
-            }
-
-            current_size += envelope_size;
-            current_batch.push(envelope);
-        }
-
-        if !current_batch.is_empty() {
-            Self::send_batch(current_batch, outbound_tx, metrics).await;
+        // Each frame stays under the WebSocket frame size limit and goes out as its own EnvelopeBatch.
+        for frame in split_by_size(envelopes, tuning.max_batch_bytes, ProstMessage::encoded_len) {
+            Self::send_batch(frame, outbound_tx, metrics).await;
         }
 
         // A batch too long to count in a u32 is certainly full.
@@ -186,5 +170,48 @@ impl MessagePump {
         if outbound_tx.send(WsMessage::Binary(buf.into())).await.is_err() {
             metrics.outbound_dropped_total.add(1, &[KeyValue::new("reason", "channel_closed")]);
         }
+    }
+}
+
+/// Splits `items` into consecutive groups whose sizes add up to at most `max` each. An item larger than
+/// `max` on its own gets a group to itself rather than being dropped, and no group is empty.
+fn split_by_size<T>(items: Vec<T>, max: usize, size: impl Fn(&T) -> usize) -> Vec<Vec<T>> {
+    let mut groups = Vec::new();
+    let mut current = Vec::new();
+    let mut current_size: usize = 0;
+
+    for item in items {
+        let item_size = size(&item);
+        if !current.is_empty() && current_size.saturating_add(item_size) > max {
+            groups.push(std::mem::take(&mut current));
+            current_size = 0;
+        }
+        current_size = current_size.saturating_add(item_size);
+        current.push(item);
+    }
+
+    if !current.is_empty() {
+        groups.push(current);
+    }
+    groups
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn split(sizes: &[usize], max: usize) -> Vec<Vec<usize>> {
+        split_by_size(sizes.to_vec(), max, |size| *size)
+    }
+
+    #[test]
+    fn test_split_by_size() {
+        assert_eq!(split(&[], 10), Vec::<Vec<usize>>::new());
+        assert_eq!(split(&[3, 3, 3], 10), vec![vec![3, 3, 3]]);
+        assert_eq!(split(&[5, 5], 10), vec![vec![5, 5]], "exactly at the limit fits");
+        assert_eq!(split(&[5, 6], 10), vec![vec![5], vec![6]]);
+        assert_eq!(split(&[4, 4, 4, 4], 10), vec![vec![4, 4], vec![4, 4]]);
+        assert_eq!(split(&[15], 10), vec![vec![15]], "an oversized item is sent alone, not dropped");
+        assert_eq!(split(&[2, 15, 2], 10), vec![vec![2], vec![15], vec![2]]);
     }
 }

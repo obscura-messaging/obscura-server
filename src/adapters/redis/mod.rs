@@ -246,3 +246,41 @@ impl RedisClient {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_backoff_clamps_its_settings() {
+        let backoff = Backoff::new(0, 0);
+        assert_eq!((backoff.min, backoff.max), (Duration::from_secs(1), Duration::from_secs(1)), "at least 1s");
+        let backoff = Backoff::new(10, 5);
+        assert_eq!(backoff.max, Duration::from_secs(10), "the maximum is never below the minimum");
+    }
+
+    #[test]
+    fn test_backoff_delays_stay_between_min_and_a_doubling_ceiling() {
+        let mut backoff = Backoff::new(1, 8);
+        // The jitter is random, so each delay is checked against its range, many times over.
+        for ceiling in [1, 2, 4, 8, 8, 8] {
+            let delay = backoff.next_delay();
+            assert!(
+                (Duration::from_secs(1)..=Duration::from_secs(ceiling)).contains(&delay),
+                "{delay:?} outside 1s..={ceiling}s"
+            );
+        }
+        assert_eq!(backoff.current, Duration::from_secs(8), "the ceiling stops at the maximum");
+    }
+
+    #[test]
+    fn test_backoff_reset_returns_to_the_minimum() {
+        let mut backoff = Backoff::new(1, 8);
+        for _ in 0..3 {
+            backoff.next_delay();
+        }
+        backoff.reset();
+        assert_eq!(backoff.current, Duration::from_secs(1));
+        assert_eq!(backoff.next_delay(), Duration::from_secs(1), "no jitter range at the minimum");
+    }
+}

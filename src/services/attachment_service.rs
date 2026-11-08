@@ -2,7 +2,7 @@ use crate::adapters::database::DbPool;
 use crate::adapters::database::attachment_repo::AttachmentRepository;
 use crate::adapters::storage::{ObjectStorage, StorageError, StorageStream};
 use crate::config::AttachmentConfig;
-use crate::domain::attachment::SizeLimits;
+use crate::domain::attachment::{AttachmentEtag, SizeLimits};
 use crate::error::{AppError, Result};
 use opentelemetry::{
     global,
@@ -42,6 +42,16 @@ impl Metrics {
                 .build(),
         }
     }
+}
+
+/// The outcome of a download request.
+pub(crate) enum Download {
+    /// The client already holds this attachment.
+    NotModified,
+    Content {
+        length: u64,
+        stream: StorageStream,
+    },
 }
 
 #[derive(Clone)]
@@ -117,18 +127,27 @@ impl AttachmentService {
         Ok((id, expires_at.unix_timestamp()))
     }
 
-    /// Downloads an attachment from storage.
+    /// Downloads an attachment, unless the client's `If-None-Match` shows it already has this attachment.
+    ///
+    /// # Errors
+    /// Returns `AppError::NotFound` if the attachment does not exist or has expired, even when the client
+    /// holds a matching tag: it should not keep using content that is gone.
+    /// Returns `AppError::Internal` if storage fails.
     #[tracing::instrument(
         err(level = "warn"),
         skip(self),
         fields(attachment_id = %id, attachment_size = tracing::field::Empty)
     )]
-    pub(crate) async fn download(&self, id: Uuid) -> Result<(u64, StorageStream)> {
+    pub(crate) async fn download(&self, id: Uuid, if_none_match: Option<&str>) -> Result<Download> {
         let mut conn = self.pool.acquire().await?;
         if !self.repo.exists_unexpired(&mut conn, id).await? {
             return Err(AppError::NotFound);
         }
         drop(conn);
+
+        if if_none_match.is_some_and(|header| AttachmentEtag::new(id).matches(header)) {
+            return Ok(Download::NotModified);
+        }
 
         // Stream from Storage
         let key = self.attachment_config.object_key(id);
@@ -140,7 +159,7 @@ impl AttachmentService {
         tracing::Span::current().record("attachment_size", content_length);
 
         tracing::debug!("Attachment download successful");
-        Ok((content_length, stream))
+        Ok(Download::Content { length: content_length, stream })
     }
 
     /// Deletes expired attachments in batches, removing each object from storage before deleting its
