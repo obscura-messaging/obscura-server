@@ -1,8 +1,8 @@
 //! The server's rules, as types and functions that take plain data and do no I/O.
 //!
-//! Errors: rules return [`crate::error::AppError`] directly, because the API is their only consumer.
-//! A rule gets its own error type only when an adapter must return the error itself, as storage
-//! does with [`attachment::SizeViolation`].
+//! Nothing here knows about HTTP. Errors: rules return [`crate::error::AppError`], the error every
+//! layer shares, and the API decides what response each variant becomes. A rule gets its own error type
+//! only when an adapter must return the error itself, as storage does with [`attachment::SizeViolation`].
 
 pub mod attachment;
 pub mod auth;

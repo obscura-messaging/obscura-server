@@ -28,6 +28,7 @@ pub mod attachments;
 pub mod auth;
 pub mod devices;
 pub mod docs;
+mod error;
 pub mod gateway;
 pub mod health;
 pub mod keys;

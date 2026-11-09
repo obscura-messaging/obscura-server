@@ -102,7 +102,7 @@ async fn test_ack_batcher_does_not_drop_on_disconnect() {
         alice_ws.send_ack(id.clone()).await;
     }
 
-    // VIOLENTLY DISCONNECT ALICE. The server reads her ACK frames before the close that follows them.
+    // Disconnect Alice right after her ACKs. The server reads her ACK frames before the close that follows them.
     let _ = alice_ws.sink.close().await;
     drop(alice_ws);
 
