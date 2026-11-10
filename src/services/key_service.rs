@@ -73,14 +73,32 @@ impl KeyService {
     ///
     /// # Errors
     /// Returns `AppError::BadRequest` if any signature does not verify against the account identity.
+    /// Returns `AppError::Conflict` if the account identity changed while the upload was being verified.
     /// Returns `AppError::Database` if the database operation fails.
     #[tracing::instrument(skip(self, upload), fields(device.id = %device_id), err(level = "warn"))]
     pub(crate) async fn upload_keys(&self, device_id: Uuid, upload: PreKeyUpload) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        // A full upload is about a hundred signature checks, so they run on a blocking thread and before the
+        // device row is locked, as Signal's server checks them before touching storage.
+        let identity_key = {
+            let mut conn = self.pool.acquire().await?;
+            self.repo.find_device_identity_key(&mut conn, device_id).await?.ok_or(AppError::Unauthorized)?
+        };
+        let verify_key = identity_key.clone();
+        let upload = tokio::task::spawn_blocking(move || upload.verify(&verify_key).map(|()| upload))
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "Pre-key verification task failed");
+                AppError::Internal
+            })?
+            .map_err(AppError::BadRequest)?;
 
-        let identity_key =
+        let mut tx = self.pool.begin().await?;
+        let locked_identity_key =
             self.repo.lock_device_identity_key(&mut tx, device_id).await?.ok_or(AppError::Unauthorized)?;
-        upload.verify(&identity_key).map_err(AppError::BadRequest)?;
+        if locked_identity_key != identity_key {
+            // The account was taken over between the check and the lock; the keys were signed by the old identity.
+            return Err(AppError::Conflict("Identity key changed during upload".to_string()));
+        }
 
         self.store_pre_keys(&mut tx, device_id, &upload).await?;
 

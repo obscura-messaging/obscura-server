@@ -14,6 +14,27 @@ impl KeyRepository {
         Self {}
     }
 
+    /// Returns the account identity key of a device's owner without locking anything.
+    /// Returns `None` if the device does not exist.
+    ///
+    /// # Errors
+    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Internal` if stored data is corrupt.
+    #[tracing::instrument(level = "debug", skip(self, conn), err)]
+    pub(crate) async fn find_device_identity_key(
+        &self,
+        conn: &mut PgConnection,
+        device_id: Uuid,
+    ) -> Result<Option<PublicKey>> {
+        let row: Option<Vec<u8>> =
+            sqlx::query_scalar("SELECT u.identity_key FROM devices d JOIN users u ON u.id = d.user_id WHERE d.id = $1")
+                .bind(device_id)
+                .fetch_optional(conn)
+                .await?;
+
+        row.as_deref().map(decode_identity_key).transpose()
+    }
+
     /// Locks the device row and returns the account identity key of its owner.
     /// Returns `None` if the device does not exist.
     ///
