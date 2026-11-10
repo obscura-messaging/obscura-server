@@ -402,3 +402,66 @@ async fn test_registration_requires_kyber_keys() {
     assert!(resp.status().is_client_error(), "registration without a last-resort Kyber key is rejected");
     assert_ne!(resp.status(), 201);
 }
+
+/// GETs `path` (under `/v1/keys/`) as `token` and returns the status and `Retry-After` header.
+async fn fetch_bundle(app: &TestApp, token: &str, path: &str) -> (reqwest::StatusCode, Option<u64>) {
+    let resp = app
+        .client
+        .get(format!("{}/v1/keys/{path}", app.server_url))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("bundle request");
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
+        .map(|v| v.to_str().expect("ASCII header").parse().expect("Retry-After in whole seconds"));
+    (resp.status(), retry_after)
+}
+
+#[tokio::test]
+async fn test_bundle_fetches_are_limited_per_caller_and_target() {
+    let app = TestApp::spawn().await;
+    let target = app.register_user_with_keys(&common::generate_username("limited"), 123, 10).await;
+    let caller = app.register_user(&common::generate_username("limited_caller")).await;
+    let other_caller = app.register_user(&common::generate_username("limited_other")).await;
+    let device = format!("{}/devices/{}", target.user_id, target.device_id);
+
+    for _ in 0..6 {
+        assert_eq!(fetch_bundle(&app, &caller.token, &device).await.0, 200, "6 fetches per 10 minutes, as Signal");
+    }
+    let (status, retry_after) = fetch_bundle(&app, &caller.token, &device).await;
+    assert_eq!(status, 429, "the 7th is rejected");
+    assert!(retry_after.is_some_and(|secs| (1..=600).contains(&secs)), "with Retry-After: {retry_after:?}");
+
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_time_pre_keys WHERE device_id = $1")
+        .bind(target.device_id)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 4, "a rejected fetch consumes nothing");
+
+    assert_eq!(fetch_bundle(&app, &other_caller.token, &device).await.0, 200, "another caller has its own limit");
+    assert_eq!(
+        fetch_bundle(&app, &caller.token, &target.user_id.to_string()).await.0,
+        200,
+        "fetching all of the user's devices is a different target"
+    );
+}
+
+#[tokio::test]
+async fn test_all_devices_fetch_counts_once() {
+    let app = TestApp::spawn().await;
+    let target = app.register_user_with_keys(&common::generate_username("all_devices"), 123, 10).await;
+    let linked = app.link_device(&target).await;
+    let caller = app.register_user(&common::generate_username("all_devices_caller")).await;
+    let all = target.user_id.to_string();
+
+    for _ in 0..6 {
+        assert_eq!(fetch_bundle(&app, &caller.token, &all).await.0, 200, "one count per request, not per device");
+    }
+    assert_eq!(fetch_bundle(&app, &caller.token, &all).await.0, 429);
+
+    let device = format!("{}/devices/{}", target.user_id, linked.device_id);
+    assert_eq!(fetch_bundle(&app, &caller.token, &device).await.0, 200, "a single device is a different target");
+}

@@ -17,7 +17,7 @@ use crate::adapters::database::push_token_repo::PushTokenRepository;
 use crate::adapters::database::refresh_token_repo::RefreshTokenRepository;
 use crate::adapters::database::user_repo::UserRepository;
 use crate::adapters::push::PushProvider;
-use crate::adapters::redis::RedisCache;
+use crate::adapters::redis::{RateLimitCounter, RedisCache};
 use crate::adapters::storage::S3Storage;
 use crate::config::{Config, StorageConfig};
 use crate::services::attachment_service::AttachmentService;
@@ -198,7 +198,13 @@ impl AppBuilder {
 
         // Initialize Core Services
         let notifier = NotificationService::new(notification_repo, &config.notifications);
-        let key_service = KeyService::new(pool.clone(), KeyRepository::new());
+        let pre_key_fetch_limiter = RateLimitCounter::new(
+            Arc::clone(&pubsub),
+            "ratelimit:prekeys:".to_string(),
+            domain::keys::PRE_KEY_FETCHES_PER_WINDOW,
+            domain::keys::PRE_KEY_FETCH_WINDOW_SECS,
+        );
+        let key_service = KeyService::new(pool.clone(), KeyRepository::new(), pre_key_fetch_limiter);
         let auth_service = AuthService::new(
             config.auth.clone(),
             pool.clone(),

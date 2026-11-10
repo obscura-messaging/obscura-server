@@ -71,6 +71,16 @@ pub struct PreKeyCounts {
 /// kind, so this is also the most a device holds.
 pub const MAX_PRE_KEYS_PER_UPLOAD: usize = 100;
 
+/// How many bundles one device may fetch for the same target (one device, or all of a user's devices) per
+/// [`PRE_KEY_FETCH_WINDOW_SECS`].
+///
+/// Signal's server allows the same 6 per 10 minutes (`RateLimiters.PRE_KEYS`). Without a limit, any account
+/// could use up a device's one-time pre-keys in seconds, leaving new sessions on its last-resort keys.
+pub const PRE_KEY_FETCHES_PER_WINDOW: u32 = 6;
+
+/// The window for [`PRE_KEY_FETCHES_PER_WINDOW`]: 10 minutes.
+pub const PRE_KEY_FETCH_WINDOW_SECS: u64 = 600;
+
 /// The complete set of pre-keys a device publishes when it is provisioned (registration, linking, account
 /// reset). Every part is required, so a provisioned device can always serve a PQXDH bundle.
 #[derive(Debug, Clone)]

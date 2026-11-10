@@ -16,12 +16,13 @@ use uuid::Uuid;
 ///
 /// # Errors
 /// Returns `AppError::NotFound` if the user has no registered devices or keys.
+/// Returns `AppError::TooManyRequests` if the caller has fetched this user's bundles too often.
 pub(crate) async fn get_pre_key_bundles(
-    _auth: Caller,
+    auth: Caller,
     State(state): State<AppState>,
     Path(user_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let bundles = state.key_service.get_pre_key_bundles(user_id, None).await?;
+    let bundles = state.key_service.get_pre_key_bundles(auth.device_id(), user_id, None).await?;
 
     if bundles.is_empty() {
         return Err(AppError::NotFound);
@@ -35,13 +36,18 @@ pub(crate) async fn get_pre_key_bundles(
 ///
 /// # Errors
 /// Returns `AppError::NotFound` if the user has no such device.
+/// Returns `AppError::TooManyRequests` if the caller has fetched this device's bundle too often.
 pub(crate) async fn get_device_pre_key_bundle(
-    _auth: Caller,
+    auth: Caller,
     State(state): State<AppState>,
     Path((user_id, device_id)): Path<(Uuid, Uuid)>,
 ) -> Result<impl IntoResponse> {
-    let bundle =
-        state.key_service.get_pre_key_bundles(user_id, Some(device_id)).await?.pop().ok_or(AppError::NotFound)?;
+    let bundle = state
+        .key_service
+        .get_pre_key_bundles(auth.device_id(), user_id, Some(device_id))
+        .await?
+        .pop()
+        .ok_or(AppError::NotFound)?;
 
     Ok(Json(PreKeyBundleResponse::from(bundle)))
 }

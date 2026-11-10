@@ -1,6 +1,9 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::key_repo::KeyRepository;
+use crate::adapters::redis::RateLimitCounter;
 use crate::domain::keys::{DevicePreKeys, PreKeyBundle, PreKeyCounts, PreKeyUpload};
+#[cfg(doc)]
+use crate::domain::keys::{PRE_KEY_FETCH_WINDOW_SECS, PRE_KEY_FETCHES_PER_WINDOW};
 use crate::error::{AppError, Result};
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -9,25 +12,43 @@ use uuid::Uuid;
 pub struct KeyService {
     pool: DbPool,
     repo: KeyRepository,
+    fetch_limiter: RateLimitCounter,
 }
 
 impl KeyService {
+    /// `fetch_limiter` counts bundle fetches; build it with [`PRE_KEY_FETCHES_PER_WINDOW`] and
+    /// [`PRE_KEY_FETCH_WINDOW_SECS`].
     #[must_use]
-    pub const fn new(pool: DbPool, repo: KeyRepository) -> Self {
-        Self { pool, repo }
+    pub const fn new(pool: DbPool, repo: KeyRepository, fetch_limiter: RateLimitCounter) -> Self {
+        Self { pool, repo, fetch_limiter }
     }
 
-    /// Fetches one pre-key bundle for each of a user's devices, or for `device_id` only, consuming a
-    /// one-time EC and Kyber pre-key on each where available.
+    /// Fetches, for the device `caller`, one pre-key bundle for each of a user's devices, or for `device_id`
+    /// only, consuming a one-time EC and Kyber pre-key on each where available.
+    ///
+    /// As on Signal's server, `caller` may fetch the same target (one device, or all of the user's devices) at
+    /// most [`PRE_KEY_FETCHES_PER_WINDOW`] times per [`PRE_KEY_FETCH_WINDOW_SECS`], so no account can use up
+    /// another device's one-time pre-keys. The limit is checked before anything is consumed. If Valkey is
+    /// unreachable the fetch is allowed: running out of one-time keys only means new sessions use the
+    /// last-resort keys, which is better than no new sessions at all.
     ///
     /// # Errors
+    /// Returns `AppError::TooManyRequests` if `caller` is over the limit for this target.
     /// Returns `AppError::Database` if database query fails.
-    #[tracing::instrument(skip(self), fields(user.id = %user_id), err)]
+    #[tracing::instrument(skip(self), fields(device.id = %caller, user.id = %user_id), err(level = "warn"))]
     pub(crate) async fn get_pre_key_bundles(
         &self,
+        caller: Uuid,
         user_id: Uuid,
         device_id: Option<Uuid>,
     ) -> Result<Vec<PreKeyBundle>> {
+        let target = device_id.map_or_else(|| "*".to_string(), |id| id.to_string());
+        match self.fetch_limiter.hit(&format!("{caller}:{user_id}:{target}")).await {
+            Ok(None) => {}
+            Ok(Some(retry_after_secs)) => return Err(AppError::TooManyRequests { retry_after_secs }),
+            Err(e) => tracing::warn!(error = %e, "Pre-key fetch limit unavailable; allowing the fetch"),
+        }
+
         let mut conn = self.pool.begin().await?;
         let bundles = self.repo.get_bundles(&mut conn, user_id, device_id).await?;
         conn.commit().await?;

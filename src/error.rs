@@ -23,6 +23,8 @@ pub enum AppError {
     LengthRequired,
     #[error("Payload too large")]
     PayloadTooLarge,
+    #[error("Too many requests; retry after {retry_after_secs}s")]
+    TooManyRequests { retry_after_secs: u64 },
     #[error("Internal server error")]
     Internal,
 }

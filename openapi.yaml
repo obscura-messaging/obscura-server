@@ -133,6 +133,9 @@ paths:
         the registration id and pre-keys are per device.
         Server atomically consumes one One-Time PreKey and one one-time Kyber PreKey per device (if available);
         a device with no one-time Kyber PreKey left serves its last-resort Kyber PreKey instead.
+        As on Signal's server, a device may fetch the same target (here, all of the user's devices) at most
+        6 times per 10 minutes, so no account can use up another device's one-time PreKeys; further fetches get
+        `429` with `Retry-After` and consume nothing.
       tags: [Keys]
       parameters:
         - name: userId
@@ -171,6 +174,8 @@ paths:
         Server atomically consumes one One-Time PreKey and one one-time Kyber PreKey on that device only
         (if available, falling back to its last-resort Kyber PreKey), so a client
         that needs a session with a single new device does not consume prekeys on the user's other devices.
+        As on Signal's server, a device may fetch the same device's bundle at most 6 times per 10 minutes;
+        further fetches get `429` with `Retry-After` and consume nothing.
       tags: [Keys]
       parameters:
         - name: userId

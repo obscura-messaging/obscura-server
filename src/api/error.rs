@@ -4,12 +4,18 @@ use crate::api::schemas::common::ErrorResponse;
 use crate::error::AppError;
 use axum::{
     Json,
-    http::StatusCode,
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        if let Self::TooManyRequests { retry_after_secs } = self {
+            let body = Json(ErrorResponse { error: "Too many requests".to_string() });
+            return (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, retry_after_secs.to_string())], body)
+                .into_response();
+        }
+
         let (status, message) = match self {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Self::NotFound => (StatusCode::NOT_FOUND, "Not found".to_string()),
@@ -19,7 +25,7 @@ impl IntoResponse for AppError {
             Self::Timeout => (StatusCode::REQUEST_TIMEOUT, "Request timeout".to_string()),
             Self::LengthRequired => (StatusCode::LENGTH_REQUIRED, "Length required".to_string()),
             Self::PayloadTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "Payload too large".to_string()),
-            Self::Database(_) | Self::Internal => {
+            Self::Database(_) | Self::Internal | Self::TooManyRequests { .. } => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
             }
         };
@@ -50,6 +56,13 @@ mod tests {
         assert_eq!(status_of(AppError::LengthRequired), StatusCode::LENGTH_REQUIRED);
         assert_eq!(status_of(AppError::PayloadTooLarge), StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(status_of(AppError::Internal), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_too_many_requests_says_when_to_retry() {
+        let response = AppError::TooManyRequests { retry_after_secs: 42 }.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "42");
     }
 
     #[tokio::test]
