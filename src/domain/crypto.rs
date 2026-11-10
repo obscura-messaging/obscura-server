@@ -6,6 +6,12 @@ use xeddsa::ConvertMont;
 /// Prefix byte used by Signal/DJB for Montgomery (X25519) keys.
 pub const DJB_KEY_PREFIX: u8 = 0x05;
 
+/// Prefix byte libsignal uses for Kyber1024 KEM public keys.
+pub const KYBER1024_KEY_PREFIX: u8 = 0x08;
+
+/// Length of a Kyber1024 public key, excluding its prefix byte.
+pub const KYBER1024_PUBLIC_KEY_LENGTH: usize = 1568;
+
 /// Generates a 256-bit cryptographically random URL-safe base64 token (no padding).
 #[must_use]
 pub fn generate_opaque_token() -> String {
@@ -44,31 +50,26 @@ impl PublicKey {
         &self.0
     }
 
-    /// Verifies an `XEdDSA` signature against this Montgomery (Curve25519) public key.
+    /// Verifies an `XEdDSA` signature against this Montgomery (Curve25519) public key, as libsignal does.
     ///
-    /// Because a Montgomery X-coordinate corresponds to two Edwards points (sign bit 0 and 1),
-    /// both are tried for compatibility across client implementations.
+    /// A Montgomery key maps to two Edwards keys of opposite sign. libsignal's signer records the sign of its
+    /// Edwards key in the top bit of the signature's last byte, and its verifier checks against exactly that
+    /// key (`verify_signature` in libsignal's `rust/core/src/curve/curve25519.rs`), so this does the same and
+    /// never accepts a signature a libsignal client would reject.
     ///
     /// # Errors
     /// Returns an error if the signature is invalid.
     pub fn verify_signature(&self, message: &[u8], signature: &Signature) -> Result<(), String> {
-        let pk = xeddsa::xed25519::PublicKey(*self.as_crypto_bytes());
+        let mut sig = *signature.as_bytes();
+        let sign_bit = sig[63] >> 7;
+        sig[63] &= 0x7F;
 
-        // Clear the 255th bit of 's' for standard Ed25519 libraries (XEdDSA uses it for the sign bit).
-        let mut sig_canonical = *signature.as_bytes();
-        sig_canonical[63] &= 0x7F;
-        let sig_obj = ed25519_dalek::Signature::from_bytes(&sig_canonical);
-
-        for sign_bit in [0, 1] {
-            if let Ok(ed_pk_bytes) = pk.convert_mont(sign_bit)
-                && let Ok(ed_pk) = ed25519_dalek::VerifyingKey::from_bytes(&ed_pk_bytes)
-                && ed_pk.verify(message, &sig_obj).is_ok()
-            {
-                return Ok(());
-            }
-        }
-
-        Err("Invalid signature".into())
+        let ed_pk = xeddsa::xed25519::PublicKey(*self.as_crypto_bytes())
+            .convert_mont(sign_bit)
+            .ok()
+            .and_then(|bytes| ed25519_dalek::VerifyingKey::from_bytes(&bytes).ok())
+            .ok_or("Invalid signature")?;
+        ed_pk.verify(message, &ed25519_dalek::Signature::from_bytes(&sig)).map_err(|_| "Invalid signature".into())
     }
 
     /// Tries to create a `PublicKey` from wire bytes (MUST be 33 bytes with 0x05 prefix).
@@ -105,6 +106,50 @@ impl TryFrom<Vec<u8>> for PublicKey {
 impl From<PublicKey> for Vec<u8> {
     fn from(key: PublicKey) -> Self {
         key.0.to_vec()
+    }
+}
+
+/// Strong type for KEM public keys used by PQXDH, in libsignal's wire format: the
+/// [`KYBER1024_KEY_PREFIX`] type byte followed by the 1568-byte Kyber1024 key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KemPublicKey(Vec<u8>);
+
+impl KemPublicKey {
+    /// The wire bytes, including the type prefix. This is also what the identity key signs.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Tries to create a `KemPublicKey` from wire bytes (MUST be a prefixed Kyber1024 key).
+    ///
+    /// # Errors
+    /// Returns an error if the length or the type prefix is wrong.
+    pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() != KYBER1024_PUBLIC_KEY_LENGTH + 1 {
+            return Err(format!(
+                "Invalid KEM key length: {} (expected {} bytes with 0x{KYBER1024_KEY_PREFIX:02x} prefix)",
+                bytes.len(),
+                KYBER1024_PUBLIC_KEY_LENGTH + 1
+            ));
+        }
+        if bytes[0] != KYBER1024_KEY_PREFIX {
+            return Err(format!("Invalid KEM key prefix (expected 0x{KYBER1024_KEY_PREFIX:02x})"));
+        }
+        Ok(Self(bytes.to_vec()))
+    }
+}
+
+impl TryFrom<Vec<u8>> for KemPublicKey {
+    type Error = String;
+    fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+        Self::try_from_bytes(&bytes)
+    }
+}
+
+impl From<KemPublicKey> for Vec<u8> {
+    fn from(key: KemPublicKey) -> Self {
+        key.0
     }
 }
 
@@ -197,6 +242,35 @@ mod tests {
         assert_eq!(vec[0], DJB_KEY_PREFIX);
     }
 
+    fn kyber_bytes() -> Vec<u8> {
+        let mut bytes = vec![7u8; KYBER1024_PUBLIC_KEY_LENGTH + 1];
+        bytes[0] = KYBER1024_KEY_PREFIX;
+        bytes
+    }
+
+    #[test]
+    fn test_kem_public_key_roundtrip() {
+        let key = KemPublicKey::try_from(kyber_bytes()).expect("valid Kyber1024 key");
+        assert_eq!(key.as_bytes(), kyber_bytes().as_slice());
+        assert_eq!(Vec::from(key), kyber_bytes());
+    }
+
+    #[test]
+    fn test_kem_public_key_invalid_length() {
+        let mut bytes = kyber_bytes();
+        bytes.pop();
+        let err = KemPublicKey::try_from(bytes).expect_err("should fail for wrong length");
+        assert!(err.contains("Invalid KEM key length: 1568"), "{err}");
+    }
+
+    #[test]
+    fn test_kem_public_key_invalid_prefix() {
+        let mut bytes = kyber_bytes();
+        bytes[0] = DJB_KEY_PREFIX;
+        let err = KemPublicKey::try_from(bytes).expect_err("should fail for an EC prefix");
+        assert!(err.contains("Invalid KEM key prefix"), "{err}");
+    }
+
     #[test]
     fn test_signature_invalid_length() {
         let result = Signature::try_from([0u8; 63].as_slice());
@@ -228,6 +302,72 @@ mod tests {
         let hash1 = hash_opaque_token(&token1);
         let hash2 = hash_opaque_token(&token1);
         assert_eq!(hash1, hash2);
+    }
+
+    /// One libsignal-produced signing vector; see `testdata/libsignal-signatures.json`.
+    struct LibsignalVector {
+        sign_bit: u8,
+        identity_key: PublicKey,
+        signed_pre_key: Vec<u8>,
+        signed_pre_key_signature: Signature,
+        kyber_pre_key: Vec<u8>,
+        kyber_pre_key_signature: Signature,
+    }
+
+    fn libsignal_vectors() -> Vec<LibsignalVector> {
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("testdata/libsignal-signatures.json")).expect("valid fixture");
+        let bytes = |v: &serde_json::Value, field: &str| hex::decode(v[field].as_str().expect(field)).expect(field);
+        doc["vectors"]
+            .as_array()
+            .expect("vectors")
+            .iter()
+            .map(|v| LibsignalVector {
+                sign_bit: u8::try_from(v["signBit"].as_u64().expect("signBit")).expect("a bit"),
+                identity_key: PublicKey::try_from(bytes(v, "identityKey")).expect("identity key"),
+                signed_pre_key: bytes(v, "signedPreKey"),
+                signed_pre_key_signature: Signature::try_from(bytes(v, "signedPreKeySignature")).expect("signature"),
+                kyber_pre_key: bytes(v, "kyberPreKey"),
+                kyber_pre_key_signature: Signature::try_from(bytes(v, "kyberPreKeySignature")).expect("signature"),
+            })
+            .collect()
+    }
+
+    fn flip_sign_bit(signature: &Signature) -> Signature {
+        let mut bytes = *signature.as_bytes();
+        bytes[63] ^= 0x80;
+        Signature::new(bytes)
+    }
+
+    #[test]
+    fn test_verify_accepts_libsignal_signatures() {
+        let vectors = libsignal_vectors();
+        assert_eq!(vectors.iter().map(|v| v.sign_bit).collect::<Vec<_>>(), vec![0, 1], "one vector per sign");
+        for v in &vectors {
+            assert!(
+                v.identity_key.verify_signature(&v.signed_pre_key, &v.signed_pre_key_signature).is_ok(),
+                "EC pre-key, sign bit {}",
+                v.sign_bit
+            );
+            assert!(
+                v.identity_key.verify_signature(&v.kyber_pre_key, &v.kyber_pre_key_signature).is_ok(),
+                "Kyber pre-key, sign bit {}",
+                v.sign_bit
+            );
+        }
+    }
+
+    #[test]
+    fn test_verify_rejects_signature_with_flipped_sign_bit() {
+        // libsignal verifies against the Edwards key the sign bit names, so it rejects these; so must we.
+        for v in libsignal_vectors() {
+            let flipped = flip_sign_bit(&v.signed_pre_key_signature);
+            assert!(
+                v.identity_key.verify_signature(&v.signed_pre_key, &flipped).is_err(),
+                "flipped sign bit on a sign-bit-{} signature",
+                v.sign_bit
+            );
+        }
     }
 
     #[test]

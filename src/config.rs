@@ -463,22 +463,6 @@ pub struct MessagingConfig {
         default_value_t = MessagingConfig::default().idempotency_ttl_secs
     )]
     pub idempotency_ttl_secs: NonZeroU64,
-
-    /// Threshold of one-time prekeys to trigger a refill notification
-    #[arg(
-        long = "messaging-pre-key-refill-threshold",
-        env = "OBSCURA_PRE_KEY_REFILL_THRESHOLD",
-        default_value_t = MessagingConfig::default().pre_key_refill_threshold
-    )]
-    pub pre_key_refill_threshold: u32,
-
-    /// Maximum number of one-time prekeys allowed per device
-    #[arg(
-        long = "messaging-pre-keys-max",
-        env = "OBSCURA_PRE_KEYS_MAX",
-        default_value_t = MessagingConfig::default().max_pre_keys
-    )]
-    pub max_pre_keys: NonZeroU32,
 }
 
 impl Default for MessagingConfig {
@@ -488,8 +472,6 @@ impl Default for MessagingConfig {
             cleanup_interval_secs: non_zero_u64(300),
             send_batch_limit: non_zero_usize(100),
             idempotency_ttl_secs: non_zero_u64(86400),
-            pre_key_refill_threshold: 20,
-            max_pre_keys: non_zero_u32(100),
         }
     }
 }
@@ -595,10 +577,6 @@ pub struct WsConfig {
     #[arg(long = "ws-ping-timeout-secs", env = "OBSCURA_WS_PING_TIMEOUT_SECS", default_value_t = WsConfig::default().ping_timeout_secs)]
     pub ping_timeout_secs: u64,
 
-    /// How long to debounce `PreKeyLow` events before sending a status frame to the client
-    #[arg(long = "ws-prekey-debounce-interval-ms", env = "OBSCURA_WS_PREKEY_DEBOUNCE_INTERVAL_MS", default_value_t = WsConfig::default().prekey_debounce_interval_ms)]
-    pub prekey_debounce_interval_ms: u64,
-
     /// Maximum number of messages to fetch in a single database query and deliver in a single WebSocket batch frame
     #[arg(
         long = "ws-message-fetch-batch-size",
@@ -643,7 +621,6 @@ impl Default for WsConfig {
             ack_flush_interval_ms: 500,
             ping_interval_secs: non_zero_u64(30),
             ping_timeout_secs: 10,
-            prekey_debounce_interval_ms: 500,
             message_fetch_batch_size: non_zero_u32(50),
             max_batch_bytes: 8 * 1024 * 1024, // 8 MiB
             fetch_retry_budget_ms: 10_000,

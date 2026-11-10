@@ -12,9 +12,11 @@ use tracing::Instrument;
 
 pub mod cache;
 pub mod notification_repo;
+pub mod rate_limit;
 
 pub use cache::RedisCache;
 pub use notification_repo::NotificationRepository;
+pub use rate_limit::RateLimitCounter;
 
 #[derive(Debug, Clone)]
 pub struct PubSubMessage {

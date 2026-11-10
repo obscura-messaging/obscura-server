@@ -4,29 +4,34 @@ use crate::api::schemas::common::ErrorResponse;
 use crate::error::AppError;
 use axum::{
     Json,
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
-            Self::NotFound => (StatusCode::NOT_FOUND, "Not found".to_string()),
-            Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-            Self::Conflict(msg) => (StatusCode::CONFLICT, msg),
-            Self::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
-            Self::Timeout => (StatusCode::REQUEST_TIMEOUT, "Request timeout".to_string()),
-            Self::LengthRequired => (StatusCode::LENGTH_REQUIRED, "Length required".to_string()),
-            Self::PayloadTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "Payload too large".to_string()),
+        let (status, message, retry_after_secs) = match self {
+            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string(), None),
+            Self::NotFound => (StatusCode::NOT_FOUND, "Not found".to_string(), None),
+            Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg, None),
+            Self::Conflict(msg) => (StatusCode::CONFLICT, msg, None),
+            Self::Forbidden(msg) => (StatusCode::FORBIDDEN, msg, None),
+            Self::Timeout => (StatusCode::REQUEST_TIMEOUT, "Request timeout".to_string(), None),
+            Self::LengthRequired => (StatusCode::LENGTH_REQUIRED, "Length required".to_string(), None),
+            Self::PayloadTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "Payload too large".to_string(), None),
+            Self::TooManyRequests { retry_after_secs } => {
+                (StatusCode::TOO_MANY_REQUESTS, "Too many requests".to_string(), Some(retry_after_secs))
+            }
             Self::Database(_) | Self::Internal => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
+                (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string(), None)
             }
         };
 
-        let body = Json(ErrorResponse { error: message });
-
-        (status, body).into_response()
+        let mut response = (status, Json(ErrorResponse { error: message })).into_response();
+        if let Some(secs) = retry_after_secs {
+            response.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from(secs));
+        }
+        response
     }
 }
 
@@ -50,6 +55,13 @@ mod tests {
         assert_eq!(status_of(AppError::LengthRequired), StatusCode::LENGTH_REQUIRED);
         assert_eq!(status_of(AppError::PayloadTooLarge), StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(status_of(AppError::Internal), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_too_many_requests_says_when_to_retry() {
+        let response = AppError::TooManyRequests { retry_after_secs: 42 }.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "42");
     }
 
     #[tokio::test]

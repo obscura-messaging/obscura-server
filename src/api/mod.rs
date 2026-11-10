@@ -121,7 +121,7 @@ fn api_router(config: &Config, rate_limit_extractor: IpKeyExtractor) -> Router<A
         .route("/devices", post(devices::create_device).get(devices::list_devices))
         .route("/devices/{deviceId}", delete(devices::delete_device))
         .route("/link-sessions/{id}", put(devices::approve_link_session).get(devices::get_link_session))
-        .route("/keys", post(keys::upload_keys))
+        .route("/keys", get(keys::get_pre_key_counts).post(keys::upload_keys))
         .route("/keys/{userId}", get(keys::get_pre_key_bundles))
         .route("/keys/{userId}/devices/{deviceId}", get(keys::get_device_pre_key_bundle))
         .route("/messages", post(messages::send_messages))

@@ -1,5 +1,5 @@
 use crate::api::schemas::crypto::PublicKey;
-use crate::api::schemas::keys::{OneTimePreKey, SignedPreKey, parse_one_time_pre_keys};
+use crate::api::schemas::keys::DevicePreKeysRequest;
 use crate::services::device_service::NewDeviceKeys;
 use serde::{Deserialize, Serialize};
 
@@ -9,8 +9,8 @@ pub struct DeviceKeyPayload {
     pub name: Option<String>,
     pub identity_key: PublicKey,
     pub registration_id: i32,
-    pub signed_pre_key: SignedPreKey,
-    pub one_time_pre_keys: Vec<OneTimePreKey>,
+    #[serde(flatten)]
+    pub pre_keys: DevicePreKeysRequest,
 }
 
 impl TryFrom<DeviceKeyPayload> for NewDeviceKeys {
@@ -22,17 +22,11 @@ impl TryFrom<DeviceKeyPayload> for NewDeviceKeys {
         {
             return Err("Device name must not exceed 100 characters".to_string());
         }
+        crate::domain::device::check_registration_id(payload.registration_id)?;
         let identity_key: crate::domain::crypto::PublicKey = payload.identity_key.try_into()?;
-        let signed_pre_key: crate::domain::keys::SignedPreKey = payload.signed_pre_key.try_into()?;
-        signed_pre_key.verify(&identity_key)?;
-        let one_time_pre_keys = parse_one_time_pre_keys(payload.one_time_pre_keys)?;
-        Ok(Self {
-            name: payload.name,
-            identity_key,
-            registration_id: payload.registration_id,
-            signed_pre_key,
-            one_time_pre_keys,
-        })
+        let pre_keys: crate::domain::keys::DevicePreKeys = payload.pre_keys.try_into()?;
+        pre_keys.verify(&identity_key)?;
+        Ok(Self { name: payload.name, identity_key, registration_id: payload.registration_id, pre_keys })
     }
 }
 
@@ -82,8 +76,9 @@ pub struct LinkSessionResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::schemas::crypto::Signature;
-    use crate::domain::crypto::DJB_KEY_PREFIX;
+    use crate::api::schemas::crypto::{KemPublicKey, Signature};
+    use crate::api::schemas::keys::{KyberPreKey, OneTimePreKey, SignedPreKey};
+    use crate::domain::crypto::{DJB_KEY_PREFIX, KYBER1024_KEY_PREFIX, KYBER1024_PUBLIC_KEY_LENGTH};
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use curve25519_dalek::edwards::CompressedEdwardsY;
     use xeddsa::xed25519::PrivateKey;
@@ -113,19 +108,31 @@ mod tests {
         let mut rng = rand::rng();
         let sig: [u8; 64] = ik_priv.sign(&spk_wire, &mut rng);
 
+        let mut kyber_wire = vec![3u8; KYBER1024_PUBLIC_KEY_LENGTH + 1];
+        kyber_wire[0] = KYBER1024_KEY_PREFIX;
+        let kyber_sig: [u8; 64] = ik_priv.sign(&kyber_wire, &mut rng);
+
         DeviceKeyPayload {
             name: Some("test-device".to_string()),
             identity_key: PublicKey(STANDARD.encode(ik_wire)),
             registration_id: 1,
-            signed_pre_key: SignedPreKey {
-                key_id: 1,
-                public_key: PublicKey(STANDARD.encode(spk_wire)),
-                signature: Signature(STANDARD.encode(sig)),
+            pre_keys: DevicePreKeysRequest {
+                signed_pre_key: SignedPreKey {
+                    key_id: 1,
+                    public_key: PublicKey(STANDARD.encode(spk_wire)),
+                    signature: Signature(STANDARD.encode(sig)),
+                },
+                last_resort_kyber_pre_key: KyberPreKey {
+                    key_id: 1,
+                    public_key: KemPublicKey(STANDARD.encode(&kyber_wire)),
+                    signature: Signature(STANDARD.encode(kyber_sig)),
+                },
+                one_time_pre_keys: key_ids
+                    .into_iter()
+                    .map(|id| OneTimePreKey { key_id: id, public_key: valid_pk() })
+                    .collect(),
+                kyber_pre_keys: vec![],
             },
-            one_time_pre_keys: key_ids
-                .into_iter()
-                .map(|id| OneTimePreKey { key_id: id, public_key: valid_pk() })
-                .collect(),
         }
     }
 
@@ -152,9 +159,35 @@ mod tests {
     #[test]
     fn test_invalid_signature_rejected_at_parse_time() {
         let mut req = mock_device_request(vec![1]);
-        req.signed_pre_key.signature = Signature(STANDARD.encode([0u8; 64]));
+        req.pre_keys.signed_pre_key.signature = Signature(STANDARD.encode([0u8; 64]));
         let result = NewDeviceKeys::try_from(req);
         assert_eq!(result.expect_err("should fail for bad signature"), "Invalid signature");
+    }
+
+    #[test]
+    fn test_invalid_kyber_signature_rejected_at_parse_time() {
+        let mut req = mock_device_request(vec![1]);
+        req.pre_keys.last_resort_kyber_pre_key.signature = Signature(STANDARD.encode([0u8; 64]));
+        let result = NewDeviceKeys::try_from(req);
+        assert_eq!(result.expect_err("should fail for bad signature"), "Invalid signature on Kyber pre-key 1");
+    }
+
+    #[test]
+    fn test_registration_id_must_be_one_libsignal_generates() {
+        for id in [1, 0x3FFF] {
+            let mut req = mock_device_request(vec![]);
+            req.registration_id = id;
+            assert!(NewDeviceKeys::try_from(req).is_ok(), "{id} is in range");
+        }
+        for id in [0, -1, 0x4000, i32::MAX] {
+            let mut req = mock_device_request(vec![]);
+            req.registration_id = id;
+            assert_eq!(
+                NewDeviceKeys::try_from(req).expect_err("out of range"),
+                "Registration ID must be between 1 and 16383",
+                "{id} is out of range"
+            );
+        }
     }
 
     #[test]

@@ -28,7 +28,7 @@ Grafana is on `localhost:3001`.
 
 ## Development
 
-Needs stable Rust, `protoc` and [`just`](https://github.com/casey/just). Runtime needs PostgreSQL 18+ (migrations use `uuidv7()`), Valkey or Redis, and S3-compatible storage. Migrations run on startup.
+Needs stable Rust, `protoc` and [`just`](https://github.com/casey/just). Runtime needs PostgreSQL 18+ (migrations use `uuidv7()`), Valkey (or Redis 7+), and S3-compatible storage. Migrations run on startup.
 
 ```bash
 just services   # start db, minio, valkey and create test-bucket

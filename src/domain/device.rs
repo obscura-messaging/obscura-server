@@ -53,3 +53,19 @@ impl PushToken {
         &self.0
     }
 }
+
+/// The largest registration ID libsignal generates: they are 14-bit numbers, and Signal's server rejects any
+/// outside `1..=0x3FFF` (`Device.MAX_REGISTRATION_ID`).
+pub const MAX_REGISTRATION_ID: i32 = 0x3FFF;
+
+/// Checks that `id` is a registration ID libsignal could have generated.
+///
+/// # Errors
+/// Returns an error if `id` is outside `1..=MAX_REGISTRATION_ID`.
+pub fn check_registration_id(id: i32) -> Result<(), String> {
+    if (1..=MAX_REGISTRATION_ID).contains(&id) {
+        Ok(())
+    } else {
+        Err(format!("Registration ID must be between 1 and {MAX_REGISTRATION_ID}"))
+    }
+}

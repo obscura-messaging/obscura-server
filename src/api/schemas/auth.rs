@@ -31,8 +31,8 @@ impl RegistrationRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::schemas::crypto::{PublicKey, Signature};
-    use crate::api::schemas::keys::SignedPreKey;
+    use crate::api::schemas::crypto::{KemPublicKey, PublicKey, Signature};
+    use crate::api::schemas::keys::{DevicePreKeysRequest, KyberPreKey, SignedPreKey};
 
     fn mock_registration(password: &str) -> RegistrationRequest {
         RegistrationRequest {
@@ -42,12 +42,20 @@ mod tests {
                 name: None,
                 identity_key: PublicKey("A".repeat(44)),
                 registration_id: 1,
-                signed_pre_key: SignedPreKey {
-                    key_id: 1,
-                    public_key: PublicKey("B".repeat(44)),
-                    signature: Signature("C".repeat(88)),
+                pre_keys: DevicePreKeysRequest {
+                    signed_pre_key: SignedPreKey {
+                        key_id: 1,
+                        public_key: PublicKey("B".repeat(44)),
+                        signature: Signature("C".repeat(88)),
+                    },
+                    last_resort_kyber_pre_key: KyberPreKey {
+                        key_id: 1,
+                        public_key: KemPublicKey("D".repeat(2092)),
+                        signature: Signature("C".repeat(88)),
+                    },
+                    one_time_pre_keys: Vec::new(),
+                    kyber_pre_keys: Vec::new(),
                 },
-                one_time_pre_keys: Vec::new(),
             },
         }
     }

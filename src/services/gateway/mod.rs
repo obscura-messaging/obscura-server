@@ -2,24 +2,20 @@
 pub(crate) mod ack_batcher;
 mod frames;
 pub(crate) mod message_pump;
-pub(crate) mod prekey_pump;
 pub(crate) mod session;
 
 use crate::adapters::redis::RedisCache;
 use crate::config::WsConfig;
 use crate::error::{AppError, Result};
-use crate::proto::obscura::v1 as proto;
 use crate::services::auth_service::AuthService;
 use crate::services::gateway::session::Session;
-use crate::services::key_service::KeyService;
 use crate::services::message_service::MessageService;
 use crate::services::notification_service::NotificationService;
-use axum::extract::ws::{Message as WsMessage, WebSocket};
+use axum::extract::ws::WebSocket;
 use opentelemetry::{
     global,
     metrics::{Counter, Histogram, UpDownCounter},
 };
-use prost::Message as ProstMessage;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -69,7 +65,6 @@ impl Default for Metrics {
 #[derive(Clone, Debug)]
 pub(crate) struct GatewayService {
     message_service: MessageService,
-    key_service: KeyService,
     auth_service: AuthService,
     notifier: NotificationService,
     ticket_cache: RedisCache,
@@ -81,13 +76,12 @@ impl GatewayService {
     #[must_use]
     pub(crate) fn new(
         message_service: MessageService,
-        key_service: KeyService,
         auth_service: AuthService,
         notifier: NotificationService,
         ticket_cache: RedisCache,
         config: WsConfig,
     ) -> Self {
-        Self { message_service, key_service, auth_service, notifier, ticket_cache, config, metrics: Metrics::new() }
+        Self { message_service, auth_service, notifier, ticket_cache, config, metrics: Metrics::new() }
     }
 
     /// Generates and caches a single-use connection ticket for `device_id`.
@@ -127,32 +121,17 @@ impl GatewayService {
 
     pub async fn handle_socket(
         &self,
-        mut socket: WebSocket,
+        socket: WebSocket,
         device_id: Uuid,
         request_id: String,
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) {
-        // Clients need to know if they are low on pre-keys immediately upon connection
-        // to prevent exhausting their bundle during an active session.
-        match self.key_service.check_pre_key_status(device_id).await {
-            Ok(Some(status)) => {
-                let frame = proto::WebSocketFrame::from(status).encode_to_vec();
-                let _ = socket.send(WsMessage::Binary(frame.into())).await;
-            }
-
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to check pre-key status");
-            }
-            _ => {}
-        }
-
-        // 3. Hand over to Session
+        // Hand over to Session
         let session = Session {
             device_id,
             request_id,
             socket,
             message_service: self.message_service.clone(),
-            key_service: self.key_service.clone(),
             notifier: self.notifier.clone(),
             metrics: self.metrics.clone(),
             config: self.config.clone(),

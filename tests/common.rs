@@ -213,26 +213,67 @@ pub fn generate_signing_key() -> [u8; 32] {
     bytes
 }
 
-pub fn generate_signed_pre_key(identity_key_bytes: &[u8; 32]) -> (Vec<u8>, Vec<u8>) {
-    // Generate SPK
-    let spk_bytes = generate_signing_key();
-    let spk_priv = PrivateKey(spk_bytes);
-    let (_, spk_pub_ed) = spk_priv.calculate_key_pair(0);
-    // Convert to Montgomery and add prefix
-    let spk_pub_mont =
-        curve25519_dalek::edwards::CompressedEdwardsY(spk_pub_ed).decompress().unwrap().to_montgomery().to_bytes();
-    let mut spk_pub_wire = [0u8; 33];
-    spk_pub_wire[0] = 0x05;
-    spk_pub_wire[1..].copy_from_slice(&spk_pub_mont);
-
-    // Sign SPK pub key (33-byte wire format) with Identity Key
-    let ik_priv = PrivateKey(*identity_key_bytes);
-    let mut rng = rand::rng();
-    let signature: [u8; 64] = ik_priv.sign(&spk_pub_wire, &mut rng);
-
-    (spk_pub_wire.to_vec(), signature.to_vec())
+/// The public key of a Curve25519 private key in libsignal's 33-byte wire format (0x05, then the key).
+pub fn public_key_wire(private_key: &[u8; 32]) -> [u8; 33] {
+    let (_, edwards) = PrivateKey(*private_key).calculate_key_pair(0);
+    let montgomery =
+        curve25519_dalek::edwards::CompressedEdwardsY(edwards).decompress().unwrap().to_montgomery().to_bytes();
+    let mut wire = [0x05; 33];
+    wire[1..].copy_from_slice(&montgomery);
+    wire
 }
 
+/// A fresh signed pre-key: its public key in wire format and `identity_key`'s signature over it.
+pub fn generate_signed_pre_key(identity_key: &[u8; 32]) -> (Vec<u8>, Vec<u8>) {
+    let public_key = public_key_wire(&generate_signing_key());
+    let signature: [u8; 64] = PrivateKey(*identity_key).sign(&public_key, rand::rng());
+    (public_key.to_vec(), signature.to_vec())
+}
+
+/// `count` one-time EC pre-keys, as upload JSON, with IDs from 0.
+pub fn generate_one_time_pre_keys(count: usize) -> Vec<serde_json::Value> {
+    (0..count)
+        .map(|i| json!({ "keyId": i, "publicKey": STANDARD.encode(public_key_wire(&generate_signing_key())) }))
+        .collect()
+}
+
+/// ID offset for the one-time Kyber pre-keys the payload helpers generate, so they never collide with the
+/// last-resort Kyber pre-key, which takes the signed pre-key's ID.
+pub const KYBER_ONE_TIME_ID_OFFSET: i32 = 10_000;
+
+/// A Kyber pre-key signed by `identity_key`, as upload JSON. The server checks only the key's shape (the
+/// Kyber1024 type byte and length) and the signature, so random bytes stand in for a real Kyber key.
+pub fn generate_kyber_pre_key(identity_key: &[u8; 32], key_id: i32) -> serde_json::Value {
+    let mut public_key = vec![0u8; obscura_server::domain::crypto::KYBER1024_PUBLIC_KEY_LENGTH + 1];
+    rand::rng().fill_bytes(&mut public_key);
+    public_key[0] = obscura_server::domain::crypto::KYBER1024_KEY_PREFIX;
+    let signature: [u8; 64] = PrivateKey(*identity_key).sign(&public_key, rand::rng());
+    json!({ "keyId": key_id, "publicKey": STANDARD.encode(&public_key), "signature": STANDARD.encode(signature) })
+}
+
+/// `count` one-time Kyber pre-keys signed by `identity_key`, with IDs from `first_id`.
+pub fn generate_kyber_pre_keys(identity_key: &[u8; 32], first_id: i32, count: usize) -> Vec<serde_json::Value> {
+    (first_id..).take(count).map(|id| generate_kyber_pre_key(identity_key, id)).collect()
+}
+
+/// A `POST /v1/keys` body that rotates the signed and last-resort Kyber pre-keys to `key_id` and adds the
+/// given one-time EC and Kyber pre-keys.
+pub fn refill_payload(
+    identity_key: &[u8; 32],
+    key_id: i32,
+    one_time_pre_keys: &[serde_json::Value],
+    kyber_pre_keys: &[serde_json::Value],
+) -> serde_json::Value {
+    let (spk_pub, spk_sig) = generate_signed_pre_key(identity_key);
+    json!({
+        "signedPreKey": { "keyId": key_id, "publicKey": STANDARD.encode(&spk_pub), "signature": STANDARD.encode(&spk_sig) },
+        "lastResortKyberPreKey": generate_kyber_pre_key(identity_key, key_id),
+        "oneTimePreKeys": one_time_pre_keys,
+        "kyberPreKeys": kyber_pre_keys
+    })
+}
+
+/// Generates a registration payload for POST /v1/users with a new identity key, which it also returns.
 pub fn generate_registration_payload(
     username: &str,
     password: &str,
@@ -240,46 +281,9 @@ pub fn generate_registration_payload(
     otpk_count: usize,
 ) -> (serde_json::Value, [u8; 32]) {
     let identity_key = generate_signing_key();
-    let ik_priv = PrivateKey(identity_key);
-    let (_, ik_pub_ed) = ik_priv.calculate_key_pair(0);
-    let ik_pub_mont =
-        curve25519_dalek::edwards::CompressedEdwardsY(ik_pub_ed).decompress().unwrap().to_montgomery().to_bytes();
-    let mut ik_pub_wire = [0u8; 33];
-    ik_pub_wire[0] = 0x05;
-    ik_pub_wire[1..].copy_from_slice(&ik_pub_mont);
-
-    let (spk_pub, spk_sig) = generate_signed_pre_key(&identity_key);
-
-    let mut otpk = Vec::new();
-    for i in 0..otpk_count {
-        let key_bytes = generate_signing_key();
-        let key_priv = PrivateKey(key_bytes);
-        let (_, key_pub_ed) = key_priv.calculate_key_pair(0);
-        let key_pub_mont =
-            curve25519_dalek::edwards::CompressedEdwardsY(key_pub_ed).decompress().unwrap().to_montgomery().to_bytes();
-        let mut key_pub_wire = [0u8; 33];
-        key_pub_wire[0] = 0x05;
-        key_pub_wire[1..].copy_from_slice(&key_pub_mont);
-
-        otpk.push(json!({
-            "keyId": i,
-            "publicKey": STANDARD.encode(key_pub_wire)
-        }));
-    }
-
-    let payload = json!({
-        "username": username,
-        "password": password,
-        "registrationId": reg_id,
-        "identityKey": STANDARD.encode(ik_pub_wire),
-        "signedPreKey": {
-            "keyId": 1,
-            "publicKey": STANDARD.encode(&spk_pub),
-            "signature": STANDARD.encode(&spk_sig)
-        },
-        "oneTimePreKeys": otpk
-    });
-
+    let mut payload = generate_device_payload_for(&identity_key, reg_id, otpk_count);
+    payload["username"] = json!(username);
+    payload["password"] = json!(password);
     (payload, identity_key)
 }
 
@@ -291,45 +295,20 @@ pub fn generate_device_payload(reg_id: u32, otpk_count: usize) -> (serde_json::V
 
 /// Encodes the public half of an identity key in the 33-byte wire format, base64.
 pub fn identity_public_key(identity_key: &[u8; 32]) -> String {
-    let (_, ik_pub_ed) = PrivateKey(*identity_key).calculate_key_pair(0);
-    let ik_pub_mont =
-        curve25519_dalek::edwards::CompressedEdwardsY(ik_pub_ed).decompress().unwrap().to_montgomery().to_bytes();
-    let mut ik_pub_wire = [0u8; 33];
-    ik_pub_wire[0] = 0x05;
-    ik_pub_wire[1..].copy_from_slice(&ik_pub_mont);
-    STANDARD.encode(ik_pub_wire)
+    STANDARD.encode(public_key_wire(identity_key))
 }
 
-/// Generates a device creation payload whose keys belong to the given identity key.
+/// Generates a device creation payload whose keys belong to the given identity key, with `otpk_count`
+/// one-time pre-keys in each pool (EC and Kyber).
 pub fn generate_device_payload_for(identity_key: &[u8; 32], reg_id: u32, otpk_count: usize) -> serde_json::Value {
     let (spk_pub, spk_sig) = generate_signed_pre_key(identity_key);
-
-    let mut otpk = Vec::new();
-    for i in 0..otpk_count {
-        let key_bytes = generate_signing_key();
-        let key_priv = PrivateKey(key_bytes);
-        let (_, key_pub_ed) = key_priv.calculate_key_pair(0);
-        let key_pub_mont =
-            curve25519_dalek::edwards::CompressedEdwardsY(key_pub_ed).decompress().unwrap().to_montgomery().to_bytes();
-        let mut key_pub_wire = [0u8; 33];
-        key_pub_wire[0] = 0x05;
-        key_pub_wire[1..].copy_from_slice(&key_pub_mont);
-
-        otpk.push(json!({
-            "keyId": i,
-            "publicKey": STANDARD.encode(key_pub_wire)
-        }));
-    }
-
     json!({
         "registrationId": reg_id,
         "identityKey": identity_public_key(identity_key),
-        "signedPreKey": {
-            "keyId": 1,
-            "publicKey": STANDARD.encode(&spk_pub),
-            "signature": STANDARD.encode(&spk_sig)
-        },
-        "oneTimePreKeys": otpk
+        "signedPreKey": { "keyId": 1, "publicKey": STANDARD.encode(&spk_pub), "signature": STANDARD.encode(&spk_sig) },
+        "lastResortKyberPreKey": generate_kyber_pre_key(identity_key, 1),
+        "oneTimePreKeys": generate_one_time_pre_keys(otpk_count),
+        "kyberPreKeys": generate_kyber_pre_keys(identity_key, KYBER_ONE_TIME_ID_OFFSET, otpk_count)
     })
 }
 
@@ -607,7 +586,6 @@ impl TestApp {
             connect_async(format!("{}?ticket={}", self.ws_url, ticket)).await.expect("Failed to connect WS");
         let (sink, stream) = ws_stream.split();
         let (tx_env, rx_env) = tokio::sync::mpsc::unbounded_channel();
-        let (tx_status, rx_status) = tokio::sync::mpsc::unbounded_channel();
         let (tx_pong, rx_pong) = tokio::sync::mpsc::unbounded_channel();
         let (tx_raw, rx_raw) = tokio::sync::mpsc::unbounded_channel();
 
@@ -619,19 +597,14 @@ impl TestApp {
                 }
                 match msg {
                     Ok(Message::Binary(bin)) => {
-                        if let Ok(frame) = proto::WebSocketFrame::decode(bin.as_ref()) {
-                            match frame.payload {
-                                Some(proto::web_socket_frame::Payload::EnvelopeBatch(batch)) => {
-                                    for e in batch.envelopes {
-                                        if tx_env.send(e).is_err() {
-                                            break;
-                                        }
-                                    }
+                        if let Ok(proto::WebSocketFrame {
+                            payload: Some(proto::web_socket_frame::Payload::EnvelopeBatch(batch)),
+                        }) = proto::WebSocketFrame::decode(bin.as_ref())
+                        {
+                            for e in batch.envelopes {
+                                if tx_env.send(e).is_err() {
+                                    break;
                                 }
-                                Some(proto::web_socket_frame::Payload::PreKeyStatus(s)) => {
-                                    let _ = tx_status.send(s);
-                                }
-                                _ => {}
                             }
                         }
                     }
@@ -643,7 +616,7 @@ impl TestApp {
             }
         });
 
-        TestWsClient { sink, rx_env, rx_status, rx_pong, rx_raw }
+        TestWsClient { sink, rx_env, rx_pong, rx_raw }
     }
 
     pub(crate) async fn wait_until<F, Fut>(&self, mut condition: F, timeout: Duration) -> bool
@@ -704,7 +677,6 @@ pub struct TestWsClient {
     pub sink:
         futures::stream::SplitSink<WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, Message>,
     pub rx_env: tokio::sync::mpsc::UnboundedReceiver<proto::Envelope>,
-    pub rx_status: tokio::sync::mpsc::UnboundedReceiver<proto::PreKeyStatus>,
     pub rx_pong: tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Bytes>,
     pub rx_raw: tokio::sync::mpsc::UnboundedReceiver<Result<Message, tokio_tungstenite::tungstenite::Error>>,
 }
@@ -734,14 +706,6 @@ impl TestWsClient {
 
     pub(crate) async fn receive_envelope_timeout(&mut self, timeout: Duration) -> Option<proto::Envelope> {
         tokio::time::timeout(timeout, self.rx_env.recv()).await.ok().flatten()
-    }
-
-    pub(crate) async fn receive_prekey_status(&mut self) -> Option<proto::PreKeyStatus> {
-        self.receive_prekey_status_timeout(Duration::from_secs(5)).await
-    }
-
-    pub(crate) async fn receive_prekey_status_timeout(&mut self, timeout: Duration) -> Option<proto::PreKeyStatus> {
-        tokio::time::timeout(timeout, self.rx_status.recv()).await.ok().flatten()
     }
 
     pub(crate) async fn receive_raw_timeout(

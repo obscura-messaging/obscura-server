@@ -63,12 +63,41 @@ paths:
 
   # --- Keys ---
   /v1/keys:
+    get:
+      operationId: getPreKeyCounts
+      summary: Count the device's remaining one-time PreKeys.
+      description: |
+        Returns how many one-time EC and Kyber PreKeys the authenticated device has left, like Signal's
+        `GET /v2/keys`. Clients check this when they rotate their signed and last-resort keys and refill a pool
+        that is running low; the server sends no low-key notice.
+      tags: [Keys]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Remaining one-time PreKeys.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreKeyCountResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '408':
+          $ref: '#/components/responses/RequestTimeoutError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
     post:
       operationId: uploadKeys
       summary: Upload PreKeys.
       description: |
-        Uploads a new Signed PreKey and One-Time PreKeys for the authenticated device.
-        The signed prekey must verify against the account identity key, which cannot be changed here.
+        Uploads any subset of the authenticated device's pre-keys (see `PreKeyUploadRequest`).
+        Every signed pre-key and Kyber pre-key must verify against the account identity key, which cannot be
+        changed here.
       tags: [Keys]
       security:
         - bearerAuth: []
@@ -89,6 +118,8 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '408':
           $ref: '#/components/responses/RequestTimeoutError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         '500':
@@ -101,8 +132,12 @@ paths:
       description: |
         Returns the PreKey bundles for every device registered to the target user.
         Every bundle carries the account identity key, which all of the user's devices share;
-        the registration id, signed prekey and one-time prekey are per device.
-        Server atomically consumes one One-Time PreKey per device (if available).
+        the registration id and pre-keys are per device.
+        Server atomically consumes one One-Time PreKey and one one-time Kyber PreKey per device (if available);
+        a device with no one-time Kyber PreKey left serves its last-resort Kyber PreKey instead.
+        As on Signal's server, a device may fetch the same target (here, all of the user's devices) at most
+        6 times per 10 minutes, so no account can use up another device's one-time PreKeys; further fetches get
+        `429` with `Retry-After` and consume nothing.
       tags: [Keys]
       parameters:
         - name: userId
@@ -138,8 +173,11 @@ paths:
       summary: Fetch the PreKey Bundle of one of a user's devices.
       description: |
         Returns the PreKey bundle of one device of the target user, carrying the account identity key.
-        Server atomically consumes one One-Time PreKey on that device only (if available), so a client
+        Server atomically consumes one One-Time PreKey and one one-time Kyber PreKey on that device only
+        (if available, falling back to its last-resort Kyber PreKey), so a client
         that needs a session with a single new device does not consume prekeys on the user's other devices.
+        As on Signal's server, a device may fetch the same device's bundle at most 6 times per 10 minutes;
+        further fetches get `429` with `Retry-After` and consume nothing.
       tags: [Keys]
       parameters:
         - name: userId
@@ -706,7 +744,6 @@ paths:
         - **Protocol:** `WebSocketFrame` (Protobuf).
         - **Auth:** Pass a valid ticket in the query string: `ws://.../v1/gateway?ticket=<ticket>`.
         - **Handshake:** Server takes the ticket, ensuring it exists and hasn't expired or been used, and that its device still exists. A ticket is consumed by its first handshake attempt.
-        - **Welcome:** Upon successful connection, the server may immediately push a `PreKeyStatus` frame if the device's one-time pre-key count is below the configured threshold.
         - **Flow:** Server pushes `EnvelopeBatch` frames. Client MUST respond with `AckMessage` frames. Server batches deletions based on ACKs.
       tags: [Messaging]
       security:
@@ -1049,7 +1086,9 @@ components:
         - identityKey
         - registrationId
         - signedPreKey
+        - lastResortKyberPreKey
         - oneTimePreKeys
+        - kyberPreKeys
       properties:
         username:
           type: string
@@ -1068,12 +1107,24 @@ components:
         registrationId:
           type: integer
           format: int32
+          minimum: 1
+          maximum: 16383
+          description: libsignal's 14-bit registration ID for the device.
         signedPreKey:
           $ref: '#/components/schemas/SignedPreKey'
+        lastResortKyberPreKey:
+          $ref: '#/components/schemas/KyberPreKey'
         oneTimePreKeys:
           type: array
+          maxItems: 100
           items:
             $ref: '#/components/schemas/OneTimePreKey'
+        kyberPreKeys:
+          type: array
+          maxItems: 100
+          description: One-time Kyber pre-keys. IDs must be unique and differ from the last-resort key's ID.
+          items:
+            $ref: '#/components/schemas/KyberPreKey'
 
     RefreshRequest:
       type: object
@@ -1098,7 +1149,9 @@ components:
         - identityKey
         - registrationId
         - signedPreKey
+        - lastResortKyberPreKey
         - oneTimePreKeys
+        - kyberPreKeys
       properties:
         username:
           type: string
@@ -1118,12 +1171,24 @@ components:
         registrationId:
           type: integer
           format: int32
+          minimum: 1
+          maximum: 16383
+          description: libsignal's 14-bit registration ID for the device.
         signedPreKey:
           $ref: '#/components/schemas/SignedPreKey'
+        lastResortKyberPreKey:
+          $ref: '#/components/schemas/KyberPreKey'
         oneTimePreKeys:
           type: array
+          maxItems: 100
           items:
             $ref: '#/components/schemas/OneTimePreKey'
+        kyberPreKeys:
+          type: array
+          maxItems: 100
+          description: One-time Kyber pre-keys. IDs must be unique and differ from the last-resort key's ID.
+          items:
+            $ref: '#/components/schemas/KyberPreKey'
 
     CreateDeviceRequest:
       type: object
@@ -1132,7 +1197,9 @@ components:
         - identityKey
         - registrationId
         - signedPreKey
+        - lastResortKyberPreKey
         - oneTimePreKeys
+        - kyberPreKeys
       properties:
         linkSessionId:
           type: string
@@ -1148,12 +1215,24 @@ components:
         registrationId:
           type: integer
           format: int32
+          minimum: 1
+          maximum: 16383
+          description: libsignal's 14-bit registration ID for the device.
         signedPreKey:
           $ref: '#/components/schemas/SignedPreKey'
+        lastResortKyberPreKey:
+          $ref: '#/components/schemas/KyberPreKey'
         oneTimePreKeys:
           type: array
+          maxItems: 100
           items:
             $ref: '#/components/schemas/OneTimePreKey'
+        kyberPreKeys:
+          type: array
+          maxItems: 100
+          description: One-time Kyber pre-keys. IDs must be unique and differ from the last-resort key's ID.
+          items:
+            $ref: '#/components/schemas/KyberPreKey'
 
     DeviceResponse:
       type: object
@@ -1182,18 +1261,33 @@ components:
 
     PreKeyUploadRequest:
       type: object
-      required:
-        - signedPreKey
-        - oneTimePreKeys
+      description: |
+        Any subset of the device's pre-keys, as in Signal's `SetKeysRequest`: the client rotates the signed and
+        last-resort Kyber pre-keys on a schedule and refills a one-time pool when it runs low. Absent parts are
+        left as they are; an empty body is a no-op.
       properties:
         signedPreKey:
-          description: Signed Pre-Key. ID must be strictly greater than the current stored ID.
+          description: Replaces the device's signed pre-key.
           allOf:
             - $ref: '#/components/schemas/SignedPreKey'
+        lastResortKyberPreKey:
+          description: Replaces the device's last-resort Kyber pre-key, served when its one-time Kyber pool is empty.
+          allOf:
+            - $ref: '#/components/schemas/KyberPreKey'
         oneTimePreKeys:
           type: array
+          maxItems: 100
+          description: If not empty, replaces all of the device's one-time EC pre-keys.
           items:
             $ref: '#/components/schemas/OneTimePreKey'
+        kyberPreKeys:
+          type: array
+          maxItems: 100
+          description: |
+            If not empty, replaces all of the device's one-time Kyber pre-keys. IDs must be unique and differ from
+            the ID of a last-resort key in the same upload.
+          items:
+            $ref: '#/components/schemas/KyberPreKey'
 
     PreKeyBundleListResponse:
       type: object
@@ -1214,12 +1308,19 @@ components:
         registrationId:
           type: integer
           format: int32
+          minimum: 1
+          maximum: 16383
+          description: libsignal's 14-bit registration ID for the device.
         identityKey:
           type: string
           format: byte
           description: The account identity key, the same for every device of the user.
         signedPreKey:
           $ref: '#/components/schemas/SignedPreKey'
+        kyberPreKey:
+          description: A one-time Kyber pre-key when the device has one left, otherwise its last-resort key.
+          allOf:
+            - $ref: '#/components/schemas/KyberPreKey'
         oneTimePreKey:
           type: object
           nullable: true
@@ -1258,6 +1359,41 @@ components:
           type: string
           format: byte
           description: Base64 encoded public key
+
+    PreKeyCountResponse:
+      type: object
+      required:
+        - oneTimePreKeyCount
+        - kyberPreKeyCount
+      properties:
+        oneTimePreKeyCount:
+          type: integer
+          format: int32
+          description: One-time EC PreKeys left.
+        kyberPreKeyCount:
+          type: integer
+          format: int32
+          description: One-time Kyber PreKeys left. The last-resort Kyber PreKey is not counted.
+
+    KyberPreKey:
+      type: object
+      description: A PQXDH Kyber pre-key, signed by the account identity key.
+      required:
+        - keyId
+        - publicKey
+        - signature
+      properties:
+        keyId:
+          type: integer
+          format: int32
+        publicKey:
+          type: string
+          format: byte
+          description: Base64 encoded Kyber1024 public key in libsignal's format (0x08 type byte, then 1568 bytes).
+        signature:
+          type: string
+          format: byte
+          description: Base64 encoded XEdDSA signature by the account identity key over the prefixed public key.
 
     AttachmentResponse:
       type: object

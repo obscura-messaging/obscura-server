@@ -22,6 +22,24 @@ impl TryFrom<PublicKey> for crypto::PublicKey {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
+pub struct KemPublicKey(pub String);
+
+impl From<crypto::KemPublicKey> for KemPublicKey {
+    fn from(pk: crypto::KemPublicKey) -> Self {
+        Self(STANDARD.encode(pk.as_bytes()))
+    }
+}
+
+impl TryFrom<KemPublicKey> for crypto::KemPublicKey {
+    type Error = String;
+    fn try_from(schema: KemPublicKey) -> Result<Self, Self::Error> {
+        let bytes = STANDARD.decode(&schema.0).map_err(|e| e.to_string())?;
+        Self::try_from_bytes(&bytes)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Signature(pub String);
 
 impl From<crypto::Signature> for Signature {
