@@ -67,8 +67,9 @@ paths:
       operationId: uploadKeys
       summary: Upload PreKeys.
       description: |
-        Uploads a new Signed PreKey and One-Time PreKeys for the authenticated device.
-        The signed prekey must verify against the account identity key, which cannot be changed here.
+        Uploads any subset of the authenticated device's pre-keys (see `PreKeyUploadRequest`).
+        Every signed pre-key and Kyber pre-key must verify against the account identity key, which cannot be
+        changed here.
       tags: [Keys]
       security:
         - bearerAuth: []
@@ -1211,14 +1212,13 @@ components:
 
     PreKeyUploadRequest:
       type: object
-      required:
-        - signedPreKey
-        - lastResortKyberPreKey
-        - oneTimePreKeys
-        - kyberPreKeys
+      description: |
+        Any subset of the device's pre-keys, as in Signal's `SetKeysRequest`: the client rotates the signed and
+        last-resort Kyber pre-keys on a schedule and refills a one-time pool when it runs low. Absent parts are
+        left as they are; an empty body is a no-op.
       properties:
         signedPreKey:
-          description: Signed Pre-Key. ID must be strictly greater than the current stored ID.
+          description: Replaces the signed pre-key. ID must be strictly greater than the current stored ID.
           allOf:
             - $ref: '#/components/schemas/SignedPreKey'
         lastResortKyberPreKey:
@@ -1227,11 +1227,14 @@ components:
             - $ref: '#/components/schemas/KyberPreKey'
         oneTimePreKeys:
           type: array
+          description: If not empty, replaces all of the device's one-time EC pre-keys.
           items:
             $ref: '#/components/schemas/OneTimePreKey'
         kyberPreKeys:
           type: array
-          description: One-time Kyber pre-keys. IDs must be unique and differ from the last-resort key's ID.
+          description: |
+            If not empty, replaces all of the device's one-time Kyber pre-keys. IDs must be unique and differ from
+            the ID of a last-resort key in the same upload.
           items:
             $ref: '#/components/schemas/KyberPreKey'
 

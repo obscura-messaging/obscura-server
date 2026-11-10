@@ -1,7 +1,7 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::key_repo::KeyRepository;
 use crate::config::MessagingConfig;
-use crate::domain::keys::{PreKeyBundle, PreKeyStatus, PreKeyUpload, excess_pre_keys};
+use crate::domain::keys::{DevicePreKeys, PreKeyBundle, PreKeyStatus, PreKeyUpload};
 use crate::domain::notification::DeviceEvent;
 use crate::error::{AppError, Result};
 use crate::services::notification_service::NotificationService;
@@ -50,7 +50,7 @@ impl KeyService {
         }
     }
 
-    /// The most one-time pre-keys of each kind (EC and Kyber) a device may hold or upload at once.
+    /// The most one-time pre-keys of each kind (EC and Kyber) one upload may carry, and so a device may hold.
     #[must_use]
     pub(crate) const fn max_pre_keys(&self) -> NonZeroU32 {
         self.max_pre_keys
@@ -106,12 +106,12 @@ impl KeyService {
         Ok(status)
     }
 
-    /// Uploads a new signed pre-key and last-resort Kyber pre-key, and more one-time EC and Kyber pre-keys, for
-    /// an existing device.
+    /// Applies a device's pre-key upload, as Signal's server does: each part present replaces what is stored
+    /// (a non-empty one-time list replaces the stored keys of that kind) and absent parts are left as they are.
     ///
     /// # Errors
     /// Returns `AppError::BadRequest` if any signature does not verify against the account identity, the signed
-    /// pre-key id does not increase, or a batch is too large.
+    /// pre-key id does not increase, or a list is too large.
     /// Returns `AppError::Database` if the database operation fails.
     #[tracing::instrument(skip(self, upload), fields(device.id = %device_id), err(level = "warn"))]
     pub(crate) async fn upload_keys(&self, device_id: Uuid, upload: PreKeyUpload) -> Result<()> {
@@ -123,29 +123,17 @@ impl KeyService {
             self.repo.lock_device_identity_key(&mut tx, device_id).await?.ok_or(AppError::Unauthorized)?;
         upload.verify(&identity_key).map_err(AppError::BadRequest)?;
 
-        let max_id = self.repo.find_max_signed_pre_key_id(&mut tx, device_id).await?;
-        if let Some(current_max) = max_id
-            && upload.signed_pre_key.key_id <= current_max
+        if let Some(signed) = &upload.signed_pre_key
+            && let Some(current_max) = self.repo.find_max_signed_pre_key_id(&mut tx, device_id).await?
+            && signed.key_id <= current_max
         {
             return Err(AppError::BadRequest(format!(
                 "Signed Pre-Key ID {} must be greater than current ID {}",
-                upload.signed_pre_key.key_id, current_max
+                signed.key_id, current_max
             )));
         }
 
-        let current_count = self.repo.count_one_time_pre_keys(&mut tx, device_id).await?;
-        let excess = excess_pre_keys(self.max_pre_keys, current_count, upload.one_time_pre_keys.len());
-        if excess > 0 {
-            self.repo.delete_oldest_one_time_pre_keys(&mut tx, device_id, excess).await?;
-        }
-        let current_kyber_count = self.repo.count_kyber_pre_keys(&mut tx, device_id).await?;
-        let kyber_excess = excess_pre_keys(self.max_pre_keys, current_kyber_count, upload.kyber_pre_keys.len());
-        if kyber_excess > 0 {
-            self.repo.delete_oldest_kyber_pre_keys(&mut tx, device_id, kyber_excess).await?;
-        }
-
         self.store_pre_keys(&mut tx, device_id, &upload).await?;
-        self.repo.delete_signed_pre_keys_older_than(&mut tx, device_id, upload.signed_pre_key.key_id).await?;
 
         tx.commit().await?;
         Ok(())
@@ -155,25 +143,34 @@ impl KeyService {
     /// Their signatures were already verified against the identity key at parse time.
     ///
     /// # Errors
-    /// Returns `AppError::BadRequest` if a batch is too large.
+    /// Returns `AppError::BadRequest` if a list is too large.
     /// Returns `AppError::Database` if the database operation fails.
     pub(crate) async fn store_new_device_keys(
         &self,
         conn: &mut PgConnection,
         device_id: Uuid,
-        pre_keys: &PreKeyUpload,
+        pre_keys: DevicePreKeys,
     ) -> Result<()> {
         pre_keys.check_batches(self.max_pre_keys)?;
-        self.store_pre_keys(conn, device_id, pre_keys).await
+        self.store_pre_keys(conn, device_id, &pre_keys.into()).await
     }
 
-    async fn store_pre_keys(&self, conn: &mut PgConnection, device_id: Uuid, pre_keys: &PreKeyUpload) -> Result<()> {
-        let signed = &pre_keys.signed_pre_key;
-        self.repo
-            .upsert_signed_pre_key(&mut *conn, device_id, signed.key_id, &signed.public_key, &signed.signature)
-            .await?;
-        self.repo.upsert_last_resort_kyber_pre_key(&mut *conn, device_id, &pre_keys.last_resort_kyber_pre_key).await?;
-        self.repo.insert_one_time_pre_keys(&mut *conn, device_id, &pre_keys.one_time_pre_keys).await?;
-        self.repo.insert_kyber_pre_keys(&mut *conn, device_id, &pre_keys.kyber_pre_keys).await
+    async fn store_pre_keys(&self, conn: &mut PgConnection, device_id: Uuid, upload: &PreKeyUpload) -> Result<()> {
+        if let Some(signed) = &upload.signed_pre_key {
+            self.repo
+                .upsert_signed_pre_key(&mut *conn, device_id, signed.key_id, &signed.public_key, &signed.signature)
+                .await?;
+            self.repo.delete_signed_pre_keys_older_than(&mut *conn, device_id, signed.key_id).await?;
+        }
+        if let Some(last_resort) = &upload.last_resort_kyber_pre_key {
+            self.repo.upsert_last_resort_kyber_pre_key(&mut *conn, device_id, last_resort).await?;
+        }
+        if !upload.one_time_pre_keys.is_empty() {
+            self.repo.replace_one_time_pre_keys(&mut *conn, device_id, &upload.one_time_pre_keys).await?;
+        }
+        if !upload.kyber_pre_keys.is_empty() {
+            self.repo.replace_kyber_pre_keys(&mut *conn, device_id, &upload.kyber_pre_keys).await?;
+        }
+        Ok(())
     }
 }

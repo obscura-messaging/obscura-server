@@ -1,5 +1,5 @@
 use crate::api::schemas::crypto::PublicKey;
-use crate::api::schemas::keys::PreKeyUploadRequest;
+use crate::api::schemas::keys::DevicePreKeysRequest;
 use crate::services::device_service::NewDeviceKeys;
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +10,7 @@ pub struct DeviceKeyPayload {
     pub identity_key: PublicKey,
     pub registration_id: i32,
     #[serde(flatten)]
-    pub pre_keys: PreKeyUploadRequest,
+    pub pre_keys: DevicePreKeysRequest,
 }
 
 impl TryFrom<DeviceKeyPayload> for NewDeviceKeys {
@@ -23,7 +23,7 @@ impl TryFrom<DeviceKeyPayload> for NewDeviceKeys {
             return Err("Device name must not exceed 100 characters".to_string());
         }
         let identity_key: crate::domain::crypto::PublicKey = payload.identity_key.try_into()?;
-        let pre_keys: crate::domain::keys::PreKeyUpload = payload.pre_keys.try_into()?;
+        let pre_keys: crate::domain::keys::DevicePreKeys = payload.pre_keys.try_into()?;
         pre_keys.verify(&identity_key)?;
         Ok(Self { name: payload.name, identity_key, registration_id: payload.registration_id, pre_keys })
     }
@@ -115,7 +115,7 @@ mod tests {
             name: Some("test-device".to_string()),
             identity_key: PublicKey(STANDARD.encode(ik_wire)),
             registration_id: 1,
-            pre_keys: PreKeyUploadRequest {
+            pre_keys: DevicePreKeysRequest {
                 signed_pre_key: SignedPreKey {
                     key_id: 1,
                     public_key: PublicKey(STANDARD.encode(spk_wire)),

@@ -7,7 +7,7 @@ use crate::domain::auth::Caller;
 use crate::domain::crypto::{PublicKey, generate_opaque_token, hash_opaque_token};
 use crate::domain::device::Device;
 use crate::domain::device::DeviceRole;
-use crate::domain::keys::PreKeyUpload;
+use crate::domain::keys::DevicePreKeys;
 use crate::domain::notification::DeviceEvent;
 use crate::error::{AppError, Result};
 use crate::services::auth_service::AuthService;
@@ -64,7 +64,7 @@ pub struct NewDeviceKeys {
     pub identity_key: PublicKey,
     pub registration_id: i32,
     /// Verified against `identity_key` when parsed.
-    pub pre_keys: PreKeyUpload,
+    pub pre_keys: DevicePreKeys,
 }
 
 #[derive(Debug)]
@@ -280,7 +280,7 @@ impl DeviceService {
             self.device_repo.create(&mut *tx, user_id, keys.name.as_deref(), keys.registration_id, role).await?;
         tracing::Span::current().record("device.id", tracing::field::display(created.id));
 
-        self.key_service.store_new_device_keys(&mut *tx, created.id, &keys.pre_keys).await?;
+        self.key_service.store_new_device_keys(&mut *tx, created.id, keys.pre_keys).await?;
 
         self.auth_service.create_session(&mut *tx, user_id, created.id).await
     }

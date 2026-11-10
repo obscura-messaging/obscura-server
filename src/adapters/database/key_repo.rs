@@ -66,20 +66,18 @@ impl KeyRepository {
         Ok(())
     }
 
-    /// Inserts a batch of one-time pre-keys.
+    /// Replaces all of a device's one-time EC pre-keys with `keys`.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the database operation fails.
     #[tracing::instrument(level = "debug", skip(self, conn, keys))]
-    pub(crate) async fn insert_one_time_pre_keys(
+    pub(crate) async fn replace_one_time_pre_keys(
         &self,
         conn: &mut PgConnection,
         device_id: Uuid,
         keys: &[OneTimePreKey],
     ) -> Result<()> {
-        if keys.is_empty() {
-            return Ok(());
-        }
+        sqlx::query("DELETE FROM one_time_pre_keys WHERE device_id = $1").bind(device_id).execute(&mut *conn).await?;
 
         let mut ids = Vec::with_capacity(keys.len());
         let mut device_ids = Vec::with_capacity(keys.len());
@@ -95,7 +93,6 @@ impl KeyRepository {
             r#"
             INSERT INTO one_time_pre_keys (id, device_id, public_key)
             SELECT * FROM UNNEST($1::int4[], $2::uuid[], $3::bytea[])
-            ON CONFLICT (id, device_id) DO NOTHING
             "#,
         )
         .bind(&ids)
@@ -135,20 +132,18 @@ impl KeyRepository {
         Ok(())
     }
 
-    /// Inserts a batch of one-time Kyber pre-keys.
+    /// Replaces all of a device's one-time Kyber pre-keys with `keys`.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the database operation fails.
     #[tracing::instrument(level = "debug", skip(self, conn, keys))]
-    pub(crate) async fn insert_kyber_pre_keys(
+    pub(crate) async fn replace_kyber_pre_keys(
         &self,
         conn: &mut PgConnection,
         device_id: Uuid,
         keys: &[KyberPreKey],
     ) -> Result<()> {
-        if keys.is_empty() {
-            return Ok(());
-        }
+        sqlx::query("DELETE FROM kyber_pre_keys WHERE device_id = $1").bind(device_id).execute(&mut *conn).await?;
 
         let mut ids = Vec::with_capacity(keys.len());
         let mut device_ids = Vec::with_capacity(keys.len());
@@ -166,7 +161,6 @@ impl KeyRepository {
             r#"
             INSERT INTO kyber_pre_keys (id, device_id, public_key, signature)
             SELECT * FROM UNNEST($1::int4[], $2::uuid[], $3::bytea[], $4::bytea[])
-            ON CONFLICT (id, device_id) DO NOTHING
             "#,
         )
         .bind(&ids)
@@ -395,64 +389,6 @@ impl KeyRepository {
             .bind(threshold_id)
             .execute(conn)
             .await?;
-        Ok(())
-    }
-
-    /// Deletes the oldest one-time pre-keys for a device up to the specified limit.
-    ///
-    /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
-    #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn delete_oldest_one_time_pre_keys(
-        &self,
-        conn: &mut PgConnection,
-        device_id: Uuid,
-        limit: u32,
-    ) -> Result<()> {
-        sqlx::query(
-            r#"
-            DELETE FROM one_time_pre_keys
-            WHERE device_id = $1 AND id IN (
-                SELECT id FROM one_time_pre_keys
-                WHERE device_id = $1
-                ORDER BY created_at ASC
-                LIMIT $2
-            )
-            "#,
-        )
-        .bind(device_id)
-        .bind(i64::from(limit))
-        .execute(conn)
-        .await?;
-        Ok(())
-    }
-
-    /// Deletes the oldest one-time Kyber pre-keys for a device up to the specified limit.
-    ///
-    /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
-    #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn delete_oldest_kyber_pre_keys(
-        &self,
-        conn: &mut PgConnection,
-        device_id: Uuid,
-        limit: u32,
-    ) -> Result<()> {
-        sqlx::query(
-            r#"
-            DELETE FROM kyber_pre_keys
-            WHERE device_id = $1 AND id IN (
-                SELECT id FROM kyber_pre_keys
-                WHERE device_id = $1
-                ORDER BY created_at ASC
-                LIMIT $2
-            )
-            "#,
-        )
-        .bind(device_id)
-        .bind(i64::from(limit))
-        .execute(conn)
-        .await?;
         Ok(())
     }
 }

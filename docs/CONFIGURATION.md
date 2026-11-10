@@ -47,7 +47,7 @@ Startup fails on a configuration that cannot work: a value below 1 for an option
 | `--messaging-send-batch-limit` | `OBSCURA_MESSAGING_SEND_BATCH_LIMIT` | `100` | Submissions per `POST /v1/messages`; more returns 413. At least 1. |
 | `--messaging-idempotency-ttl-secs` | `OBSCURA_MESSAGING_IDEMPOTENCY_TTL_SECS` | `86400` | How long a send response is replayed for the same `Idempotency-Key`. At least 1. |
 | `--messaging-pre-key-refill-threshold` | `OBSCURA_PRE_KEY_REFILL_THRESHOLD` | `20` | Below this many one-time EC or Kyber prekeys, the device gets a `PreKeyStatus` frame and a push. |
-| `--messaging-pre-keys-max` | `OBSCURA_PRE_KEYS_MAX` | `100` | One-time prekeys of each kind (EC and Kyber) per device. A larger upload is rejected; otherwise the oldest are pruned to fit. At least 1. |
+| `--messaging-pre-keys-max` | `OBSCURA_PRE_KEYS_MAX` | `100` | Most one-time prekeys of each kind (EC and Kyber) per upload. An upload replaces the device's stored keys of that kind, so this is also the most a device holds. At least 1. |
 | **Notifications** | | | |
 | `--notifications-cleanup-interval-secs` | `OBSCURA_NOTIFICATIONS_CLEANUP_INTERVAL_SECS` | `60` | Reclaim per-device channels with no listener. At least 1. |
 | `--notifications-global-channel-capacity` | `OBSCURA_NOTIFICATIONS_GLOBAL_CHANNEL_CAPACITY` | `1024` | Pub/sub dispatcher buffer. At least 1. |

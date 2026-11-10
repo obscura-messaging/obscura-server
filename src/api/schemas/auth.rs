@@ -32,7 +32,7 @@ impl RegistrationRequest {
 mod tests {
     use super::*;
     use crate::api::schemas::crypto::{KemPublicKey, PublicKey, Signature};
-    use crate::api::schemas::keys::{KyberPreKey, PreKeyUploadRequest, SignedPreKey};
+    use crate::api::schemas::keys::{DevicePreKeysRequest, KyberPreKey, SignedPreKey};
 
     fn mock_registration(password: &str) -> RegistrationRequest {
         RegistrationRequest {
@@ -42,7 +42,7 @@ mod tests {
                 name: None,
                 identity_key: PublicKey("A".repeat(44)),
                 registration_id: 1,
-                pre_keys: PreKeyUploadRequest {
+                pre_keys: DevicePreKeysRequest {
                     signed_pre_key: SignedPreKey {
                         key_id: 1,
                         public_key: PublicKey("B".repeat(44)),
