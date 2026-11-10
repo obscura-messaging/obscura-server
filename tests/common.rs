@@ -213,24 +213,28 @@ pub fn generate_signing_key() -> [u8; 32] {
     bytes
 }
 
-pub fn generate_signed_pre_key(identity_key_bytes: &[u8; 32]) -> (Vec<u8>, Vec<u8>) {
-    // Generate SPK
-    let spk_bytes = generate_signing_key();
-    let spk_priv = PrivateKey(spk_bytes);
-    let (_, spk_pub_ed) = spk_priv.calculate_key_pair(0);
-    // Convert to Montgomery and add prefix
-    let spk_pub_mont =
-        curve25519_dalek::edwards::CompressedEdwardsY(spk_pub_ed).decompress().unwrap().to_montgomery().to_bytes();
-    let mut spk_pub_wire = [0u8; 33];
-    spk_pub_wire[0] = 0x05;
-    spk_pub_wire[1..].copy_from_slice(&spk_pub_mont);
+/// The public key of a Curve25519 private key in libsignal's 33-byte wire format (0x05, then the key).
+pub fn public_key_wire(private_key: &[u8; 32]) -> [u8; 33] {
+    let (_, edwards) = PrivateKey(*private_key).calculate_key_pair(0);
+    let montgomery =
+        curve25519_dalek::edwards::CompressedEdwardsY(edwards).decompress().unwrap().to_montgomery().to_bytes();
+    let mut wire = [0x05; 33];
+    wire[1..].copy_from_slice(&montgomery);
+    wire
+}
 
-    // Sign SPK pub key (33-byte wire format) with Identity Key
-    let ik_priv = PrivateKey(*identity_key_bytes);
-    let mut rng = rand::rng();
-    let signature: [u8; 64] = ik_priv.sign(&spk_pub_wire, &mut rng);
+/// A fresh signed pre-key: its public key in wire format and `identity_key`'s signature over it.
+pub fn generate_signed_pre_key(identity_key: &[u8; 32]) -> (Vec<u8>, Vec<u8>) {
+    let public_key = public_key_wire(&generate_signing_key());
+    let signature: [u8; 64] = PrivateKey(*identity_key).sign(&public_key, rand::rng());
+    (public_key.to_vec(), signature.to_vec())
+}
 
-    (spk_pub_wire.to_vec(), signature.to_vec())
+/// `count` one-time EC pre-keys, as upload JSON, with IDs from 0.
+pub fn generate_one_time_pre_keys(count: usize) -> Vec<serde_json::Value> {
+    (0..count)
+        .map(|i| json!({ "keyId": i, "publicKey": STANDARD.encode(public_key_wire(&generate_signing_key())) }))
+        .collect()
 }
 
 /// ID offset for the one-time Kyber pre-keys the payload helpers generate, so they never collide with the
@@ -269,6 +273,7 @@ pub fn refill_payload(
     })
 }
 
+/// Generates a registration payload for POST /v1/users with a new identity key, which it also returns.
 pub fn generate_registration_payload(
     username: &str,
     password: &str,
@@ -276,48 +281,9 @@ pub fn generate_registration_payload(
     otpk_count: usize,
 ) -> (serde_json::Value, [u8; 32]) {
     let identity_key = generate_signing_key();
-    let ik_priv = PrivateKey(identity_key);
-    let (_, ik_pub_ed) = ik_priv.calculate_key_pair(0);
-    let ik_pub_mont =
-        curve25519_dalek::edwards::CompressedEdwardsY(ik_pub_ed).decompress().unwrap().to_montgomery().to_bytes();
-    let mut ik_pub_wire = [0u8; 33];
-    ik_pub_wire[0] = 0x05;
-    ik_pub_wire[1..].copy_from_slice(&ik_pub_mont);
-
-    let (spk_pub, spk_sig) = generate_signed_pre_key(&identity_key);
-
-    let mut otpk = Vec::new();
-    for i in 0..otpk_count {
-        let key_bytes = generate_signing_key();
-        let key_priv = PrivateKey(key_bytes);
-        let (_, key_pub_ed) = key_priv.calculate_key_pair(0);
-        let key_pub_mont =
-            curve25519_dalek::edwards::CompressedEdwardsY(key_pub_ed).decompress().unwrap().to_montgomery().to_bytes();
-        let mut key_pub_wire = [0u8; 33];
-        key_pub_wire[0] = 0x05;
-        key_pub_wire[1..].copy_from_slice(&key_pub_mont);
-
-        otpk.push(json!({
-            "keyId": i,
-            "publicKey": STANDARD.encode(key_pub_wire)
-        }));
-    }
-
-    let payload = json!({
-        "username": username,
-        "password": password,
-        "registrationId": reg_id,
-        "identityKey": STANDARD.encode(ik_pub_wire),
-        "signedPreKey": {
-            "keyId": 1,
-            "publicKey": STANDARD.encode(&spk_pub),
-            "signature": STANDARD.encode(&spk_sig)
-        },
-        "lastResortKyberPreKey": generate_kyber_pre_key(&identity_key, 1),
-        "oneTimePreKeys": otpk,
-        "kyberPreKeys": generate_kyber_pre_keys(&identity_key, KYBER_ONE_TIME_ID_OFFSET, otpk_count)
-    });
-
+    let mut payload = generate_device_payload_for(&identity_key, reg_id, otpk_count);
+    payload["username"] = json!(username);
+    payload["password"] = json!(password);
     (payload, identity_key)
 }
 
@@ -329,47 +295,19 @@ pub fn generate_device_payload(reg_id: u32, otpk_count: usize) -> (serde_json::V
 
 /// Encodes the public half of an identity key in the 33-byte wire format, base64.
 pub fn identity_public_key(identity_key: &[u8; 32]) -> String {
-    let (_, ik_pub_ed) = PrivateKey(*identity_key).calculate_key_pair(0);
-    let ik_pub_mont =
-        curve25519_dalek::edwards::CompressedEdwardsY(ik_pub_ed).decompress().unwrap().to_montgomery().to_bytes();
-    let mut ik_pub_wire = [0u8; 33];
-    ik_pub_wire[0] = 0x05;
-    ik_pub_wire[1..].copy_from_slice(&ik_pub_mont);
-    STANDARD.encode(ik_pub_wire)
+    STANDARD.encode(public_key_wire(identity_key))
 }
 
 /// Generates a device creation payload whose keys belong to the given identity key, with `otpk_count`
 /// one-time pre-keys in each pool (EC and Kyber).
 pub fn generate_device_payload_for(identity_key: &[u8; 32], reg_id: u32, otpk_count: usize) -> serde_json::Value {
     let (spk_pub, spk_sig) = generate_signed_pre_key(identity_key);
-
-    let mut otpk = Vec::new();
-    for i in 0..otpk_count {
-        let key_bytes = generate_signing_key();
-        let key_priv = PrivateKey(key_bytes);
-        let (_, key_pub_ed) = key_priv.calculate_key_pair(0);
-        let key_pub_mont =
-            curve25519_dalek::edwards::CompressedEdwardsY(key_pub_ed).decompress().unwrap().to_montgomery().to_bytes();
-        let mut key_pub_wire = [0u8; 33];
-        key_pub_wire[0] = 0x05;
-        key_pub_wire[1..].copy_from_slice(&key_pub_mont);
-
-        otpk.push(json!({
-            "keyId": i,
-            "publicKey": STANDARD.encode(key_pub_wire)
-        }));
-    }
-
     json!({
         "registrationId": reg_id,
         "identityKey": identity_public_key(identity_key),
-        "signedPreKey": {
-            "keyId": 1,
-            "publicKey": STANDARD.encode(&spk_pub),
-            "signature": STANDARD.encode(&spk_sig)
-        },
+        "signedPreKey": { "keyId": 1, "publicKey": STANDARD.encode(&spk_pub), "signature": STANDARD.encode(&spk_sig) },
         "lastResortKyberPreKey": generate_kyber_pre_key(identity_key, 1),
-        "oneTimePreKeys": otpk,
+        "oneTimePreKeys": generate_one_time_pre_keys(otpk_count),
         "kyberPreKeys": generate_kyber_pre_keys(identity_key, KYBER_ONE_TIME_ID_OFFSET, otpk_count)
     })
 }
