@@ -56,7 +56,9 @@ async fn test_format_typescript_standard() {
             "publicKey": STANDARD.encode(spk_pub_wire),
             "signature": STANDARD.encode(signature)
         },
-        "oneTimePreKeys": []
+        "lastResortKyberPreKey": common::generate_kyber_pre_key(&identity_key, 1),
+        "oneTimePreKeys": [],
+        "kyberPreKeys": []
     });
 
     let resp = app.client.post(format!("{}/v1/users", app.server_url)).json(&reg_payload).send().await.unwrap();
@@ -99,7 +101,9 @@ async fn test_format_pure_math_32_byte() {
             "publicKey": STANDARD.encode(spk_pub_wire),
             "signature": STANDARD.encode(signature)
         },
-        "oneTimePreKeys": []
+        "lastResortKyberPreKey": common::generate_kyber_pre_key(&identity_key, 1),
+        "oneTimePreKeys": [],
+        "kyberPreKeys": []
     });
 
     let resp = app.client.post(format!("{}/v1/users", app.server_url)).json(&reg_payload).send().await.unwrap();
@@ -124,15 +128,8 @@ async fn test_key_limit_enforced() {
         }));
     }
 
-    let (new_spk_pub, new_spk_sig) = common::generate_signed_pre_key(&user.identity_key);
-    let refill_payload = json!({
-        "signedPreKey": {
-            "keyId": 2,
-            "publicKey": STANDARD.encode(&new_spk_pub),
-            "signature": STANDARD.encode(&new_spk_sig)
-        },
-        "oneTimePreKeys": refill_keys
-    });
+    let refill_kyber = common::generate_kyber_pre_keys(&user.identity_key, 20_000, 20);
+    let refill_payload = common::refill_payload(&user.identity_key, 2, &refill_keys, &refill_kyber);
 
     let resp = app
         .client
@@ -151,6 +148,13 @@ async fn test_key_limit_enforced() {
         .await
         .unwrap();
     assert_eq!(count, 50, "Total keys should be capped at 50");
+
+    let kyber_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM kyber_pre_keys WHERE device_id = $1")
+        .bind(user.device_id)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(kyber_count, 50, "Kyber keys are capped at 50 too");
 }
 
 #[tokio::test]
@@ -160,23 +164,25 @@ async fn test_key_rotation_monotonic_check() {
     let user = app.register_user_with_keys(&username, 123, 0).await;
 
     // Rotate to 11
-    let (spk_pub_11, spk_sig_11) = common::generate_signed_pre_key(&user.identity_key);
-    let resp_11 = app.client.post(format!("{}/v1/keys", app.server_url))
+    let resp_11 = app
+        .client
+        .post(format!("{}/v1/keys", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
-        .json(&json!({
-            "signedPreKey": { "keyId": 11, "publicKey": STANDARD.encode(&spk_pub_11), "signature": STANDARD.encode(&spk_sig_11) },
-            "oneTimePreKeys": []
-        })).send().await.unwrap();
+        .json(&common::refill_payload(&user.identity_key, 11, &[], &[]))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp_11.status(), 204);
 
     // Replay 10 (Fail - ID is smaller than current max)
-    let (spk_pub_10, spk_sig_10) = common::generate_signed_pre_key(&user.identity_key);
-    let resp_10 = app.client.post(format!("{}/v1/keys", app.server_url))
+    let resp_10 = app
+        .client
+        .post(format!("{}/v1/keys", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
-        .json(&json!({
-            "signedPreKey": { "keyId": 10, "publicKey": STANDARD.encode(&spk_pub_10), "signature": STANDARD.encode(&spk_sig_10) },
-            "oneTimePreKeys": []
-        })).send().await.unwrap();
+        .json(&common::refill_payload(&user.identity_key, 10, &[], &[]))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp_10.status(), 400);
 }
 
@@ -187,13 +193,15 @@ async fn test_key_rotation_cleanup() {
     let user = app.register_user_with_keys(&username, 123, 0).await;
 
     // Rotate to ID 10
-    let (spk_pub, spk_sig) = common::generate_signed_pre_key(&user.identity_key);
-    app.client.post(format!("{}/v1/keys", app.server_url))
+    let resp = app
+        .client
+        .post(format!("{}/v1/keys", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
-        .json(&json!({
-            "signedPreKey": { "keyId": 10, "publicKey": STANDARD.encode(&spk_pub), "signature": STANDARD.encode(&spk_sig) },
-            "oneTimePreKeys": []
-        })).send().await.unwrap();
+        .json(&common::refill_payload(&user.identity_key, 10, &[], &[]))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
 
     // Verify DB
     let count_1: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM signed_pre_keys WHERE device_id = $1 AND id = 1")
@@ -209,6 +217,13 @@ async fn test_key_rotation_cleanup() {
         .await
         .unwrap();
     assert_eq!(count_10, 1, "New key ID 10 should exist");
+
+    let last_resort: Vec<i32> = sqlx::query_scalar("SELECT id FROM kyber_last_resort_pre_keys WHERE device_id = $1")
+        .bind(user.device_id)
+        .fetch_all(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(last_resort, vec![10], "The last-resort Kyber pre-key is replaced, not added to");
 }
 
 #[tokio::test]
@@ -219,19 +234,35 @@ async fn test_prekey_status_low_keys() {
     let mut ws = app.connect_ws(&user.token).await;
     let status = ws.receive_prekey_status().await.expect("Did not receive PreKeyStatus");
     assert_eq!(status.one_time_pre_key_count, 0);
+    assert_eq!(status.one_time_kyber_pre_key_count, 0);
+}
+
+#[tokio::test]
+async fn test_prekey_status_reports_low_kyber_pool() {
+    let app = TestApp::spawn().await;
+    let user = app.register_user_with_keys(&common::generate_username("status_kyber"), 123, 0).await;
+    let one_time: Vec<_> = (0..30).map(|i| json!({ "keyId": i, "publicKey": STANDARD.encode([0x05; 33]) })).collect();
+    let resp = app
+        .client
+        .post(format!("{}/v1/keys", app.server_url))
+        .header("Authorization", format!("Bearer {}", user.token))
+        .json(&common::refill_payload(&user.identity_key, 2, &one_time, &[]))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+
+    let mut ws = app.connect_ws(&user.token).await;
+    let status = ws.receive_prekey_status().await.expect("a low Kyber pool alone is reported");
+    assert_eq!(status.one_time_pre_key_count, 30);
+    assert_eq!(status.one_time_kyber_pre_key_count, 0);
 }
 
 #[tokio::test]
 async fn test_upload_keys_verified_against_account_identity() {
     let app = TestApp::spawn().await;
     let user = app.register_user_with_keys(&common::generate_username("ik_upload"), 111, 1).await;
-    let upload = |identity_key: &[u8; 32], key_id: i32| {
-        let (spk_pub, spk_sig) = common::generate_signed_pre_key(identity_key);
-        json!({
-            "signedPreKey": { "keyId": key_id, "publicKey": STANDARD.encode(&spk_pub), "signature": STANDARD.encode(&spk_sig) },
-            "oneTimePreKeys": []
-        })
-    };
+    let upload = |identity_key: &[u8; 32], key_id: i32| common::refill_payload(identity_key, key_id, &[], &[]);
 
     let other_identity = common::generate_signing_key();
     let resp = app
@@ -261,14 +292,8 @@ async fn test_upload_keys_bad_signature() {
     let username = common::generate_username("bad_sig");
     let user = app.register_user(&username).await;
 
-    let payload = json!({
-        "signedPreKey": {
-            "keyId": 5,
-            "publicKey": STANDARD.encode([0x05; 33]),
-            "signature": STANDARD.encode([0x00; 64]) // Invalid
-        },
-        "oneTimePreKeys": []
-    });
+    let mut payload = common::refill_payload(&user.identity_key, 5, &[], &[]);
+    payload["signedPreKey"]["signature"] = json!(STANDARD.encode([0x00; 64])); // Invalid
 
     let resp = app
         .client
@@ -367,11 +392,7 @@ async fn test_pre_key_batch_size_limit() {
     let upload = |count: i32| {
         let keys: Vec<_> =
             (100..100 + count).map(|i| json!({ "keyId": i, "publicKey": STANDARD.encode([0x05; 33]) })).collect();
-        let (spk_pub, spk_sig) = common::generate_signed_pre_key(&user.identity_key);
-        let payload = json!({
-            "signedPreKey": { "keyId": 2, "publicKey": STANDARD.encode(&spk_pub), "signature": STANDARD.encode(&spk_sig) },
-            "oneTimePreKeys": keys
-        });
+        let payload = common::refill_payload(&user.identity_key, 2, &keys, &[]);
         app.client
             .post(format!("{}/v1/keys", app.server_url))
             .header("Authorization", format!("Bearer {}", user.token))
@@ -391,4 +412,102 @@ async fn test_pre_key_batch_size_limit() {
         .await
         .unwrap();
     assert_eq!(count, 50);
+}
+
+#[tokio::test]
+async fn test_kyber_batch_size_limit() {
+    let mut config = common::get_test_config();
+    config.messaging.max_pre_keys = std::num::NonZeroU32::new(50).unwrap();
+    let app = TestApp::spawn_with_config(config).await;
+    let user = app.register_user_with_keys(&common::generate_username("kyber_batch"), 123, 1).await;
+
+    let kyber = common::generate_kyber_pre_keys(&user.identity_key, 100, 51);
+    let resp = app
+        .client
+        .post(format!("{}/v1/keys", app.server_url))
+        .header("Authorization", format!("Bearer {}", user.token))
+        .json(&common::refill_payload(&user.identity_key, 2, &[], &kyber))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "a Kyber batch over max_pre_keys is rejected");
+}
+
+#[tokio::test]
+async fn test_bundle_serves_one_time_kyber_key_then_last_resort() {
+    let app = TestApp::spawn().await;
+    let user = app.register_user_with_keys(&common::generate_username("kyber_bundle"), 111, 1).await;
+    let fetcher = app.register_user(&common::generate_username("kyber_fetcher")).await;
+    let fetch = || async {
+        let resp = app
+            .client
+            .get(format!("{}/v1/keys/{}/devices/{}", app.server_url, user.user_id, user.device_id))
+            .header("Authorization", format!("Bearer {}", fetcher.token))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        resp.json::<serde_json::Value>().await.unwrap()
+    };
+
+    let first = fetch().await;
+    assert_eq!(first["kyberPreKey"]["keyId"], common::KYBER_ONE_TIME_ID_OFFSET, "the one-time key comes first");
+    let public_key = STANDARD.decode(first["kyberPreKey"]["publicKey"].as_str().unwrap()).unwrap();
+    assert_eq!((public_key.len(), public_key[0]), (1569, 0x08), "a prefixed Kyber1024 key");
+    assert_eq!(STANDARD.decode(first["kyberPreKey"]["signature"].as_str().unwrap()).unwrap().len(), 64);
+
+    for _ in 0..2 {
+        let next = fetch().await;
+        assert_eq!(next["kyberPreKey"]["keyId"], 1, "then the last-resort key, which is never consumed");
+        assert!(next["oneTimePreKey"].is_null(), "the EC pool is empty too");
+    }
+}
+
+#[tokio::test]
+async fn test_upload_kyber_key_from_other_identity_rejected() {
+    let app = TestApp::spawn().await;
+    let user = app.register_user_with_keys(&common::generate_username("kyber_forged"), 111, 0).await;
+    let other_identity = common::generate_signing_key();
+
+    let mut payload = common::refill_payload(&user.identity_key, 2, &[], &[]);
+    payload["kyberPreKeys"] = json!([common::generate_kyber_pre_key(&other_identity, 50)]);
+    let resp = app
+        .client
+        .post(format!("{}/v1/keys", app.server_url))
+        .header("Authorization", format!("Bearer {}", user.token))
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "a one-time Kyber key signed by another identity must not verify");
+
+    let mut payload = common::refill_payload(&user.identity_key, 2, &[], &[]);
+    payload["lastResortKyberPreKey"] = common::generate_kyber_pre_key(&other_identity, 2);
+    let resp = app
+        .client
+        .post(format!("{}/v1/keys", app.server_url))
+        .header("Authorization", format!("Bearer {}", user.token))
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "a last-resort Kyber key signed by another identity must not verify");
+
+    let signed: Vec<i32> = sqlx::query_scalar("SELECT id FROM signed_pre_keys WHERE device_id = $1")
+        .bind(user.device_id)
+        .fetch_all(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(signed, vec![1], "a rejected upload stores nothing");
+}
+
+#[tokio::test]
+async fn test_registration_requires_kyber_keys() {
+    let app = TestApp::spawn().await;
+    let (mut payload, _) =
+        common::generate_registration_payload(&common::generate_username("no_kyber"), "password12345", 1, 0);
+    payload.as_object_mut().unwrap().remove("lastResortKyberPreKey");
+    let resp = app.client.post(format!("{}/v1/users", app.server_url)).json(&payload).send().await.unwrap();
+    assert!(resp.status().is_client_error(), "registration without a last-resort Kyber key is rejected");
+    assert_ne!(resp.status(), 201);
 }

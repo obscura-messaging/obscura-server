@@ -1,6 +1,6 @@
-use crate::adapters::database::records::{ConsumedPreKeyRecord, SignedPreKeyRecord};
+use crate::adapters::database::records::{ConsumedPreKeyRecord, KyberPreKeyRecord, SignedPreKeyRecord};
 use crate::domain::crypto::{PublicKey, Signature};
-use crate::domain::keys::{OneTimePreKey, PreKeyBundle, SignedPreKey};
+use crate::domain::keys::{KyberPreKey, OneTimePreKey, PreKeyBundle, SignedPreKey};
 use crate::error::{AppError, Result};
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -107,8 +107,122 @@ impl KeyRepository {
         Ok(())
     }
 
-    /// Fetches a pre-key bundle for a single device and consumes one one-time pre-key.
-    /// Returns `None` if the device has no signed pre-key.
+    /// Replaces a device's last-resort Kyber pre-key.
+    ///
+    /// # Errors
+    /// Returns `sqlx::Error` if the database operation fails.
+    #[tracing::instrument(level = "debug", skip(self, conn, key))]
+    pub(crate) async fn upsert_last_resort_kyber_pre_key(
+        &self,
+        conn: &mut PgConnection,
+        device_id: Uuid,
+        key: &KyberPreKey,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO kyber_last_resort_pre_keys (device_id, id, public_key, signature)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (device_id) DO UPDATE
+            SET id = $2, public_key = $3, signature = $4, created_at = now()
+            "#,
+        )
+        .bind(device_id)
+        .bind(key.key_id)
+        .bind(key.public_key.as_bytes())
+        .bind(key.signature.as_bytes())
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+
+    /// Inserts a batch of one-time Kyber pre-keys.
+    ///
+    /// # Errors
+    /// Returns `sqlx::Error` if the database operation fails.
+    #[tracing::instrument(level = "debug", skip(self, conn, keys))]
+    pub(crate) async fn insert_kyber_pre_keys(
+        &self,
+        conn: &mut PgConnection,
+        device_id: Uuid,
+        keys: &[KyberPreKey],
+    ) -> Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+
+        let mut ids = Vec::with_capacity(keys.len());
+        let mut device_ids = Vec::with_capacity(keys.len());
+        let mut pub_keys = Vec::with_capacity(keys.len());
+        let mut signatures = Vec::with_capacity(keys.len());
+
+        for k in keys {
+            ids.push(k.key_id);
+            device_ids.push(device_id);
+            pub_keys.push(k.public_key.as_bytes());
+            signatures.push(k.signature.as_bytes().as_slice());
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO kyber_pre_keys (id, device_id, public_key, signature)
+            SELECT * FROM UNNEST($1::int4[], $2::uuid[], $3::bytea[], $4::bytea[])
+            ON CONFLICT (id, device_id) DO NOTHING
+            "#,
+        )
+        .bind(&ids)
+        .bind(&device_ids)
+        .bind(&pub_keys)
+        .bind(&signatures)
+        .execute(conn)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Consumes one of a device's one-time Kyber pre-keys, or returns its last-resort Kyber pre-key when none
+    /// is left (or all are locked by concurrent fetches). Returns `None` only if the device has neither.
+    ///
+    /// # Errors
+    /// Returns `sqlx::Error` if the database operation fails.
+    /// Returns `AppError::Internal` if stored data is corrupt.
+    async fn take_kyber_pre_key(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<Option<KyberPreKey>> {
+        let one_time = sqlx::query_as::<_, KyberPreKeyRecord>(
+            r#"
+            WITH target AS (
+                SELECT id FROM kyber_pre_keys
+                WHERE device_id = $1
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+            )
+            DELETE FROM kyber_pre_keys
+            WHERE id IN (SELECT id FROM target) AND device_id = $1
+            RETURNING id, public_key, signature
+            "#,
+        )
+        .bind(device_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+
+        let record = match one_time {
+            Some(record) => Some(record),
+            None => {
+                sqlx::query_as::<_, KyberPreKeyRecord>(
+                    "SELECT id, public_key, signature FROM kyber_last_resort_pre_keys WHERE device_id = $1",
+                )
+                .bind(device_id)
+                .fetch_optional(&mut *conn)
+                .await?
+            }
+        };
+
+        record.map(KyberPreKey::try_from).transpose().map_err(|e| {
+            tracing::error!(error = %e, "Database data corruption: Invalid Kyber pre-key format");
+            AppError::Internal
+        })
+    }
+
+    /// Fetches a pre-key bundle for a single device, consuming one one-time EC pre-key and one one-time Kyber
+    /// pre-key where available. Returns `None` if the device has no signed pre-key or no Kyber pre-key.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the database operation fails.
@@ -141,6 +255,12 @@ impl KeyRepository {
             AppError::Internal
         })?;
 
+        // Every provisioning path stores a last-resort Kyber pre-key, so this is `None` only for a device that
+        // never finished provisioning. Checked before consuming the EC pre-key so a miss consumes nothing.
+        let Some(kyber_pre_key) = self.take_kyber_pre_key(&mut *conn, device_id).await? else {
+            return Ok(None);
+        };
+
         let otpk_rec = sqlx::query_as::<_, ConsumedPreKeyRecord>(
             r#"
             WITH target AS (
@@ -163,7 +283,14 @@ impl KeyRepository {
             AppError::Internal
         })?;
 
-        Ok(Some(PreKeyBundle { device_id, registration_id, identity_key, signed_pre_key, one_time_pre_key }))
+        Ok(Some(PreKeyBundle {
+            device_id,
+            registration_id,
+            identity_key,
+            signed_pre_key,
+            kyber_pre_key,
+            one_time_pre_key,
+        }))
     }
 
     /// Fetches one pre-key bundle for each of a user's devices, or for `device_id` only, each carrying the
@@ -222,6 +349,19 @@ impl KeyRepository {
         Ok(u32::try_from(count).unwrap_or(u32::MAX))
     }
 
+    /// Counts the remaining one-time Kyber pre-keys for a device, saturating at `u32::MAX`.
+    ///
+    /// # Errors
+    /// Returns `sqlx::Error` if the query fails.
+    #[tracing::instrument(level = "debug", skip(self, conn), err)]
+    pub(crate) async fn count_kyber_pre_keys(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<u32> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM kyber_pre_keys WHERE device_id = $1")
+            .bind(device_id)
+            .fetch_one(conn)
+            .await?;
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
     /// Finds the maximum signed pre-key ID currently stored for a device.
     ///
     /// # Errors
@@ -274,6 +414,35 @@ impl KeyRepository {
             DELETE FROM one_time_pre_keys
             WHERE device_id = $1 AND id IN (
                 SELECT id FROM one_time_pre_keys
+                WHERE device_id = $1
+                ORDER BY created_at ASC
+                LIMIT $2
+            )
+            "#,
+        )
+        .bind(device_id)
+        .bind(i64::from(limit))
+        .execute(conn)
+        .await?;
+        Ok(())
+    }
+
+    /// Deletes the oldest one-time Kyber pre-keys for a device up to the specified limit.
+    ///
+    /// # Errors
+    /// Returns `sqlx::Error` if the deletion fails.
+    #[tracing::instrument(level = "debug", skip(self, conn), err)]
+    pub(crate) async fn delete_oldest_kyber_pre_keys(
+        &self,
+        conn: &mut PgConnection,
+        device_id: Uuid,
+        limit: u32,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            DELETE FROM kyber_pre_keys
+            WHERE device_id = $1 AND id IN (
+                SELECT id FROM kyber_pre_keys
                 WHERE device_id = $1
                 ORDER BY created_at ASC
                 LIMIT $2

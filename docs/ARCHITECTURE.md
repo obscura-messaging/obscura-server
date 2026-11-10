@@ -12,7 +12,7 @@ sequenceDiagram
 
     A->>S: POST /v1/users with keys (creates account + primary device, returns JWT)
     B->>S: same (additional devices link via /v1/link-sessions approved by the primary)
-    A->>S: GET /v1/keys/{bob} (or /devices/{id}): bundle(s) with shared account identity, consumes a one-time prekey
+    A->>S: GET /v1/keys/{bob} (or /devices/{id}): PQXDH bundle(s) with shared account identity, consumes a one-time EC and Kyber prekey
     A->>A: X3DH, encrypt once per device
     A->>S: POST /v1/messages (protobuf, recipients + submissions, Idempotency-Key)
     S->>S: lock recipient device sets, enforce complete delivery, queue per device, publish on Valkey

@@ -101,8 +101,9 @@ paths:
       description: |
         Returns the PreKey bundles for every device registered to the target user.
         Every bundle carries the account identity key, which all of the user's devices share;
-        the registration id, signed prekey and one-time prekey are per device.
-        Server atomically consumes one One-Time PreKey per device (if available).
+        the registration id and pre-keys are per device.
+        Server atomically consumes one One-Time PreKey and one one-time Kyber PreKey per device (if available);
+        a device with no one-time Kyber PreKey left serves its last-resort Kyber PreKey instead.
       tags: [Keys]
       parameters:
         - name: userId
@@ -138,7 +139,8 @@ paths:
       summary: Fetch the PreKey Bundle of one of a user's devices.
       description: |
         Returns the PreKey bundle of one device of the target user, carrying the account identity key.
-        Server atomically consumes one One-Time PreKey on that device only (if available), so a client
+        Server atomically consumes one One-Time PreKey and one one-time Kyber PreKey on that device only
+        (if available, falling back to its last-resort Kyber PreKey), so a client
         that needs a session with a single new device does not consume prekeys on the user's other devices.
       tags: [Keys]
       parameters:
@@ -1049,7 +1051,9 @@ components:
         - identityKey
         - registrationId
         - signedPreKey
+        - lastResortKyberPreKey
         - oneTimePreKeys
+        - kyberPreKeys
       properties:
         username:
           type: string
@@ -1070,10 +1074,17 @@ components:
           format: int32
         signedPreKey:
           $ref: '#/components/schemas/SignedPreKey'
+        lastResortKyberPreKey:
+          $ref: '#/components/schemas/KyberPreKey'
         oneTimePreKeys:
           type: array
           items:
             $ref: '#/components/schemas/OneTimePreKey'
+        kyberPreKeys:
+          type: array
+          description: One-time Kyber pre-keys. IDs must be unique and differ from the last-resort key's ID.
+          items:
+            $ref: '#/components/schemas/KyberPreKey'
 
     RefreshRequest:
       type: object
@@ -1098,7 +1109,9 @@ components:
         - identityKey
         - registrationId
         - signedPreKey
+        - lastResortKyberPreKey
         - oneTimePreKeys
+        - kyberPreKeys
       properties:
         username:
           type: string
@@ -1120,10 +1133,17 @@ components:
           format: int32
         signedPreKey:
           $ref: '#/components/schemas/SignedPreKey'
+        lastResortKyberPreKey:
+          $ref: '#/components/schemas/KyberPreKey'
         oneTimePreKeys:
           type: array
           items:
             $ref: '#/components/schemas/OneTimePreKey'
+        kyberPreKeys:
+          type: array
+          description: One-time Kyber pre-keys. IDs must be unique and differ from the last-resort key's ID.
+          items:
+            $ref: '#/components/schemas/KyberPreKey'
 
     CreateDeviceRequest:
       type: object
@@ -1132,7 +1152,9 @@ components:
         - identityKey
         - registrationId
         - signedPreKey
+        - lastResortKyberPreKey
         - oneTimePreKeys
+        - kyberPreKeys
       properties:
         linkSessionId:
           type: string
@@ -1150,10 +1172,17 @@ components:
           format: int32
         signedPreKey:
           $ref: '#/components/schemas/SignedPreKey'
+        lastResortKyberPreKey:
+          $ref: '#/components/schemas/KyberPreKey'
         oneTimePreKeys:
           type: array
           items:
             $ref: '#/components/schemas/OneTimePreKey'
+        kyberPreKeys:
+          type: array
+          description: One-time Kyber pre-keys. IDs must be unique and differ from the last-resort key's ID.
+          items:
+            $ref: '#/components/schemas/KyberPreKey'
 
     DeviceResponse:
       type: object
@@ -1184,16 +1213,27 @@ components:
       type: object
       required:
         - signedPreKey
+        - lastResortKyberPreKey
         - oneTimePreKeys
+        - kyberPreKeys
       properties:
         signedPreKey:
           description: Signed Pre-Key. ID must be strictly greater than the current stored ID.
           allOf:
             - $ref: '#/components/schemas/SignedPreKey'
+        lastResortKyberPreKey:
+          description: Replaces the device's last-resort Kyber pre-key, served when its one-time Kyber pool is empty.
+          allOf:
+            - $ref: '#/components/schemas/KyberPreKey'
         oneTimePreKeys:
           type: array
           items:
             $ref: '#/components/schemas/OneTimePreKey'
+        kyberPreKeys:
+          type: array
+          description: One-time Kyber pre-keys. IDs must be unique and differ from the last-resort key's ID.
+          items:
+            $ref: '#/components/schemas/KyberPreKey'
 
     PreKeyBundleListResponse:
       type: object
@@ -1220,6 +1260,10 @@ components:
           description: The account identity key, the same for every device of the user.
         signedPreKey:
           $ref: '#/components/schemas/SignedPreKey'
+        kyberPreKey:
+          description: A one-time Kyber pre-key when the device has one left, otherwise its last-resort key.
+          allOf:
+            - $ref: '#/components/schemas/KyberPreKey'
         oneTimePreKey:
           type: object
           nullable: true
@@ -1258,6 +1302,26 @@ components:
           type: string
           format: byte
           description: Base64 encoded public key
+
+    KyberPreKey:
+      type: object
+      description: A PQXDH Kyber pre-key, signed by the account identity key.
+      required:
+        - keyId
+        - publicKey
+        - signature
+      properties:
+        keyId:
+          type: integer
+          format: int32
+        publicKey:
+          type: string
+          format: byte
+          description: Base64 encoded Kyber1024 public key in libsignal's format (0x08 type byte, then 1568 bytes).
+        signature:
+          type: string
+          format: byte
+          description: Base64 encoded XEdDSA signature by the account identity key over the prefixed public key.
 
     AttachmentResponse:
       type: object

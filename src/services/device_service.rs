@@ -7,8 +7,7 @@ use crate::domain::auth::Caller;
 use crate::domain::crypto::{PublicKey, generate_opaque_token, hash_opaque_token};
 use crate::domain::device::Device;
 use crate::domain::device::DeviceRole;
-use crate::domain::keys::check_pre_key_batch;
-use crate::domain::keys::{OneTimePreKey, SignedPreKey};
+use crate::domain::keys::PreKeyUpload;
 use crate::domain::notification::DeviceEvent;
 use crate::error::{AppError, Result};
 use crate::services::auth_service::AuthService;
@@ -64,8 +63,8 @@ pub struct NewDeviceKeys {
     pub name: Option<String>,
     pub identity_key: PublicKey,
     pub registration_id: i32,
-    pub signed_pre_key: SignedPreKey,
-    pub one_time_pre_keys: Vec<OneTimePreKey>,
+    /// Verified against `identity_key` when parsed.
+    pub pre_keys: PreKeyUpload,
 }
 
 #[derive(Debug)]
@@ -137,7 +136,7 @@ impl DeviceService {
         password: String,
         keys: NewDeviceKeys,
     ) -> Result<AuthSession> {
-        check_pre_key_batch(self.key_service.max_pre_keys(), keys.one_time_pre_keys.len())?;
+        keys.pre_keys.check_batches(self.key_service.max_pre_keys())?;
         let password_hash = self.auth_service.hash_password(&password).await?;
 
         let mut tx = self.pool.begin().await?;
@@ -233,7 +232,7 @@ impl DeviceService {
         err(level = "warn")
     )]
     pub(crate) async fn create_linked_device(&self, device: NewLinkedDevice) -> Result<AuthSession> {
-        check_pre_key_batch(self.key_service.max_pre_keys(), device.keys.one_time_pre_keys.len())?;
+        device.keys.pre_keys.check_batches(self.key_service.max_pre_keys())?;
         let id_hash = hash_opaque_token(&device.link_session_id);
         let mut tx = self.pool.begin().await?;
 
@@ -281,9 +280,7 @@ impl DeviceService {
             self.device_repo.create(&mut *tx, user_id, keys.name.as_deref(), keys.registration_id, role).await?;
         tracing::Span::current().record("device.id", tracing::field::display(created.id));
 
-        self.key_service
-            .store_new_device_keys(&mut *tx, created.id, &keys.signed_pre_key, &keys.one_time_pre_keys)
-            .await?;
+        self.key_service.store_new_device_keys(&mut *tx, created.id, &keys.pre_keys).await?;
 
         self.auth_service.create_session(&mut *tx, user_id, created.id).await
     }
@@ -341,7 +338,7 @@ impl DeviceService {
         password: &str,
         keys: NewDeviceKeys,
     ) -> Result<AuthSession> {
-        check_pre_key_batch(self.key_service.max_pre_keys(), keys.one_time_pre_keys.len())?;
+        keys.pre_keys.check_batches(self.key_service.max_pre_keys())?;
         let user_id = self.auth_service.verify_credentials(username, password).await?;
 
         let mut tx = self.pool.begin().await?;

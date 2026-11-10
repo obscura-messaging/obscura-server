@@ -6,6 +6,12 @@ use xeddsa::ConvertMont;
 /// Prefix byte used by Signal/DJB for Montgomery (X25519) keys.
 pub const DJB_KEY_PREFIX: u8 = 0x05;
 
+/// Prefix byte libsignal uses for Kyber1024 KEM public keys.
+pub const KYBER1024_KEY_PREFIX: u8 = 0x08;
+
+/// Length of a Kyber1024 public key, excluding its prefix byte.
+pub const KYBER1024_PUBLIC_KEY_LENGTH: usize = 1568;
+
 /// Generates a 256-bit cryptographically random URL-safe base64 token (no padding).
 #[must_use]
 pub fn generate_opaque_token() -> String {
@@ -108,6 +114,50 @@ impl From<PublicKey> for Vec<u8> {
     }
 }
 
+/// Strong type for KEM public keys used by PQXDH, in libsignal's wire format: the
+/// [`KYBER1024_KEY_PREFIX`] type byte followed by the 1568-byte Kyber1024 key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KemPublicKey(Vec<u8>);
+
+impl KemPublicKey {
+    /// The wire bytes, including the type prefix. This is also what the identity key signs.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Tries to create a `KemPublicKey` from wire bytes (MUST be a prefixed Kyber1024 key).
+    ///
+    /// # Errors
+    /// Returns an error if the length or the type prefix is wrong.
+    pub fn try_from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() != KYBER1024_PUBLIC_KEY_LENGTH + 1 {
+            return Err(format!(
+                "Invalid KEM key length: {} (expected {} bytes with 0x{KYBER1024_KEY_PREFIX:02x} prefix)",
+                bytes.len(),
+                KYBER1024_PUBLIC_KEY_LENGTH + 1
+            ));
+        }
+        if bytes[0] != KYBER1024_KEY_PREFIX {
+            return Err(format!("Invalid KEM key prefix (expected 0x{KYBER1024_KEY_PREFIX:02x})"));
+        }
+        Ok(Self(bytes.to_vec()))
+    }
+}
+
+impl TryFrom<Vec<u8>> for KemPublicKey {
+    type Error = String;
+    fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+        Self::try_from_bytes(&bytes)
+    }
+}
+
+impl From<KemPublicKey> for Vec<u8> {
+    fn from(key: KemPublicKey) -> Self {
+        key.0
+    }
+}
+
 /// Strong type for 64-byte Ed25519 signatures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Signature([u8; 64]);
@@ -195,6 +245,35 @@ mod tests {
         let vec: Vec<u8> = key.into();
         assert_eq!(vec.len(), 33);
         assert_eq!(vec[0], DJB_KEY_PREFIX);
+    }
+
+    fn kyber_bytes() -> Vec<u8> {
+        let mut bytes = vec![7u8; KYBER1024_PUBLIC_KEY_LENGTH + 1];
+        bytes[0] = KYBER1024_KEY_PREFIX;
+        bytes
+    }
+
+    #[test]
+    fn test_kem_public_key_roundtrip() {
+        let key = KemPublicKey::try_from(kyber_bytes()).expect("valid Kyber1024 key");
+        assert_eq!(key.as_bytes(), kyber_bytes().as_slice());
+        assert_eq!(Vec::from(key), kyber_bytes());
+    }
+
+    #[test]
+    fn test_kem_public_key_invalid_length() {
+        let mut bytes = kyber_bytes();
+        bytes.pop();
+        let err = KemPublicKey::try_from(bytes).expect_err("should fail for wrong length");
+        assert!(err.contains("Invalid KEM key length: 1568"), "{err}");
+    }
+
+    #[test]
+    fn test_kem_public_key_invalid_prefix() {
+        let mut bytes = kyber_bytes();
+        bytes[0] = DJB_KEY_PREFIX;
+        let err = KemPublicKey::try_from(bytes).expect_err("should fail for an EC prefix");
+        assert!(err.contains("Invalid KEM key prefix"), "{err}");
     }
 
     #[test]

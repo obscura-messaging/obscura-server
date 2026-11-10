@@ -233,6 +233,42 @@ pub fn generate_signed_pre_key(identity_key_bytes: &[u8; 32]) -> (Vec<u8>, Vec<u
     (spk_pub_wire.to_vec(), signature.to_vec())
 }
 
+/// ID offset for the one-time Kyber pre-keys the payload helpers generate, so they never collide with the
+/// last-resort Kyber pre-key, which takes the signed pre-key's ID.
+pub const KYBER_ONE_TIME_ID_OFFSET: i32 = 10_000;
+
+/// A Kyber pre-key signed by `identity_key`, as upload JSON. The server checks only the key's shape (the
+/// Kyber1024 type byte and length) and the signature, so random bytes stand in for a real Kyber key.
+pub fn generate_kyber_pre_key(identity_key: &[u8; 32], key_id: i32) -> serde_json::Value {
+    let mut public_key = vec![0u8; obscura_server::domain::crypto::KYBER1024_PUBLIC_KEY_LENGTH + 1];
+    rand::rng().fill_bytes(&mut public_key);
+    public_key[0] = obscura_server::domain::crypto::KYBER1024_KEY_PREFIX;
+    let signature: [u8; 64] = PrivateKey(*identity_key).sign(&public_key, rand::rng());
+    json!({ "keyId": key_id, "publicKey": STANDARD.encode(&public_key), "signature": STANDARD.encode(signature) })
+}
+
+/// `count` one-time Kyber pre-keys signed by `identity_key`, with IDs from `first_id`.
+pub fn generate_kyber_pre_keys(identity_key: &[u8; 32], first_id: i32, count: usize) -> Vec<serde_json::Value> {
+    (first_id..).take(count).map(|id| generate_kyber_pre_key(identity_key, id)).collect()
+}
+
+/// A `POST /v1/keys` body that rotates the signed and last-resort Kyber pre-keys to `key_id` and adds the
+/// given one-time EC and Kyber pre-keys.
+pub fn refill_payload(
+    identity_key: &[u8; 32],
+    key_id: i32,
+    one_time_pre_keys: &[serde_json::Value],
+    kyber_pre_keys: &[serde_json::Value],
+) -> serde_json::Value {
+    let (spk_pub, spk_sig) = generate_signed_pre_key(identity_key);
+    json!({
+        "signedPreKey": { "keyId": key_id, "publicKey": STANDARD.encode(&spk_pub), "signature": STANDARD.encode(&spk_sig) },
+        "lastResortKyberPreKey": generate_kyber_pre_key(identity_key, key_id),
+        "oneTimePreKeys": one_time_pre_keys,
+        "kyberPreKeys": kyber_pre_keys
+    })
+}
+
 pub fn generate_registration_payload(
     username: &str,
     password: &str,
@@ -277,7 +313,9 @@ pub fn generate_registration_payload(
             "publicKey": STANDARD.encode(&spk_pub),
             "signature": STANDARD.encode(&spk_sig)
         },
-        "oneTimePreKeys": otpk
+        "lastResortKyberPreKey": generate_kyber_pre_key(&identity_key, 1),
+        "oneTimePreKeys": otpk,
+        "kyberPreKeys": generate_kyber_pre_keys(&identity_key, KYBER_ONE_TIME_ID_OFFSET, otpk_count)
     });
 
     (payload, identity_key)
@@ -300,7 +338,8 @@ pub fn identity_public_key(identity_key: &[u8; 32]) -> String {
     STANDARD.encode(ik_pub_wire)
 }
 
-/// Generates a device creation payload whose keys belong to the given identity key.
+/// Generates a device creation payload whose keys belong to the given identity key, with `otpk_count`
+/// one-time pre-keys in each pool (EC and Kyber).
 pub fn generate_device_payload_for(identity_key: &[u8; 32], reg_id: u32, otpk_count: usize) -> serde_json::Value {
     let (spk_pub, spk_sig) = generate_signed_pre_key(identity_key);
 
@@ -329,7 +368,9 @@ pub fn generate_device_payload_for(identity_key: &[u8; 32], reg_id: u32, otpk_co
             "publicKey": STANDARD.encode(&spk_pub),
             "signature": STANDARD.encode(&spk_sig)
         },
-        "oneTimePreKeys": otpk
+        "lastResortKyberPreKey": generate_kyber_pre_key(identity_key, 1),
+        "oneTimePreKeys": otpk,
+        "kyberPreKeys": generate_kyber_pre_keys(identity_key, KYBER_ONE_TIME_ID_OFFSET, otpk_count)
     })
 }
 

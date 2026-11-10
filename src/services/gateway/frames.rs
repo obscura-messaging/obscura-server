@@ -22,6 +22,7 @@ impl From<PreKeyStatus> for proto::PreKeyStatus {
         Self {
             one_time_pre_key_count: i32::try_from(status.count()).unwrap_or(i32::MAX),
             min_threshold: i32::try_from(status.threshold()).unwrap_or(i32::MAX),
+            one_time_kyber_pre_key_count: i32::try_from(status.kyber_count()).unwrap_or(i32::MAX),
         }
     }
 }
@@ -58,13 +59,14 @@ mod tests {
 
     #[test]
     fn test_pre_key_status_frame() {
-        let status = PreKeyStatus::below_threshold(5, 20).unwrap();
+        let status = PreKeyStatus::below_threshold(5, 30, 20).unwrap();
         let frame = proto::WebSocketFrame::from(status);
         assert_eq!(
             frame.payload,
             Some(proto::web_socket_frame::Payload::PreKeyStatus(proto::PreKeyStatus {
                 one_time_pre_key_count: 5,
                 min_threshold: 20,
+                one_time_kyber_pre_key_count: 30,
             }))
         );
     }
