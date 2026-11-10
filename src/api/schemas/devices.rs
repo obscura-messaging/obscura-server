@@ -22,6 +22,7 @@ impl TryFrom<DeviceKeyPayload> for NewDeviceKeys {
         {
             return Err("Device name must not exceed 100 characters".to_string());
         }
+        crate::domain::device::check_registration_id(payload.registration_id)?;
         let identity_key: crate::domain::crypto::PublicKey = payload.identity_key.try_into()?;
         let pre_keys: crate::domain::keys::DevicePreKeys = payload.pre_keys.try_into()?;
         pre_keys.verify(&identity_key)?;
@@ -169,6 +170,24 @@ mod tests {
         req.pre_keys.last_resort_kyber_pre_key.signature = Signature(STANDARD.encode([0u8; 64]));
         let result = NewDeviceKeys::try_from(req);
         assert_eq!(result.expect_err("should fail for bad signature"), "Invalid signature on Kyber pre-key 1");
+    }
+
+    #[test]
+    fn test_registration_id_must_be_one_libsignal_generates() {
+        for id in [1, 0x3FFF] {
+            let mut req = mock_device_request(vec![]);
+            req.registration_id = id;
+            assert!(NewDeviceKeys::try_from(req).is_ok(), "{id} is in range");
+        }
+        for id in [0, -1, 0x4000, i32::MAX] {
+            let mut req = mock_device_request(vec![]);
+            req.registration_id = id;
+            assert_eq!(
+                NewDeviceKeys::try_from(req).expect_err("out of range"),
+                "Registration ID must be between 1 and 16383",
+                "{id} is out of range"
+            );
+        }
     }
 
     #[test]

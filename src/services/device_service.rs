@@ -136,7 +136,6 @@ impl DeviceService {
         password: String,
         keys: NewDeviceKeys,
     ) -> Result<AuthSession> {
-        keys.pre_keys.check_batches(self.key_service.max_pre_keys())?;
         let password_hash = self.auth_service.hash_password(&password).await?;
 
         let mut tx = self.pool.begin().await?;
@@ -232,7 +231,6 @@ impl DeviceService {
         err(level = "warn")
     )]
     pub(crate) async fn create_linked_device(&self, device: NewLinkedDevice) -> Result<AuthSession> {
-        device.keys.pre_keys.check_batches(self.key_service.max_pre_keys())?;
         let id_hash = hash_opaque_token(&device.link_session_id);
         let mut tx = self.pool.begin().await?;
 
@@ -338,7 +336,6 @@ impl DeviceService {
         password: &str,
         keys: NewDeviceKeys,
     ) -> Result<AuthSession> {
-        keys.pre_keys.check_batches(self.key_service.max_pre_keys())?;
         let user_id = self.auth_service.verify_credentials(username, password).await?;
 
         let mut tx = self.pool.begin().await?;

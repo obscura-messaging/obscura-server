@@ -73,11 +73,19 @@ impl TryFrom<KyberPreKey> for keys::KyberPreKey {
     }
 }
 
+fn check_batch_size(len: usize) -> Result<(), String> {
+    if len > keys::MAX_PRE_KEYS_PER_UPLOAD {
+        return Err(format!("Batch too large. Limit is {}", keys::MAX_PRE_KEYS_PER_UPLOAD));
+    }
+    Ok(())
+}
+
 /// Parses and validates a batch of one-time pre-keys, rejecting duplicate key IDs.
 ///
 /// # Errors
-/// Returns an error if any key ID is duplicated or any public key is malformed.
+/// Returns an error if the batch is too large, any key ID is duplicated, or any public key is malformed.
 pub fn parse_one_time_pre_keys(keys: Vec<OneTimePreKey>) -> Result<Vec<keys::OneTimePreKey>, String> {
+    check_batch_size(keys.len())?;
     let mut unique_ids = std::collections::HashSet::with_capacity(keys.len());
     let mut parsed = Vec::with_capacity(keys.len());
     for pk in keys {
@@ -93,11 +101,12 @@ pub fn parse_one_time_pre_keys(keys: Vec<OneTimePreKey>) -> Result<Vec<keys::One
 /// last-resort Kyber pre-key uploaded with them: a client looks both up by ID in one store.
 ///
 /// # Errors
-/// Returns an error if any key ID is duplicated or any key is malformed.
+/// Returns an error if the batch is too large, any key ID is duplicated, or any key is malformed.
 pub fn parse_kyber_pre_keys(
     keys: Vec<KyberPreKey>,
     last_resort_id: Option<i32>,
 ) -> Result<Vec<keys::KyberPreKey>, String> {
+    check_batch_size(keys.len())?;
     let mut unique_ids = std::collections::HashSet::with_capacity(keys.len() + 1);
     unique_ids.extend(last_resort_id);
     let mut parsed = Vec::with_capacity(keys.len());
@@ -214,6 +223,23 @@ mod tests {
         let res = keys::PreKeyUpload::try_from(upload);
         assert!(res.is_err());
         assert_eq!(res.expect_err("Duplicate prekey IDs should fail"), "Duplicate prekey ID: 1");
+    }
+
+    #[test]
+    fn test_upload_batches_are_capped_at_100() {
+        let ec = |count: i32| (0..count).map(|key_id| OneTimePreKey { key_id, public_key: valid_pk() }).collect();
+        let mut upload = mock_upload();
+        upload.one_time_pre_keys = ec(100);
+        upload.kyber_pre_keys = (0..100).map(kyber).collect();
+        assert!(keys::PreKeyUpload::try_from(upload).is_ok(), "exactly 100 of each is accepted");
+
+        let mut upload = mock_upload();
+        upload.one_time_pre_keys = ec(101);
+        assert_eq!(keys::PreKeyUpload::try_from(upload).expect_err("101 EC keys"), "Batch too large. Limit is 100");
+
+        let mut upload = mock_upload();
+        upload.kyber_pre_keys = (0..101).map(kyber).collect();
+        assert_eq!(keys::PreKeyUpload::try_from(upload).expect_err("101 Kyber keys"), "Batch too large. Limit is 100");
     }
 
     #[test]

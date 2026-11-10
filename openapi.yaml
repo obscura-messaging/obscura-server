@@ -1100,16 +1100,21 @@ components:
         registrationId:
           type: integer
           format: int32
+          minimum: 1
+          maximum: 16383
+          description: libsignal's 14-bit registration ID for the device.
         signedPreKey:
           $ref: '#/components/schemas/SignedPreKey'
         lastResortKyberPreKey:
           $ref: '#/components/schemas/KyberPreKey'
         oneTimePreKeys:
           type: array
+          maxItems: 100
           items:
             $ref: '#/components/schemas/OneTimePreKey'
         kyberPreKeys:
           type: array
+          maxItems: 100
           description: One-time Kyber pre-keys. IDs must be unique and differ from the last-resort key's ID.
           items:
             $ref: '#/components/schemas/KyberPreKey'
@@ -1159,16 +1164,21 @@ components:
         registrationId:
           type: integer
           format: int32
+          minimum: 1
+          maximum: 16383
+          description: libsignal's 14-bit registration ID for the device.
         signedPreKey:
           $ref: '#/components/schemas/SignedPreKey'
         lastResortKyberPreKey:
           $ref: '#/components/schemas/KyberPreKey'
         oneTimePreKeys:
           type: array
+          maxItems: 100
           items:
             $ref: '#/components/schemas/OneTimePreKey'
         kyberPreKeys:
           type: array
+          maxItems: 100
           description: One-time Kyber pre-keys. IDs must be unique and differ from the last-resort key's ID.
           items:
             $ref: '#/components/schemas/KyberPreKey'
@@ -1198,16 +1208,21 @@ components:
         registrationId:
           type: integer
           format: int32
+          minimum: 1
+          maximum: 16383
+          description: libsignal's 14-bit registration ID for the device.
         signedPreKey:
           $ref: '#/components/schemas/SignedPreKey'
         lastResortKyberPreKey:
           $ref: '#/components/schemas/KyberPreKey'
         oneTimePreKeys:
           type: array
+          maxItems: 100
           items:
             $ref: '#/components/schemas/OneTimePreKey'
         kyberPreKeys:
           type: array
+          maxItems: 100
           description: One-time Kyber pre-keys. IDs must be unique and differ from the last-resort key's ID.
           items:
             $ref: '#/components/schemas/KyberPreKey'
@@ -1254,11 +1269,13 @@ components:
             - $ref: '#/components/schemas/KyberPreKey'
         oneTimePreKeys:
           type: array
+          maxItems: 100
           description: If not empty, replaces all of the device's one-time EC pre-keys.
           items:
             $ref: '#/components/schemas/OneTimePreKey'
         kyberPreKeys:
           type: array
+          maxItems: 100
           description: |
             If not empty, replaces all of the device's one-time Kyber pre-keys. IDs must be unique and differ from
             the ID of a last-resort key in the same upload.
@@ -1284,6 +1301,9 @@ components:
         registrationId:
           type: integer
           format: int32
+          minimum: 1
+          maximum: 16383
+          description: libsignal's 14-bit registration ID for the device.
         identityKey:
           type: string
           format: byte

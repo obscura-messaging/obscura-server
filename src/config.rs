@@ -463,14 +463,6 @@ pub struct MessagingConfig {
         default_value_t = MessagingConfig::default().idempotency_ttl_secs
     )]
     pub idempotency_ttl_secs: NonZeroU64,
-
-    /// Most one-time prekeys of each kind (EC and Kyber) per upload, and so per device
-    #[arg(
-        long = "messaging-pre-keys-max",
-        env = "OBSCURA_PRE_KEYS_MAX",
-        default_value_t = MessagingConfig::default().max_pre_keys
-    )]
-    pub max_pre_keys: NonZeroU32,
 }
 
 impl Default for MessagingConfig {
@@ -480,7 +472,6 @@ impl Default for MessagingConfig {
             cleanup_interval_secs: non_zero_u64(300),
             send_batch_limit: non_zero_usize(100),
             idempotency_ttl_secs: non_zero_u64(86400),
-            max_pre_keys: non_zero_u32(100),
         }
     }
 }

@@ -300,53 +300,28 @@ async fn test_fetch_one_device_bundle_consumes_only_that_device() {
 
 #[tokio::test]
 async fn test_pre_key_batch_size_limit() {
-    let mut config = common::get_test_config();
-    config.messaging.max_pre_keys = std::num::NonZeroU32::new(50).unwrap();
-    let app = TestApp::spawn_with_config(config).await;
+    let app = TestApp::spawn().await;
     let user = app.register_user_with_keys(&common::generate_username("batch"), 123, 1).await;
-
-    let upload = |count: i32| {
-        let keys: Vec<_> =
-            (100..100 + count).map(|i| json!({ "keyId": i, "publicKey": STANDARD.encode([0x05; 33]) })).collect();
-        let payload = common::refill_payload(&user.identity_key, 2, &keys, &[]);
+    let upload = |ec: usize, kyber: usize| {
+        let keys: Vec<_> = (0..ec).map(|i| json!({ "keyId": i, "publicKey": STANDARD.encode([0x05; 33]) })).collect();
+        let kyber = common::generate_kyber_pre_keys(&user.identity_key, 1000, kyber);
         app.client
             .post(format!("{}/v1/keys", app.server_url))
             .header("Authorization", format!("Bearer {}", user.token))
-            .json(&payload)
+            .json(&json!({ "oneTimePreKeys": keys, "kyberPreKeys": kyber }))
             .send()
     };
 
-    let resp = upload(51).await.unwrap();
-    assert_eq!(resp.status(), 400, "a batch over max_pre_keys is rejected");
-
-    let resp = upload(50).await.unwrap();
-    assert_eq!(resp.status(), 204, "a batch of exactly max_pre_keys is accepted");
+    assert_eq!(upload(101, 0).await.unwrap().status(), 400, "101 EC keys are over Signal's limit of 100");
+    assert_eq!(upload(0, 101).await.unwrap().status(), 400, "and so are 101 Kyber keys");
+    assert_eq!(upload(100, 100).await.unwrap().status(), 204, "exactly 100 of each is accepted");
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_time_pre_keys WHERE device_id = $1")
         .bind(user.device_id)
         .fetch_one(&app.pool)
         .await
         .unwrap();
-    assert_eq!(count, 50);
-}
-
-#[tokio::test]
-async fn test_kyber_batch_size_limit() {
-    let mut config = common::get_test_config();
-    config.messaging.max_pre_keys = std::num::NonZeroU32::new(50).unwrap();
-    let app = TestApp::spawn_with_config(config).await;
-    let user = app.register_user_with_keys(&common::generate_username("kyber_batch"), 123, 1).await;
-
-    let kyber = common::generate_kyber_pre_keys(&user.identity_key, 100, 51);
-    let resp = app
-        .client
-        .post(format!("{}/v1/keys", app.server_url))
-        .header("Authorization", format!("Bearer {}", user.token))
-        .json(&common::refill_payload(&user.identity_key, 2, &[], &kyber))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 400, "a Kyber batch over max_pre_keys is rejected");
+    assert_eq!(count, 100);
 }
 
 #[tokio::test]

@@ -1,6 +1,4 @@
 use crate::domain::crypto::{KemPublicKey, PublicKey, Signature};
-use crate::error::AppError;
-use std::num::NonZeroU32;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -67,17 +65,11 @@ pub struct PreKeyCounts {
     pub kyber: u32,
 }
 
-/// Checks that an upload of `len` one-time pre-keys of one kind stays within `max_pre_keys`. An upload replaces
-/// the stored keys of that kind, so this is also the most a device ever holds.
+/// The most one-time pre-keys of one kind a single upload may carry.
 ///
-/// # Errors
-/// Returns `AppError::BadRequest` if the upload is larger.
-pub fn check_pre_key_batch(max_pre_keys: NonZeroU32, len: usize) -> Result<(), AppError> {
-    if u32::try_from(len).map_or(true, |len| len > max_pre_keys.get()) {
-        return Err(AppError::BadRequest(format!("Batch too large. Limit is {max_pre_keys}")));
-    }
-    Ok(())
-}
+/// Signal's server allows the same 100 per list (`SetKeysRequest`). An upload replaces the stored keys of that
+/// kind, so this is also the most a device holds.
+pub const MAX_PRE_KEYS_PER_UPLOAD: usize = 100;
 
 /// The complete set of pre-keys a device publishes when it is provisioned (registration, linking, account
 /// reset). Every part is required, so a provisioned device can always serve a PQXDH bundle.
@@ -98,15 +90,6 @@ impl DevicePreKeys {
         self.signed_pre_key.verify(identity_key)?;
         self.last_resort_kyber_pre_key.verify(identity_key)?;
         self.kyber_pre_keys.iter().try_for_each(|key| key.verify(identity_key))
-    }
-
-    /// Checks that neither one-time list exceeds `max_pre_keys`.
-    ///
-    /// # Errors
-    /// Returns `AppError::BadRequest` if either list is larger.
-    pub fn check_batches(&self, max_pre_keys: NonZeroU32) -> Result<(), AppError> {
-        check_pre_key_batch(max_pre_keys, self.one_time_pre_keys.len())?;
-        check_pre_key_batch(max_pre_keys, self.kyber_pre_keys.len())
     }
 }
 
@@ -136,15 +119,6 @@ impl PreKeyUpload {
         }
         self.kyber_pre_keys.iter().try_for_each(|key| key.verify(identity_key))
     }
-
-    /// Checks that neither one-time list exceeds `max_pre_keys`.
-    ///
-    /// # Errors
-    /// Returns `AppError::BadRequest` if either list is larger.
-    pub fn check_batches(&self, max_pre_keys: NonZeroU32) -> Result<(), AppError> {
-        check_pre_key_batch(max_pre_keys, self.one_time_pre_keys.len())?;
-        check_pre_key_batch(max_pre_keys, self.kyber_pre_keys.len())
-    }
 }
 
 impl From<DevicePreKeys> for PreKeyUpload {
@@ -161,10 +135,6 @@ impl From<DevicePreKeys> for PreKeyUpload {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn limit(max: u32) -> NonZeroU32 {
-        NonZeroU32::new(max).unwrap()
-    }
 
     fn hex_field(v: &serde_json::Value, field: &str) -> Vec<u8> {
         hex::decode(v[field].as_str().expect(field)).expect(field)
@@ -221,14 +191,5 @@ mod tests {
 
         assert!(key(sign(&pre_key_wire)).verify(&identity).is_ok(), "signed over the 33-byte wire format");
         assert!(key(sign(&pre_key_wire[1..])).verify(&identity).is_err(), "libsignal never signs the bare 32 bytes");
-    }
-
-    #[test]
-    fn test_check_batch_allows_exactly_the_limit() {
-        assert!(check_pre_key_batch(limit(50), 50).is_ok());
-        assert!(
-            matches!(check_pre_key_batch(limit(50), 51), Err(AppError::BadRequest(msg)) if msg == "Batch too large. Limit is 50")
-        );
-        assert!(check_pre_key_batch(limit(50), 0).is_ok());
     }
 }
