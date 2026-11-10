@@ -198,7 +198,7 @@ impl AppBuilder {
 
         // Initialize Core Services
         let notifier = NotificationService::new(notification_repo, &config.notifications);
-        let key_service = KeyService::new(pool.clone(), KeyRepository::new(), notifier.clone(), &config.messaging);
+        let key_service = KeyService::new(pool.clone(), KeyRepository::new(), &config.messaging);
         let auth_service = AuthService::new(
             config.auth.clone(),
             pool.clone(),
@@ -233,7 +233,6 @@ impl AppBuilder {
         );
         let gateway_service = GatewayService::new(
             message_service.clone(),
-            key_service.clone(),
             auth_service.clone(),
             notifier.clone(),
             ws_ticket_cache,

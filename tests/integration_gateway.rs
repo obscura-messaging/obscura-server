@@ -72,11 +72,6 @@ async fn test_heartbeat_timeout_closes_connection() {
 
     let (_sink, mut stream) = ws_stream.split();
 
-    // Drain only the initial binary message (PreKeyStatus)
-    if let Ok(Some(Ok(Message::Binary(_)))) = tokio::time::timeout(Duration::from_millis(500), stream.next()).await {
-        println!("Drained PreKeyStatus");
-    }
-
     // Now we STOP polling. tungstenite won't send automatic pongs.
     // The server should send a Ping at 1s, and when no Pong (or other activity)
     // arrives by 2s (interval + timeout), it should close the connection.

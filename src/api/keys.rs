@@ -1,5 +1,7 @@
 use crate::api::AppState;
-use crate::api::schemas::keys::{PreKeyBundleListResponse, PreKeyBundleResponse, PreKeyUploadRequest};
+use crate::api::schemas::keys::{
+    PreKeyBundleListResponse, PreKeyBundleResponse, PreKeyCountResponse, PreKeyUploadRequest,
+};
 use crate::domain::auth::Caller;
 use crate::error::{AppError, Result};
 use axum::{
@@ -42,6 +44,15 @@ pub(crate) async fn get_device_pre_key_bundle(
         state.key_service.get_pre_key_bundles(user_id, Some(device_id)).await?.pop().ok_or(AppError::NotFound)?;
 
     Ok(Json(PreKeyBundleResponse::from(bundle)))
+}
+
+/// Reports how many one-time pre-keys of each kind the authenticated device has left, so it can refill them.
+///
+/// # Errors
+/// Returns `AppError::Database` if the query fails.
+pub(crate) async fn get_pre_key_counts(auth: Caller, State(state): State<AppState>) -> Result<impl IntoResponse> {
+    let counts = state.key_service.pre_key_counts(auth.device_id()).await?;
+    Ok(Json(PreKeyCountResponse::from(counts)))
 }
 
 /// Uploads new pre-keys for the authenticated device.

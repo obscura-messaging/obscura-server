@@ -1,53 +1,23 @@
 use crate::adapters::database::DbPool;
 use crate::adapters::database::key_repo::KeyRepository;
 use crate::config::MessagingConfig;
-use crate::domain::keys::{DevicePreKeys, PreKeyBundle, PreKeyStatus, PreKeyUpload};
-use crate::domain::notification::DeviceEvent;
+use crate::domain::keys::{DevicePreKeys, PreKeyBundle, PreKeyCounts, PreKeyUpload};
 use crate::error::{AppError, Result};
-use crate::services::notification_service::NotificationService;
-use opentelemetry::{global, metrics::Counter};
 use sqlx::PgConnection;
 use std::num::NonZeroU32;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
-struct Metrics {
-    prekey_low_total: Counter<u64>,
-}
-
-impl Metrics {
-    fn new() -> Self {
-        let meter = global::meter("obscura-server");
-        Self {
-            prekey_low_total: meter
-                .u64_counter("obscura_prekey_threshold_reached_total")
-                .with_description("Events where devices dipped below prekey threshold")
-                .build(),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
 pub struct KeyService {
     pool: DbPool,
     repo: KeyRepository,
-    notifier: NotificationService,
     max_pre_keys: NonZeroU32,
-    pre_key_refill_threshold: u32,
-    metrics: Metrics,
 }
 
 impl KeyService {
     #[must_use]
-    pub fn new(pool: DbPool, repo: KeyRepository, notifier: NotificationService, config: &MessagingConfig) -> Self {
-        Self {
-            pool,
-            repo,
-            notifier,
-            max_pre_keys: config.max_pre_keys,
-            pre_key_refill_threshold: config.pre_key_refill_threshold,
-            metrics: Metrics::new(),
-        }
+    pub const fn new(pool: DbPool, repo: KeyRepository, config: &MessagingConfig) -> Self {
+        Self { pool, repo, max_pre_keys: config.max_pre_keys }
     }
 
     /// The most one-time pre-keys of each kind (EC and Kyber) one upload may carry, and so a device may hold.
@@ -57,7 +27,7 @@ impl KeyService {
     }
 
     /// Fetches one pre-key bundle for each of a user's devices, or for `device_id` only, consuming a
-    /// one-time pre-key on each. Notifies any device that drops below the refill threshold.
+    /// one-time EC and Kyber pre-key on each where available.
     ///
     /// # Errors
     /// Returns `AppError::Database` if database query fails.
@@ -68,42 +38,22 @@ impl KeyService {
         device_id: Option<Uuid>,
     ) -> Result<Vec<PreKeyBundle>> {
         let mut conn = self.pool.begin().await?;
-
         let bundles = self.repo.get_bundles(&mut conn, user_id, device_id).await?;
-
         conn.commit().await?;
-
-        // Counted after commit: a count inside the consuming statement misses concurrent consumers,
-        // so under a burst no fetch would see the device go low. The last fetch to commit sees all.
-        for bundle in &bundles {
-            if let Some(status) = self.check_pre_key_status(bundle.device_id).await? {
-                tracing::warn!(
-                    device.id = %bundle.device_id,
-                    remaining = %status.count(),
-                    remaining_kyber = %status.kyber_count(),
-                    "Pre-keys falling below minimum threshold"
-                );
-                self.notifier.notify(&[bundle.device_id], DeviceEvent::PreKeyLow).await;
-            }
-        }
-
         Ok(bundles)
     }
 
-    /// Checks if a device needs to refill either of its one-time pre-key pools.
+    /// How many one-time EC and Kyber pre-keys a device has left. Clients check this to decide when to refill,
+    /// as Signal clients do with `GET /v2/keys`.
     ///
     /// # Errors
     /// Returns `AppError::Database` if the database operation fails.
     #[tracing::instrument(err, skip(self), fields(device.id = %device_id))]
-    pub async fn check_pre_key_status(&self, device_id: Uuid) -> Result<Option<PreKeyStatus>> {
+    pub(crate) async fn pre_key_counts(&self, device_id: Uuid) -> Result<PreKeyCounts> {
         let mut conn = self.pool.acquire().await?;
-        let count = self.repo.count_one_time_pre_keys(&mut conn, device_id).await?;
-        let kyber_count = self.repo.count_kyber_pre_keys(&mut conn, device_id).await?;
-        let status = PreKeyStatus::below_threshold(count, kyber_count, self.pre_key_refill_threshold);
-        if status.is_some() {
-            self.metrics.prekey_low_total.add(1, &[]);
-        }
-        Ok(status)
+        let one_time = self.repo.count_one_time_pre_keys(&mut conn, device_id).await?;
+        let kyber = self.repo.count_kyber_pre_keys(&mut conn, device_id).await?;
+        Ok(PreKeyCounts { one_time, kyber })
     }
 
     /// Applies a device's pre-key upload, as Signal's server does: each part present replaces what is stored

@@ -46,7 +46,6 @@ Startup fails on a configuration that cannot work: a value below 1 for an option
 | `--messaging-cleanup-interval-secs` | `OBSCURA_MESSAGING_CLEANUP_INTERVAL_SECS` | `300` | Expiry and inbox-limit sweep. At least 1. |
 | `--messaging-send-batch-limit` | `OBSCURA_MESSAGING_SEND_BATCH_LIMIT` | `100` | Submissions per `POST /v1/messages`; more returns 413. At least 1. |
 | `--messaging-idempotency-ttl-secs` | `OBSCURA_MESSAGING_IDEMPOTENCY_TTL_SECS` | `86400` | How long a send response is replayed for the same `Idempotency-Key`. At least 1. |
-| `--messaging-pre-key-refill-threshold` | `OBSCURA_PRE_KEY_REFILL_THRESHOLD` | `20` | Below this many one-time EC or Kyber prekeys, the device gets a `PreKeyStatus` frame and a push. |
 | `--messaging-pre-keys-max` | `OBSCURA_PRE_KEYS_MAX` | `100` | Most one-time prekeys of each kind (EC and Kyber) per upload. An upload replaces the device's stored keys of that kind, so this is also the most a device holds. At least 1. |
 | **Notifications** | | | |
 | `--notifications-cleanup-interval-secs` | `OBSCURA_NOTIFICATIONS_CLEANUP_INTERVAL_SECS` | `60` | Reclaim per-device channels with no listener. At least 1. |
@@ -80,7 +79,6 @@ Startup fails on a configuration that cannot work: a value below 1 for an option
 | `--ws-ack-buffer-size` | `OBSCURA_WS_ACK_BUFFER_SIZE` | `1000` | Pending acks per socket; acks beyond this are dropped and the messages redelivered later. At least 1. |
 | `--ws-ack-batch-size` | `OBSCURA_WS_ACK_BATCH_SIZE` | `100` | Acks per delete. At least 1. |
 | `--ws-ack-flush-interval-ms` | `OBSCURA_WS_ACK_FLUSH_INTERVAL_MS` | `500` | Max delay before acked messages are deleted. |
-| `--ws-prekey-debounce-interval-ms` | `OBSCURA_WS_PREKEY_DEBOUNCE_INTERVAL_MS` | `500` | Debounce for `PreKeyStatus` frames. |
 | `--ws-ping-interval-secs` | `OBSCURA_WS_PING_INTERVAL_SECS` | `30` | Ping interval; `0` means 1 s. At least 1. |
 | `--ws-ping-timeout-secs` | `OBSCURA_WS_PING_TIMEOUT_SECS` | `10` | Close if nothing is received for ping interval plus this. |
 | `--ws-message-fetch-batch-size` | `OBSCURA_WS_MESSAGE_FETCH_BATCH_SIZE` | `50` | Messages per query and per `EnvelopeBatch`. At least 1. |

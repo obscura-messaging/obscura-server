@@ -1,8 +1,7 @@
 use crate::config::WsConfig;
 use crate::domain::notification::DeviceEvent;
 use crate::proto::obscura::v1 as proto;
-use crate::services::gateway::{Metrics, ack_batcher::AckBatcher, message_pump::MessagePump, prekey_pump::PreKeyPump};
-use crate::services::key_service::KeyService;
+use crate::services::gateway::{Metrics, ack_batcher::AckBatcher, message_pump::MessagePump};
 use crate::services::message_service::MessageService;
 use crate::services::notification_service::NotificationService;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
@@ -16,7 +15,6 @@ pub struct Session {
     pub request_id: String,
     pub socket: WebSocket,
     pub message_service: MessageService,
-    pub key_service: KeyService,
     pub notifier: NotificationService,
     pub metrics: Metrics,
     pub config: WsConfig,
@@ -38,9 +36,7 @@ impl Session {
     pub(crate) async fn run(self) {
         // Destructuring allows independent mutable access to fields while the socket
         // is split into sink and stream halves.
-        let Self {
-            device_id, socket, message_service, key_service, notifier, metrics, config, mut shutdown_rx, ..
-        } = self;
+        let Self { device_id, socket, message_service, notifier, metrics, config, mut shutdown_rx, .. } = self;
 
         metrics.active_connections.add(1, &[]);
         tracing::info!("WebSocket connected");
@@ -75,9 +71,6 @@ impl Session {
                 retry_budget: std::time::Duration::from_millis(config.fetch_retry_budget_ms),
             },
         );
-
-        let prekey_pump =
-            PreKeyPump::new(device_id, key_service.clone(), outbound_tx.clone(), config.prekey_debounce_interval_ms);
 
         message_pump.notify();
 
@@ -203,14 +196,9 @@ impl Session {
                             true
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => {
-                            // If the channel lagged (burst of events), we safely trigger both pumps
-                            // because we don't know which event we missed. The pumps will debounce.
+                            // A burst outran the channel, so a message notification may have been missed. The
+                            // pump debounces, so triggering it anyway is cheap.
                             message_pump.notify();
-                            prekey_pump.notify();
-                            true
-                        }
-                        Ok(DeviceEvent::PreKeyLow) => {
-                            prekey_pump.notify();
                             true
                         }
                         Ok(DeviceEvent::Disconnect) | Err(broadcast::error::RecvError::Closed) => false,

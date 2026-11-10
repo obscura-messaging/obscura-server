@@ -648,7 +648,6 @@ impl TestApp {
             connect_async(format!("{}?ticket={}", self.ws_url, ticket)).await.expect("Failed to connect WS");
         let (sink, stream) = ws_stream.split();
         let (tx_env, rx_env) = tokio::sync::mpsc::unbounded_channel();
-        let (tx_status, rx_status) = tokio::sync::mpsc::unbounded_channel();
         let (tx_pong, rx_pong) = tokio::sync::mpsc::unbounded_channel();
         let (tx_raw, rx_raw) = tokio::sync::mpsc::unbounded_channel();
 
@@ -660,19 +659,14 @@ impl TestApp {
                 }
                 match msg {
                     Ok(Message::Binary(bin)) => {
-                        if let Ok(frame) = proto::WebSocketFrame::decode(bin.as_ref()) {
-                            match frame.payload {
-                                Some(proto::web_socket_frame::Payload::EnvelopeBatch(batch)) => {
-                                    for e in batch.envelopes {
-                                        if tx_env.send(e).is_err() {
-                                            break;
-                                        }
-                                    }
+                        if let Ok(proto::WebSocketFrame {
+                            payload: Some(proto::web_socket_frame::Payload::EnvelopeBatch(batch)),
+                        }) = proto::WebSocketFrame::decode(bin.as_ref())
+                        {
+                            for e in batch.envelopes {
+                                if tx_env.send(e).is_err() {
+                                    break;
                                 }
-                                Some(proto::web_socket_frame::Payload::PreKeyStatus(s)) => {
-                                    let _ = tx_status.send(s);
-                                }
-                                _ => {}
                             }
                         }
                     }
@@ -684,7 +678,7 @@ impl TestApp {
             }
         });
 
-        TestWsClient { sink, rx_env, rx_status, rx_pong, rx_raw }
+        TestWsClient { sink, rx_env, rx_pong, rx_raw }
     }
 
     pub(crate) async fn wait_until<F, Fut>(&self, mut condition: F, timeout: Duration) -> bool
@@ -745,7 +739,6 @@ pub struct TestWsClient {
     pub sink:
         futures::stream::SplitSink<WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, Message>,
     pub rx_env: tokio::sync::mpsc::UnboundedReceiver<proto::Envelope>,
-    pub rx_status: tokio::sync::mpsc::UnboundedReceiver<proto::PreKeyStatus>,
     pub rx_pong: tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Bytes>,
     pub rx_raw: tokio::sync::mpsc::UnboundedReceiver<Result<Message, tokio_tungstenite::tungstenite::Error>>,
 }
@@ -775,14 +768,6 @@ impl TestWsClient {
 
     pub(crate) async fn receive_envelope_timeout(&mut self, timeout: Duration) -> Option<proto::Envelope> {
         tokio::time::timeout(timeout, self.rx_env.recv()).await.ok().flatten()
-    }
-
-    pub(crate) async fn receive_prekey_status(&mut self) -> Option<proto::PreKeyStatus> {
-        self.receive_prekey_status_timeout(Duration::from_secs(5)).await
-    }
-
-    pub(crate) async fn receive_prekey_status_timeout(&mut self, timeout: Duration) -> Option<proto::PreKeyStatus> {
-        tokio::time::timeout(timeout, self.rx_status.recv()).await.ok().flatten()
     }
 
     pub(crate) async fn receive_raw_timeout(

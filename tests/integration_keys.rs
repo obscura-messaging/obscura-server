@@ -133,35 +133,45 @@ async fn test_rotation_replaces_signed_and_last_resort_keys() {
 }
 
 #[tokio::test]
-async fn test_prekey_status_low_keys() {
+async fn test_pre_key_counts_track_uploads_and_fetches() {
     let app = TestApp::spawn().await;
-    let username = common::generate_username("status_low");
-    let user = app.register_user_with_keys(&username, 123, 0).await;
-    let mut ws = app.connect_ws(&user.token).await;
-    let status = ws.receive_prekey_status().await.expect("Did not receive PreKeyStatus");
-    assert_eq!(status.one_time_pre_key_count, 0);
-    assert_eq!(status.one_time_kyber_pre_key_count, 0);
-}
+    let user = app.register_user_with_keys(&common::generate_username("counts"), 123, 3).await;
+    let fetcher = app.register_user(&common::generate_username("counts_fetcher")).await;
+    let counts = || async {
+        let resp = app
+            .client
+            .get(format!("{}/v1/keys", app.server_url))
+            .header("Authorization", format!("Bearer {}", user.token))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        (body["oneTimePreKeyCount"].as_u64().unwrap(), body["kyberPreKeyCount"].as_u64().unwrap())
+    };
+    assert_eq!(counts().await, (3, 3));
 
-#[tokio::test]
-async fn test_prekey_status_reports_low_kyber_pool() {
-    let app = TestApp::spawn().await;
-    let user = app.register_user_with_keys(&common::generate_username("status_kyber"), 123, 0).await;
-    let one_time: Vec<_> = (0..30).map(|i| json!({ "keyId": i, "publicKey": STANDARD.encode([0x05; 33]) })).collect();
+    let resp = app
+        .client
+        .get(format!("{}/v1/keys/{}/devices/{}", app.server_url, user.user_id, user.device_id))
+        .header("Authorization", format!("Bearer {}", fetcher.token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(counts().await, (2, 2), "a bundle fetch consumes one of each");
+
+    let kyber = common::generate_kyber_pre_keys(&user.identity_key, 500, 10);
     let resp = app
         .client
         .post(format!("{}/v1/keys", app.server_url))
         .header("Authorization", format!("Bearer {}", user.token))
-        .json(&common::refill_payload(&user.identity_key, 2, &one_time, &[]))
+        .json(&json!({ "kyberPreKeys": kyber }))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 204);
-
-    let mut ws = app.connect_ws(&user.token).await;
-    let status = ws.receive_prekey_status().await.expect("a low Kyber pool alone is reported");
-    assert_eq!(status.one_time_pre_key_count, 30);
-    assert_eq!(status.one_time_kyber_pre_key_count, 0);
+    assert_eq!(counts().await, (2, 10), "a refill replaces that pool only");
 }
 
 #[tokio::test]

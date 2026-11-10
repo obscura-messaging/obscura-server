@@ -63,6 +63,34 @@ paths:
 
   # --- Keys ---
   /v1/keys:
+    get:
+      operationId: getPreKeyCounts
+      summary: Count the device's remaining one-time PreKeys.
+      description: |
+        Returns how many one-time EC and Kyber PreKeys the authenticated device has left, like Signal's
+        `GET /v2/keys`. Clients check this when they rotate their signed and last-resort keys and refill a pool
+        that is running low; the server sends no low-key notice.
+      tags: [Keys]
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Remaining one-time PreKeys.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/x-request-id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreKeyCountResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '408':
+          $ref: '#/components/responses/RequestTimeoutError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
     post:
       operationId: uploadKeys
       summary: Upload PreKeys.
@@ -709,7 +737,6 @@ paths:
         - **Protocol:** `WebSocketFrame` (Protobuf).
         - **Auth:** Pass a valid ticket in the query string: `ws://.../v1/gateway?ticket=<ticket>`.
         - **Handshake:** Server takes the ticket, ensuring it exists and hasn't expired or been used, and that its device still exists. A ticket is consumed by its first handshake attempt.
-        - **Welcome:** Upon successful connection, the server may immediately push a `PreKeyStatus` frame if the device's one-time pre-key count is below the configured threshold.
         - **Flow:** Server pushes `EnvelopeBatch` frames. Client MUST respond with `AckMessage` frames. Server batches deletions based on ACKs.
       tags: [Messaging]
       security:
@@ -1305,6 +1332,21 @@ components:
           type: string
           format: byte
           description: Base64 encoded public key
+
+    PreKeyCountResponse:
+      type: object
+      required:
+        - oneTimePreKeyCount
+        - kyberPreKeyCount
+      properties:
+        oneTimePreKeyCount:
+          type: integer
+          format: int32
+          description: One-time EC PreKeys left.
+        kyberPreKeyCount:
+          type: integer
+          format: int32
+          description: One-time Kyber PreKeys left. The last-resort Kyber PreKey is not counted.
 
     KyberPreKey:
       type: object

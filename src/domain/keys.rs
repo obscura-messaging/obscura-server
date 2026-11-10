@@ -60,39 +60,11 @@ pub struct PreKeyBundle {
     pub one_time_pre_key: Option<OneTimePreKey>,
 }
 
-/// A device's one-time EC and Kyber pre-key counts, reported because at least one is low.
-///
-/// Only [`PreKeyStatus::below_threshold`] creates one, so a status always means the device is below the
-/// refill threshold in at least one pool.
+/// How many one-time pre-keys of each kind a device has left on the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PreKeyStatus {
-    count: u32,
-    kyber_count: u32,
-    threshold: u32,
-}
-
-impl PreKeyStatus {
-    /// The status of a device holding `count` one-time EC and `kyber_count` one-time Kyber pre-keys, or
-    /// `None` if neither is below `threshold`.
-    #[must_use]
-    pub const fn below_threshold(count: u32, kyber_count: u32, threshold: u32) -> Option<Self> {
-        if count < threshold || kyber_count < threshold { Some(Self { count, kyber_count, threshold }) } else { None }
-    }
-
-    #[must_use]
-    pub const fn count(&self) -> u32 {
-        self.count
-    }
-
-    #[must_use]
-    pub const fn kyber_count(&self) -> u32 {
-        self.kyber_count
-    }
-
-    #[must_use]
-    pub const fn threshold(&self) -> u32 {
-        self.threshold
-    }
+pub struct PreKeyCounts {
+    pub one_time: u32,
+    pub kyber: u32,
 }
 
 /// Checks that an upload of `len` one-time pre-keys of one kind stays within `max_pre_keys`. An upload replaces
@@ -249,22 +221,6 @@ mod tests {
 
         assert!(key(sign(&pre_key_wire)).verify(&identity).is_ok(), "signed over the 33-byte wire format");
         assert!(key(sign(&pre_key_wire[1..])).verify(&identity).is_err(), "libsignal never signs the bare 32 bytes");
-    }
-
-    #[test]
-    fn test_below_threshold_is_strict() {
-        assert_eq!(PreKeyStatus::below_threshold(20, 20, 20), None);
-        let status = PreKeyStatus::below_threshold(19, 20, 20).unwrap();
-        assert_eq!((status.count(), status.kyber_count(), status.threshold()), (19, 20, 20));
-        assert_eq!(PreKeyStatus::below_threshold(0, 50, 20).map(|s| s.count()), Some(0));
-        assert_eq!(PreKeyStatus::below_threshold(0, 0, 0), None, "a threshold of 0 never reports");
-    }
-
-    #[test]
-    fn test_below_threshold_reports_either_pool() {
-        let status = PreKeyStatus::below_threshold(50, 3, 20).expect("Kyber pool is low");
-        assert_eq!((status.count(), status.kyber_count()), (50, 3));
-        assert!(PreKeyStatus::below_threshold(3, 50, 20).is_some(), "EC pool is low");
     }
 
     #[test]

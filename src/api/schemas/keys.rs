@@ -303,3 +303,17 @@ impl From<keys::PreKeyBundle> for PreKeyBundleResponse {
         }
     }
 }
+
+/// `GET /v1/keys`: the authenticated device's remaining one-time pre-keys, as Signal's `PreKeyCount`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreKeyCountResponse {
+    pub one_time_pre_key_count: u32,
+    pub kyber_pre_key_count: u32,
+}
+
+impl From<keys::PreKeyCounts> for PreKeyCountResponse {
+    fn from(counts: keys::PreKeyCounts) -> Self {
+        Self { one_time_pre_key_count: counts.one_time, kyber_pre_key_count: counts.kyber }
+    }
+}
