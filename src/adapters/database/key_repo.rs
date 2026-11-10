@@ -36,7 +36,7 @@ impl KeyRepository {
         row.as_deref().map(decode_identity_key).transpose()
     }
 
-    /// Upserts a signed pre-key for a device.
+    /// Replaces a device's signed pre-key.
     ///
     /// # Errors
     /// Returns `sqlx::Error` if the database operation fails.
@@ -51,10 +51,10 @@ impl KeyRepository {
     ) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO signed_pre_keys (id, device_id, public_key, signature)
-            VALUES ($2, $1, $3, $4)
-            ON CONFLICT (id, device_id) DO UPDATE
-            SET public_key = $3, signature = $4
+            INSERT INTO signed_pre_keys (device_id, id, public_key, signature)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (device_id) DO UPDATE
+            SET id = $2, public_key = $3, signature = $4
             "#,
         )
         .bind(device_id)
@@ -120,7 +120,7 @@ impl KeyRepository {
             INSERT INTO kyber_last_resort_pre_keys (device_id, id, public_key, signature)
             VALUES ($1, $2, $3, $4)
             ON CONFLICT (device_id) DO UPDATE
-            SET id = $2, public_key = $3, signature = $4, created_at = now()
+            SET id = $2, public_key = $3, signature = $4
             "#,
         )
         .bind(device_id)
@@ -233,7 +233,6 @@ impl KeyRepository {
             r#"
             SELECT id, public_key, signature
             FROM signed_pre_keys WHERE device_id = $1
-            ORDER BY created_at DESC LIMIT 1
             "#,
         )
         .bind(device_id)
@@ -354,42 +353,6 @@ impl KeyRepository {
             .fetch_one(conn)
             .await?;
         Ok(u32::try_from(count).unwrap_or(u32::MAX))
-    }
-
-    /// Finds the maximum signed pre-key ID currently stored for a device.
-    ///
-    /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
-    #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn find_max_signed_pre_key_id(
-        &self,
-        conn: &mut PgConnection,
-        device_id: Uuid,
-    ) -> Result<Option<i32>> {
-        let max_id: Option<i32> = sqlx::query_scalar("SELECT MAX(id) FROM signed_pre_keys WHERE device_id = $1")
-            .bind(device_id)
-            .fetch_one(conn)
-            .await?;
-        Ok(max_id)
-    }
-
-    /// Deletes signed pre-keys with an ID smaller than the threshold.
-    ///
-    /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
-    #[tracing::instrument(level = "debug", skip(self, conn), err)]
-    pub(crate) async fn delete_signed_pre_keys_older_than(
-        &self,
-        conn: &mut PgConnection,
-        device_id: Uuid,
-        threshold_id: i32,
-    ) -> Result<()> {
-        sqlx::query("DELETE FROM signed_pre_keys WHERE device_id = $1 AND id < $2")
-            .bind(device_id)
-            .bind(threshold_id)
-            .execute(conn)
-            .await?;
-        Ok(())
     }
 }
 

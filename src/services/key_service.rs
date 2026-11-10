@@ -110,8 +110,8 @@ impl KeyService {
     /// (a non-empty one-time list replaces the stored keys of that kind) and absent parts are left as they are.
     ///
     /// # Errors
-    /// Returns `AppError::BadRequest` if any signature does not verify against the account identity, the signed
-    /// pre-key id does not increase, or a list is too large.
+    /// Returns `AppError::BadRequest` if any signature does not verify against the account identity or a list is
+    /// too large.
     /// Returns `AppError::Database` if the database operation fails.
     #[tracing::instrument(skip(self, upload), fields(device.id = %device_id), err(level = "warn"))]
     pub(crate) async fn upload_keys(&self, device_id: Uuid, upload: PreKeyUpload) -> Result<()> {
@@ -122,16 +122,6 @@ impl KeyService {
         let identity_key =
             self.repo.lock_device_identity_key(&mut tx, device_id).await?.ok_or(AppError::Unauthorized)?;
         upload.verify(&identity_key).map_err(AppError::BadRequest)?;
-
-        if let Some(signed) = &upload.signed_pre_key
-            && let Some(current_max) = self.repo.find_max_signed_pre_key_id(&mut tx, device_id).await?
-            && signed.key_id <= current_max
-        {
-            return Err(AppError::BadRequest(format!(
-                "Signed Pre-Key ID {} must be greater than current ID {}",
-                signed.key_id, current_max
-            )));
-        }
 
         self.store_pre_keys(&mut tx, device_id, &upload).await?;
 
@@ -160,7 +150,6 @@ impl KeyService {
             self.repo
                 .upsert_signed_pre_key(&mut *conn, device_id, signed.key_id, &signed.public_key, &signed.signature)
                 .await?;
-            self.repo.delete_signed_pre_keys_older_than(&mut *conn, device_id, signed.key_id).await?;
         }
         if let Some(last_resort) = &upload.last_resort_kyber_pre_key {
             self.repo.upsert_last_resort_kyber_pre_key(&mut *conn, device_id, last_resort).await?;

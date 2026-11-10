@@ -94,72 +94,42 @@ async fn test_upload_leaves_absent_parts_alone() {
 }
 
 #[tokio::test]
-async fn test_key_rotation_monotonic_check() {
+async fn test_rotation_replaces_signed_and_last_resort_keys() {
     let app = TestApp::spawn().await;
-    let username = common::generate_username("rotate");
-    let user = app.register_user_with_keys(&username, 123, 0).await;
+    let user = app.register_user_with_keys(&common::generate_username("rotate"), 123, 0).await;
+    let current = || {
+        let pool = app.pool.clone();
+        let device_id = user.device_id;
+        async move {
+            let signed: Vec<i32> = sqlx::query_scalar("SELECT id FROM signed_pre_keys WHERE device_id = $1")
+                .bind(device_id)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+            let last_resort: Vec<i32> =
+                sqlx::query_scalar("SELECT id FROM kyber_last_resort_pre_keys WHERE device_id = $1")
+                    .bind(device_id)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            (signed, last_resort)
+        }
+    };
 
-    // Rotate to 11
-    let resp_11 = app
-        .client
-        .post(format!("{}/v1/keys", app.server_url))
-        .header("Authorization", format!("Bearer {}", user.token))
-        .json(&common::refill_payload(&user.identity_key, 11, &[], &[]))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp_11.status(), 204);
-
-    // Replay 10 (Fail - ID is smaller than current max)
-    let resp_10 = app
-        .client
-        .post(format!("{}/v1/keys", app.server_url))
-        .header("Authorization", format!("Bearer {}", user.token))
-        .json(&common::refill_payload(&user.identity_key, 10, &[], &[]))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp_10.status(), 400);
-}
-
-#[tokio::test]
-async fn test_key_rotation_cleanup() {
-    let app = TestApp::spawn().await;
-    let username = common::generate_username("cleanup");
-    let user = app.register_user_with_keys(&username, 123, 0).await;
-
-    // Rotate to ID 10
-    let resp = app
-        .client
-        .post(format!("{}/v1/keys", app.server_url))
-        .header("Authorization", format!("Bearer {}", user.token))
-        .json(&common::refill_payload(&user.identity_key, 10, &[], &[]))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 204);
-
-    // Verify DB
-    let count_1: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM signed_pre_keys WHERE device_id = $1 AND id = 1")
-        .bind(user.device_id)
-        .fetch_one(&app.pool)
-        .await
-        .unwrap();
-    assert_eq!(count_1, 0, "Old key ID 1 should be deleted");
-
-    let count_10: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM signed_pre_keys WHERE device_id = $1 AND id = 10")
-        .bind(user.device_id)
-        .fetch_one(&app.pool)
-        .await
-        .unwrap();
-    assert_eq!(count_10, 1, "New key ID 10 should exist");
-
-    let last_resort: Vec<i32> = sqlx::query_scalar("SELECT id FROM kyber_last_resort_pre_keys WHERE device_id = $1")
-        .bind(user.device_id)
-        .fetch_all(&app.pool)
-        .await
-        .unwrap();
-    assert_eq!(last_resort, vec![10], "The last-resort Kyber pre-key is replaced, not added to");
+    // Signal clients count IDs up from a random start and wrap at 2^24 - 1, so a new key's ID may be lower than
+    // the old one's. Each rotation simply replaces the device's single signed and last-resort key.
+    for key_id in [16_777_214, 3] {
+        let resp = app
+            .client
+            .post(format!("{}/v1/keys", app.server_url))
+            .header("Authorization", format!("Bearer {}", user.token))
+            .json(&common::refill_payload(&user.identity_key, key_id, &[], &[]))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 204);
+        assert_eq!(current().await, (vec![key_id], vec![key_id]), "one of each, the latest");
+    }
 }
 
 #[tokio::test]

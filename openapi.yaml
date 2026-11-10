@@ -1218,7 +1218,7 @@ components:
         left as they are; an empty body is a no-op.
       properties:
         signedPreKey:
-          description: Replaces the signed pre-key. ID must be strictly greater than the current stored ID.
+          description: Replaces the device's signed pre-key.
           allOf:
             - $ref: '#/components/schemas/SignedPreKey'
         lastResortKyberPreKey:
