@@ -1,5 +1,6 @@
 use crate::api::AppState;
 use crate::api::schemas::gateway::{TicketResponse, WsParams};
+use crate::services::gateway::TicketError;
 use axum::{
     extract::{Query, State, ws::WebSocketUpgrade},
     http::Extensions,
@@ -37,9 +38,11 @@ pub(crate) async fn websocket_handler(
                 service.handle_socket(socket, device_id, request_id, shutdown).await;
             }
         }),
-        Err(e) => {
-            tracing::warn!(error = %e, "WebSocket handshake failed: invalid ticket");
+        Err(TicketError::Rejected(reason)) => {
+            tracing::warn!(reason, "WebSocket handshake failed: invalid ticket");
             axum::http::StatusCode::UNAUTHORIZED.into_response()
         }
+        // Not the client's fault, so not a 401: clients treat that as a bad ticket, not a retryable outage.
+        Err(TicketError::Unavailable) => axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
 }

@@ -30,6 +30,7 @@ Startup fails on a configuration that cannot work: a value below 1 for an option
 | `--pubsub-min-backoff-secs` | `OBSCURA_PUBSUB_MIN_BACKOFF_SECS` | `1` | Initial reconnect backoff. |
 | `--pubsub-max-backoff-secs` | `OBSCURA_PUBSUB_MAX_BACKOFF_SECS` | `30` | Maximum reconnect backoff. |
 | `--pubsub-stable-after-secs` | `OBSCURA_PUBSUB_STABLE_AFTER_SECS` | `30` | Subscription uptime after which backoff resets. |
+| `--pubsub-response-timeout-ms` | `OBSCURA_PUBSUB_RESPONSE_TIMEOUT_MS` | `3000` | Wait for a command's reply before failing it. At least 1. |
 | **Auth** | | | |
 | `--auth-jwt-secret` | `OBSCURA_AUTH_JWT_SECRET` | `change_me_in_production` | JWT signing secret. Change it. |
 | `--auth-token-ttl-secs` | `OBSCURA_AUTH_TOKEN_TTL_SECS` | `900` | Access token lifetime. At least 1. |
