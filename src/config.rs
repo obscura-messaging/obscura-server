@@ -219,15 +219,6 @@ pub struct PubSubConfig {
         default_value_t = PubSubConfig::default().stable_after_secs
     )]
     pub stable_after_secs: u64,
-
-    /// How long a Valkey command may wait for its reply before it fails, in milliseconds
-    #[arg(
-        long = "pubsub-response-timeout-ms",
-        id = "PUBSUB_RESPONSE_TIMEOUT_MS",
-        env = "OBSCURA_PUBSUB_RESPONSE_TIMEOUT_MS",
-        default_value_t = PubSubConfig::default().response_timeout_ms
-    )]
-    pub response_timeout_ms: NonZeroU64,
 }
 
 impl Default for PubSubConfig {
@@ -237,9 +228,6 @@ impl Default for PubSubConfig {
             min_backoff_secs: 1,
             max_backoff_secs: 30,
             stable_after_secs: 30,
-            // The client library's own default is 500 ms, which a brief Valkey stall (a fork for a
-            // snapshot, a starved host) exceeds, failing ticket and send requests that would have succeeded.
-            response_timeout_ms: non_zero_u64(3000),
         }
     }
 }

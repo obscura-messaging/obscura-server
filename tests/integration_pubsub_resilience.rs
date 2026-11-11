@@ -24,10 +24,7 @@ mod common;
 use common::TestApp;
 use obscura_server::adapters::redis::RedisClient;
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use uuid::Uuid;
@@ -97,14 +94,8 @@ fn upstream_from(url: &str) -> String {
 }
 
 /// Fast backoff so a recovered listener reconnects promptly inside the test's patience.
-fn fast_pubsub_config(url: String) -> obscura_server::config::PubSubConfig {
-    obscura_server::config::PubSubConfig {
-        url,
-        min_backoff_secs: 1,
-        max_backoff_secs: 2,
-        stable_after_secs: 1,
-        ..Default::default()
-    }
+const fn fast_pubsub_config(url: String) -> obscura_server::config::PubSubConfig {
+    obscura_server::config::PubSubConfig { url, min_backoff_secs: 1, max_backoff_secs: 2, stable_after_secs: 1 }
 }
 
 /// The regression test: the listener must survive an outage longer than the old bounded retry
@@ -254,59 +245,4 @@ async fn redeeming_a_ticket_during_a_valkey_outage_is_503_not_401() {
         Ok(_) => panic!("expected the handshake to fail while Valkey is unreachable"),
     }
     proxy.restore().await;
-}
-
-/// A proxy in front of Valkey that, once `slow` is set, holds every reply for `delay`.
-async fn start_slow_proxy(upstream: String, delay: Duration, slow: Arc<AtomicBool>) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind proxy");
-    let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move {
-        while let Ok((inbound, _)) = listener.accept().await {
-            let upstream = upstream.clone();
-            let slow = Arc::clone(&slow);
-            tokio::spawn(async move {
-                let Ok(outbound) = TcpStream::connect(&upstream).await else { return };
-                let (mut client_read, mut client_write) = inbound.into_split();
-                let (mut server_read, mut server_write) = outbound.into_split();
-                tokio::spawn(async move { tokio::io::copy(&mut client_read, &mut server_write).await });
-                let mut buf = vec![0u8; 16 * 1024];
-                loop {
-                    let n = match server_read.read(&mut buf).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => n,
-                    };
-                    if slow.load(Ordering::SeqCst) {
-                        tokio::time::sleep(delay).await;
-                    }
-                    if client_write.write_all(&buf[..n]).await.is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-    });
-    format!("redis://127.0.0.1:{port}")
-}
-
-async fn ticket_status_with_slow_valkey(response_timeout_ms: u64) -> reqwest::StatusCode {
-    let mut config = common::get_test_config();
-    let slow = Arc::new(AtomicBool::new(false));
-    let url = start_slow_proxy(upstream_from(&config.pubsub.url), Duration::from_millis(800), Arc::clone(&slow)).await;
-    config.pubsub = obscura_server::config::PubSubConfig {
-        response_timeout_ms: std::num::NonZeroU64::new(response_timeout_ms).unwrap(),
-        ..fast_pubsub_config(url)
-    };
-    let app = TestApp::spawn_with_config(config).await;
-    let user = app.register_user(&common::generate_username("slow_valkey")).await;
-
-    slow.store(true, Ordering::SeqCst);
-    issue_ticket(&app, &user.token).await.status()
-}
-
-/// An 800 ms Valkey stall fails a request under a 300 ms response timeout and not under the default.
-#[tokio::test]
-async fn the_response_timeout_decides_whether_a_valkey_stall_fails_a_request() {
-    assert_eq!(Box::pin(ticket_status_with_slow_valkey(300)).await, reqwest::StatusCode::INTERNAL_SERVER_ERROR);
-    let default = obscura_server::config::PubSubConfig::default().response_timeout_ms.get();
-    assert_eq!(Box::pin(ticket_status_with_slow_valkey(default)).await, reqwest::StatusCode::CREATED);
 }

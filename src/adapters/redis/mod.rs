@@ -96,9 +96,7 @@ impl RedisClient {
         shutdown: watch::Receiver<bool>,
     ) -> anyhow::Result<Arc<Self>> {
         let client = redis::Client::open(config.url.as_str())?;
-        let manager_config = redis::aio::ConnectionManagerConfig::new()
-            .set_response_timeout(Some(Duration::from_millis(config.response_timeout_ms.get())));
-        let publisher = client.get_connection_manager_with_config(manager_config).await?;
+        let publisher = client.get_connection_manager().await?;
         let subscriptions = Arc::new(DashMap::new());
 
         let redis_client =
