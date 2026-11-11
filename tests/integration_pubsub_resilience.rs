@@ -214,3 +214,35 @@ async fn websocket_delivery_resumes_after_pubsub_outage() {
 
     assert!(delivered, "realtime delivery never resumed after the pubsub outage");
 }
+
+async fn issue_ticket(app: &TestApp, token: &str) -> reqwest::Response {
+    app.client
+        .post(format!("{}/v1/gateway/ticket", app.server_url))
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap()
+}
+
+/// A ticket that cannot be checked is the server's problem, not the client's: the handshake must
+/// say 503, not the 401 that tells a client its ticket is bad.
+#[tokio::test]
+async fn redeeming_a_ticket_during_a_valkey_outage_is_503_not_401() {
+    let mut config = common::get_test_config();
+    let mut proxy = RedisProxy::start(&upstream_from(&config.pubsub.url)).await;
+    config.pubsub = fast_pubsub_config(proxy.url());
+    let app = TestApp::spawn_with_config(config).await;
+    let user = app.register_user(&common::generate_username("ticket_outage")).await;
+
+    let resp = issue_ticket(&app, &user.token).await;
+    assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    let ticket = resp.json::<serde_json::Value>().await.unwrap()["ticket"].as_str().unwrap().to_string();
+
+    proxy.cut().await;
+    match tokio_tungstenite::connect_async(format!("{}?ticket={ticket}", app.ws_url)).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => assert_eq!(resp.status(), 503),
+        Err(e) => panic!("expected HTTP 503, got {e:?}"),
+        Ok(_) => panic!("expected the handshake to fail while Valkey is unreachable"),
+    }
+    proxy.restore().await;
+}

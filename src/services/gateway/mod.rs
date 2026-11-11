@@ -72,6 +72,15 @@ pub(crate) struct GatewayService {
     metrics: Metrics,
 }
 
+/// Why a gateway ticket did not admit a socket.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TicketError {
+    /// The ticket is unknown, spent, expired, or names a device that no longer exists.
+    Rejected(&'static str),
+    /// The ticket could not be checked; the same ticket may have been good.
+    Unavailable,
+}
+
 impl GatewayService {
     #[must_use]
     pub(crate) fn new(
@@ -98,23 +107,28 @@ impl GatewayService {
     }
 
     /// Consumes a single-use ticket and returns its device if that device still exists.
-    pub(crate) async fn redeem_ticket(&self, ticket: &str) -> std::result::Result<Uuid, String> {
+    ///
+    /// # Errors
+    /// [`TicketError::Rejected`] when the ticket does not admit anyone, [`TicketError::Unavailable`]
+    /// when it could not be checked.
+    pub(crate) async fn redeem_ticket(&self, ticket: &str) -> std::result::Result<Uuid, TicketError> {
         let bytes = match self.ticket_cache.take(ticket).await {
             Ok(Some(bytes)) => bytes,
-            Ok(None) => return Err("Ticket not found or expired".to_string()),
+            Ok(None) => return Err(TicketError::Rejected("ticket not found or expired")),
             Err(e) => {
                 tracing::error!(error = %e, "Failed to read ticket from cache");
-                return Err("Internal server error".to_string());
+                return Err(TicketError::Unavailable);
             }
         };
-        let id_str = String::from_utf8(bytes).map_err(|_| "Invalid UTF-8 in cache".to_string())?;
-        let device_id = Uuid::parse_str(&id_str).map_err(|_| "Invalid device ID format in cache".to_string())?;
+        let id_str = String::from_utf8(bytes).map_err(|_| TicketError::Rejected("invalid UTF-8 in cache"))?;
+        let device_id =
+            Uuid::parse_str(&id_str).map_err(|_| TicketError::Rejected("invalid device ID format in cache"))?;
         match self.auth_service.device_exists(device_id).await {
             Ok(true) => Ok(device_id),
-            Ok(false) => Err("Ticket device no longer exists".to_string()),
+            Ok(false) => Err(TicketError::Rejected("ticket device no longer exists")),
             Err(e) => {
                 tracing::error!(error = %e, "Failed to check the ticket's device");
-                Err("Internal server error".to_string())
+                Err(TicketError::Unavailable)
             }
         }
     }
