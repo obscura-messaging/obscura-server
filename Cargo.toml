@@ -54,7 +54,6 @@ opentelemetry-semantic-conventions = "0.33"
 redis = { version = "1.2.2", features = ["tokio-comp", "connection-manager"] }
 async-trait = "0.1.89"
 tokio-stream = { version = "0.1.18", features = ["sync"] }
-regex = "1.12.3"
 
 [build-dependencies]
 prost-build = "0.14.4"
@@ -63,6 +62,7 @@ prost-build = "0.14.4"
 tokio-tungstenite = "0.30.0"
 reqwest = { version = "0.13.4", default-features = false, features = ["stream"] }
 tempfile = "3"
+regex = "1.12.3"
 
 [lints.rust]
 unsafe_code = "forbid"

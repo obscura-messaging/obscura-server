@@ -397,7 +397,6 @@ impl TestApp {
             .with_pubsub(pubsub.clone())
             .with_s3(s3_client.clone())
             .with_push_provider(push_provider)
-            .with_shutdown_rx(shutdown_rx.clone())
             .initialize()
             .await
             .expect("Failed to build application for tests");

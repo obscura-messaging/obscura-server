@@ -16,6 +16,7 @@ use axum::{
     middleware::from_fn_with_state,
     routing::{delete, get, post, put},
 };
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 use tower_governor::GovernorLayer;
@@ -79,45 +80,49 @@ pub struct MgmtState {
     pub health_service: HealthService,
 }
 
-fn auth_router(config: &Config, rate_limit_extractor: IpKeyExtractor) -> Router<AppState> {
-    // Auth Tier: Stricter limits for expensive/sensitive registration & login
-    let auth_interval_ns = 1_000_000_000 / config.rate_limit.auth_per_second.get();
-    let auth_conf = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_nanosecond(u64::from(auth_interval_ns))
-            .burst_size(config.rate_limit.auth_burst.get())
-            .key_extractor(rate_limit_extractor)
-            .finish()
-            .expect("Failed to build auth rate limiter config"),
-    );
+/// Limits each client IP to `per_second` requests across `router`, allowing bursts of `burst`.
+fn rate_limited(
+    router: Router<AppState>,
+    per_second: NonZeroU32,
+    burst: NonZeroU32,
+    extractor: IpKeyExtractor,
+) -> Router<AppState> {
+    // Above a billion per second the interval would round down to 0, which the limiter rejects.
+    let interval_ns = (1_000_000_000 / per_second).max(1);
+    let config = GovernorConfigBuilder::default()
+        .per_nanosecond(u64::from(interval_ns))
+        .burst_size(burst.get())
+        .key_extractor(extractor)
+        .finish()
+        .expect("a non-zero rate and burst make a valid limiter");
+    router.layer(GovernorLayer::new(Arc::new(config)))
+}
 
-    let standard_timeout = TimeoutLayer::with_status_code(
+fn request_timeout(config: &Config) -> TimeoutLayer {
+    TimeoutLayer::with_status_code(
         StatusCode::REQUEST_TIMEOUT,
         Duration::from_secs(config.server.request_timeout_secs.get()),
-    );
+    )
+}
 
-    Router::new()
+fn auth_router(config: &Config, rate_limit_extractor: IpKeyExtractor) -> Router<AppState> {
+    // Auth Tier: Stricter limits for expensive/sensitive registration & login
+    let limits = &config.rate_limit;
+
+    let routes = Router::new()
         .route("/users", post(devices::register))
         .route("/users/reset", post(devices::reset_account))
         .route("/session", post(auth::login).delete(auth::logout))
         .route("/session/refresh", post(auth::refresh))
-        .route("/link-sessions", post(devices::create_link_session))
-        .layer(GovernorLayer::new(auth_conf))
-        .layer(standard_timeout)
+        .route("/link-sessions", post(devices::create_link_session));
+
+    rate_limited(routes, limits.auth_per_second, limits.auth_burst, rate_limit_extractor).layer(request_timeout(config))
 }
 
 fn api_router(config: &Config, rate_limit_extractor: IpKeyExtractor) -> Router<AppState> {
-    let std_interval_ns = 1_000_000_000 / config.rate_limit.per_second.get();
-    let standard_conf = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_nanosecond(u64::from(std_interval_ns))
-            .burst_size(config.rate_limit.burst.get())
-            .key_extractor(rate_limit_extractor)
-            .finish()
-            .expect("Failed to build standard rate limiter config"),
-    );
+    let limits = &config.rate_limit;
 
-    let standard_routes = Router::new()
+    let routes = Router::new()
         .route("/devices", post(devices::create_device).get(devices::list_devices))
         .route("/devices/{deviceId}", delete(devices::delete_device))
         .route("/link-sessions/{id}", put(devices::approve_link_session).get(devices::get_link_session))
@@ -127,15 +132,10 @@ fn api_router(config: &Config, rate_limit_extractor: IpKeyExtractor) -> Router<A
         .route("/messages", post(messages::send_messages))
         .route("/gateway", get(gateway::websocket_handler))
         .route("/gateway/ticket", post(gateway::generate_ticket))
-        .route("/push-token", put(push_tokens::register_token));
+        .route("/push-token", put(push_tokens::register_token))
+        .layer(request_timeout(config));
 
-    Router::new()
-        .merge(standard_routes)
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(config.server.request_timeout_secs.get()),
-        ))
-        .layer(GovernorLayer::new(standard_conf))
+    rate_limited(routes, limits.per_second, limits.burst, rate_limit_extractor)
 }
 
 fn storage_router(config: &Config) -> Router<AppState> {
@@ -164,8 +164,7 @@ fn apply_middleware(router: Router<AppState>, config: &Config, state: AppState) 
                     let request_id = request
                         .extensions()
                         .get::<tower_http::request_id::RequestId>()
-                        .map(|id| id.header_value().to_str().unwrap_or_default())
-                        .unwrap_or_default()
+                        .map_or_default(|id| id.header_value().to_str().unwrap_or_default())
                         .to_string();
 
                     tracing::info_span!(
@@ -233,4 +232,16 @@ pub fn app_router(config: &Config, services: Services, shutdown_rx: tokio::sync:
 
 pub fn mgmt_router(state: MgmtState) -> Router {
     Router::new().route("/livez", get(health::livez)).route("/readyz", get(health::readyz)).with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rate_above_a_billion_per_second_still_builds_a_limiter() {
+        let extractor = IpKeyExtractor::new(Vec::new());
+        let max = NonZeroU32::MAX;
+        let _router = rate_limited(Router::new(), max, max, extractor);
+    }
 }

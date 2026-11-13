@@ -18,7 +18,7 @@ impl KeyRepository {
     /// Returns `None` if the device does not exist.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     /// Returns `AppError::Internal` if stored data is corrupt.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn find_device_identity_key(
@@ -39,7 +39,7 @@ impl KeyRepository {
     /// Returns `None` if the device does not exist.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     /// Returns `AppError::Internal` if stored data is corrupt.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn lock_device_identity_key(
@@ -60,7 +60,7 @@ impl KeyRepository {
     /// Replaces a device's signed pre-key.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the database operation fails.
+    /// Returns `AppError::Database` if the database operation fails.
     #[tracing::instrument(level = "debug", skip(self, conn, public_key, signature))]
     pub(crate) async fn upsert_signed_pre_key(
         &self,
@@ -90,7 +90,7 @@ impl KeyRepository {
     /// Replaces all of a device's one-time EC pre-keys with `keys`.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the database operation fails.
+    /// Returns `AppError::Database` if the database operation fails.
     #[tracing::instrument(level = "debug", skip(self, conn, keys))]
     pub(crate) async fn replace_one_time_pre_keys(
         &self,
@@ -128,7 +128,7 @@ impl KeyRepository {
     /// Replaces a device's last-resort Kyber pre-key.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the database operation fails.
+    /// Returns `AppError::Database` if the database operation fails.
     #[tracing::instrument(level = "debug", skip(self, conn, key))]
     pub(crate) async fn upsert_last_resort_kyber_pre_key(
         &self,
@@ -156,7 +156,7 @@ impl KeyRepository {
     /// Replaces all of a device's one-time Kyber pre-keys with `keys`.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the database operation fails.
+    /// Returns `AppError::Database` if the database operation fails.
     #[tracing::instrument(level = "debug", skip(self, conn, keys))]
     pub(crate) async fn replace_kyber_pre_keys(
         &self,
@@ -198,7 +198,7 @@ impl KeyRepository {
     /// is left (or all are locked by concurrent fetches). Returns `None` only if the device has neither.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the database operation fails.
+    /// Returns `AppError::Database` if the database operation fails.
     /// Returns `AppError::Internal` if stored data is corrupt.
     async fn take_kyber_pre_key(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<Option<KyberPreKey>> {
         let one_time = sqlx::query_as::<_, KyberPreKeyRecord>(
@@ -240,7 +240,7 @@ impl KeyRepository {
     /// pre-key where available. Returns `None` if the device has no signed pre-key or no Kyber pre-key.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the database operation fails.
+    /// Returns `AppError::Database` if the database operation fails.
     /// Returns `AppError::Internal` if stored data is corrupt.
     #[tracing::instrument(level = "debug", skip(self, conn, identity_key), err)]
     async fn fetch_pre_key_bundle(
@@ -311,7 +311,7 @@ impl KeyRepository {
     /// account identity key. Consumes one one-time pre-key per returned device.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the database operation fails.
+    /// Returns `AppError::Database` if the database operation fails.
     /// Returns `AppError::Internal` if stored data is corrupt.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn get_bundles(
@@ -353,7 +353,7 @@ impl KeyRepository {
     /// Counts the remaining one-time pre-keys for a device, saturating at `u32::MAX`.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn count_one_time_pre_keys(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<u32> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM one_time_pre_keys WHERE device_id = $1")
@@ -366,7 +366,7 @@ impl KeyRepository {
     /// Counts the remaining one-time Kyber pre-keys for a device, saturating at `u32::MAX`.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn count_kyber_pre_keys(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<u32> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM kyber_pre_keys WHERE device_id = $1")

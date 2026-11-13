@@ -104,7 +104,7 @@ impl MessageRepository {
     /// Fetches a batch of pending messages for a device.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn))]
     pub(crate) async fn fetch_pending_batch(
         &self,
@@ -157,7 +157,7 @@ impl MessageRepository {
     /// Deletes a batch of messages for a specific device.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
+    /// Returns `AppError::Database` if the deletion fails.
     #[tracing::instrument(level = "debug", skip(self, conn))]
     pub(crate) async fn delete_batch(
         &self,
@@ -179,7 +179,7 @@ impl MessageRepository {
     /// Deletes all expired messages.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
+    /// Returns `AppError::Database` if the deletion fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub async fn delete_expired(&self, conn: &mut PgConnection) -> Result<u64> {
         let result = sqlx::query("DELETE FROM messages WHERE expires_at < NOW()").execute(conn).await?;
@@ -189,7 +189,7 @@ impl MessageRepository {
     /// Enforces global inbox limits by pruning the oldest messages per device.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
+    /// Returns `AppError::Database` if the deletion fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub async fn delete_global_overflow(&self, conn: &mut PgConnection, limit: i64) -> Result<u64> {
         // Deletes messages that exceed the 'limit' per device

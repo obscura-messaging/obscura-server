@@ -54,7 +54,7 @@ impl UserRepository {
     /// Finds a user by their username.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn find_by_username(&self, conn: &mut PgConnection, username: &Username) -> Result<Option<User>> {
         let user = sqlx::query_as::<_, UserRecord>(
@@ -76,7 +76,7 @@ impl UserRepository {
     /// `MessageRepository::lock_device_sets`.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     /// Returns `AppError::Internal` if stored data is corrupt.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn lock_identity_key(&self, conn: &mut PgConnection, user_id: Uuid) -> Result<PublicKey> {
@@ -94,7 +94,7 @@ impl UserRepository {
     /// Replaces the account identity key.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the update fails.
+    /// Returns `AppError::Database` if the update fails.
     #[tracing::instrument(level = "debug", skip(self, conn, identity_key), err)]
     pub(crate) async fn set_identity_key(
         &self,
