@@ -16,7 +16,7 @@ impl DeviceRepository {
     /// Creates a new device for a user.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the insert fails.
+    /// Returns `AppError::Database` if the insert fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn create(
         &self,
@@ -46,7 +46,7 @@ impl DeviceRepository {
     /// Lists all devices for a user.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn find_by_user(&self, conn: &mut PgConnection, user_id: Uuid) -> Result<Vec<Device>> {
         let records = sqlx::query_as::<_, DeviceRecord>(
@@ -62,7 +62,7 @@ impl DeviceRepository {
     /// Deletes a device owned by a specific user.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
+    /// Returns `AppError::Database` if the deletion fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn delete(&self, conn: &mut PgConnection, device_id: Uuid, user_id: Uuid) -> Result<()> {
         sqlx::query("DELETE FROM devices WHERE id = $1 AND user_id = $2")
@@ -76,7 +76,7 @@ impl DeviceRepository {
     /// Deletes every device of a user and returns their ids.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
+    /// Returns `AppError::Database` if the deletion fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn delete_all_for_user(&self, conn: &mut PgConnection, user_id: Uuid) -> Result<Vec<Uuid>> {
         let ids = sqlx::query_scalar("DELETE FROM devices WHERE user_id = $1 RETURNING id")
@@ -90,7 +90,7 @@ impl DeviceRepository {
     /// Fetches a single device owned by a specific user.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn find_by_id(
         &self,
@@ -112,7 +112,7 @@ impl DeviceRepository {
     /// Returns the role of a device owned by `user_id`, or `None` if it does not belong to `user_id`.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn find_role(
         &self,
@@ -133,7 +133,7 @@ impl DeviceRepository {
     /// Checks if a device exists.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn exists(&self, conn: &mut PgConnection, device_id: Uuid) -> Result<bool> {
         let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM devices WHERE id = $1)")
@@ -147,7 +147,7 @@ impl DeviceRepository {
     /// Counts the number of devices for a user, saturating at `u32::MAX`.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn count_by_user(&self, conn: &mut PgConnection, user_id: Uuid) -> Result<u32> {
         let count: i64 =

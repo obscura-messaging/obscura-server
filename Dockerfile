@@ -2,8 +2,8 @@
 FROM rust:1.99-slim AS builder
 WORKDIR /app
 
-# Install build dependencies (Required for Protobuf and SSL)
-RUN apt-get update && apt-get install -y protobuf-compiler libssl-dev pkg-config
+# Install build dependencies (protoc for the protobuf build script)
+RUN apt-get update && apt-get install -y protobuf-compiler
 
 # Copy manifests and build requirements
 COPY ./Cargo.toml ./Cargo.lock* ./
@@ -28,7 +28,7 @@ FROM debian:13.7-slim
 WORKDIR /app
 
 # Install runtime dependencies
-RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user with a specific UID/GID
 RUN groupadd -g 10001 appuser && useradd -u 10001 -g 10001 -r appuser

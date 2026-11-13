@@ -125,14 +125,13 @@ pub struct AppBuilder {
     pubsub: Option<Arc<adapters::redis::RedisClient>>,
     s3_client: Option<aws_sdk_s3::Client>,
     push_provider: Option<Arc<dyn PushProvider>>,
-    shutdown_rx: Option<watch::Receiver<bool>>,
 }
 
 impl AppBuilder {
     /// Creates a new builder with the provided configuration.
     #[must_use]
     pub fn new(config: Config) -> Self {
-        Self { config, pool: None, pubsub: None, s3_client: None, push_provider: None, shutdown_rx: None }
+        Self { config, pool: None, pubsub: None, s3_client: None, push_provider: None }
     }
 
     /// Sets the database connection pool.
@@ -163,13 +162,6 @@ impl AppBuilder {
         self
     }
 
-    /// Sets the shutdown receiver for coordinating graceful exit.
-    #[must_use]
-    pub fn with_shutdown_rx(mut self, rx: watch::Receiver<bool>) -> Self {
-        self.shutdown_rx = Some(rx);
-        self
-    }
-
     /// Builds the application components by wiring all services and repositories.
     ///
     /// # Errors
@@ -182,7 +174,6 @@ impl AppBuilder {
         let pubsub = self.pubsub.ok_or_else(|| anyhow::anyhow!("PubSub client is required"))?;
         let s3_client = self.s3_client.ok_or_else(|| anyhow::anyhow!("S3 client is required"))?;
         let push_provider = self.push_provider.ok_or_else(|| anyhow::anyhow!("Push provider is required"))?;
-        let _shutdown_rx = self.shutdown_rx.clone().ok_or_else(|| anyhow::anyhow!("Shutdown receiver is required"))?;
 
         let config = &self.config;
 

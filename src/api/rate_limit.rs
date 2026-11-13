@@ -1,7 +1,7 @@
 use crate::api::AppState;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
-use axum::http::{HeaderValue, Request, StatusCode};
+use axum::http::{HeaderValue, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
 use ipnetwork::IpNetwork;
@@ -95,9 +95,9 @@ impl RateLimiter {
         Self { extractor: IpKeyExtractor::new(trusted_proxies), metrics: Metrics::new() }
     }
 
-    pub fn log_decision(&self, status: StatusCode, ratelimit_after: Option<String>) {
+    pub fn log_decision(&self, status: StatusCode, retry_after_secs: Option<u64>) {
         let label = if status == StatusCode::TOO_MANY_REQUESTS {
-            if let Some(after) = ratelimit_after {
+            if let Some(after) = retry_after_secs {
                 warn!("Rate limit exceeded (retry allowed after {}s)", after);
             }
             "throttled"
@@ -113,27 +113,26 @@ impl RateLimiter {
 ///
 /// The limiter reports its wait floored to whole seconds, so a sub-second wait arrives as `0` and a
 /// client that honours it is throttled again.
-///
-/// # Panics
-/// Panics if the limiter's `x-ratelimit-after` header is not an integer.
 pub(crate) async fn log_rate_limit_events(State(state): State<AppState>, req: Request<Body>, next: Next) -> Response {
     let mut response = next.run(req).await;
 
     let status = response.status();
-    let retry_after =
-        if status == StatusCode::TOO_MANY_REQUESTS {
-            response.headers().get("x-ratelimit-after").and_then(|v| v.to_str().ok()).map(|floored| {
-                retry_after_secs(floored.parse().expect("x-ratelimit-after is whole seconds")).to_string()
-            })
-        } else {
-            None
-        };
+    // A 429 without the header comes from the application, which sets its own `Retry-After`.
+    let floored =
+        if status == StatusCode::TOO_MANY_REQUESTS { response.headers().get("x-ratelimit-after") } else { None };
+    let retry_after = floored.and_then(|value| {
+        let secs = value.to_str().ok().and_then(|v| v.parse().ok()).map(retry_after_secs);
+        if secs.is_none() {
+            warn!(header = ?value, "x-ratelimit-after is not whole seconds; leaving Retry-After unset");
+        }
+        secs
+    });
 
-    state.rate_limiter.log_decision(status, retry_after.clone());
+    state.rate_limiter.log_decision(status, retry_after);
 
-    if let Some(after) = retry_after {
-        let value: HeaderValue = after.parse().expect("an integer is a valid header value");
-        response.headers_mut().insert("retry-after", value.clone());
+    if let Some(secs) = retry_after {
+        let value = HeaderValue::from(secs);
+        response.headers_mut().insert(header::RETRY_AFTER, value.clone());
         response.headers_mut().insert("x-ratelimit-after", value);
     }
 
@@ -202,11 +201,7 @@ mod tests {
         let extractor = extractor_with_trusted(&["10.0.0.0/8"]);
         let headers = axum::http::HeaderMap::new();
         let peer: IpAddr = "10.0.0.1".parse().expect("valid IP");
-        assert_eq!(extractor.identify_client_ip(&headers, peer), expected_peer(peer));
-    }
-
-    const fn expected_peer(peer: IpAddr) -> IpAddr {
-        peer
+        assert_eq!(extractor.identify_client_ip(&headers, peer), peer);
     }
 
     #[test]
