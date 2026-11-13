@@ -1,5 +1,5 @@
 # Stage 1: Builder
-FROM rust:1.99-slim AS builder
+FROM rust:1.100-slim AS builder
 WORKDIR /app
 
 # Install build dependencies (protoc for the protobuf build script)

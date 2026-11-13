@@ -88,7 +88,7 @@ fn rate_limited(
     extractor: IpKeyExtractor,
 ) -> Router<AppState> {
     // Above a billion per second the interval would round down to 0, which the limiter rejects.
-    let interval_ns = (1_000_000_000 / per_second.get()).max(1);
+    let interval_ns = (1_000_000_000 / per_second).max(1);
     let config = GovernorConfigBuilder::default()
         .per_nanosecond(u64::from(interval_ns))
         .burst_size(burst.get())
@@ -164,8 +164,7 @@ fn apply_middleware(router: Router<AppState>, config: &Config, state: AppState) 
                     let request_id = request
                         .extensions()
                         .get::<tower_http::request_id::RequestId>()
-                        .map(|id| id.header_value().to_str().unwrap_or_default())
-                        .unwrap_or_default()
+                        .map_or_default(|id| id.header_value().to_str().unwrap_or_default())
                         .to_string();
 
                     tracing::info_span!(
