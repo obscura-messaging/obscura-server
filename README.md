@@ -32,6 +32,7 @@ Needs stable Rust, `protoc` and [`just`](https://github.com/casey/just). Runtime
 
 ```bash
 just services   # start db, minio, valkey and create test-bucket
+OBSCURA_AUTH_JWT_SECRET="$(openssl rand -hex 32)" \
 OBSCURA_STORAGE_BUCKET=test-bucket OBSCURA_STORAGE_ENDPOINT=http://localhost:9000 \
 OBSCURA_STORAGE_ACCESS_KEY=minioadmin OBSCURA_STORAGE_SECRET_KEY=minioadmin \
 OBSCURA_STORAGE_FORCE_PATH_STYLE=true cargo run
@@ -40,7 +41,7 @@ just ci         # fmt-check, clippy, coverage (fails under 80% lines)
 just            # list all recipes
 ```
 
-The database and Valkey defaults already match `just services`.
+The database and Valkey defaults already match `just services`. Reuse your signing secret across restarts if existing access tokens should stay valid.
 
 ## Docs
 

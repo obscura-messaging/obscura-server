@@ -14,6 +14,9 @@ use argon2::{
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use opentelemetry::{global, metrics::Counter};
 use sqlx::PgConnection;
+use std::fmt;
+use std::num::{NonZeroU32, NonZeroU64};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -46,9 +49,22 @@ impl Metrics {
     }
 }
 
+struct JwtKeys {
+    encoding: EncodingKey,
+    decoding: DecodingKey,
+}
+
+impl fmt::Debug for JwtKeys {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JwtKeys").finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AuthService {
-    config: AuthConfig,
+    jwt_keys: Arc<JwtKeys>,
+    access_token_ttl_secs: NonZeroU64,
+    refresh_token_ttl_days: NonZeroU32,
     pool: DbPool,
     user_repo: UserRepository,
     refresh_repo: RefreshTokenRepository,
@@ -57,15 +73,30 @@ pub struct AuthService {
 }
 
 impl AuthService {
-    #[must_use]
+    /// # Errors
+    /// Returns an error if the JWT signing secret cannot be used to construct HMAC keys.
     pub fn new(
-        config: AuthConfig,
+        config: &AuthConfig,
         pool: DbPool,
         user_repo: UserRepository,
         refresh_repo: RefreshTokenRepository,
         device_repo: DeviceRepository,
-    ) -> Self {
-        Self { config, pool, user_repo, refresh_repo, device_repo, metrics: Metrics::new() }
+    ) -> jsonwebtoken::errors::Result<Self> {
+        let secret = config.jwt_secret.as_bytes();
+        let jwt_keys = Arc::new(JwtKeys {
+            encoding: EncodingKey::from_secret(secret)?,
+            decoding: DecodingKey::from_secret(secret)?,
+        });
+        Ok(Self {
+            jwt_keys,
+            access_token_ttl_secs: config.access_token_ttl_secs,
+            refresh_token_ttl_days: config.refresh_token_ttl_days,
+            pool,
+            user_repo,
+            refresh_repo,
+            device_repo,
+            metrics: Metrics::new(),
+        })
     }
 
     /// Authenticates an existing device of a user and returns a session.
@@ -159,7 +190,7 @@ impl AuthService {
         let (token, expires_at) = self.issue_access_token(user_id, device_id)?;
         let refresh_token = generate_opaque_token();
         let refresh_hash = hash_opaque_token(&refresh_token);
-        let refresh_expires_at = expires_after_days(OffsetDateTime::now_utc(), self.config.refresh_token_ttl_days);
+        let refresh_expires_at = expires_after_days(OffsetDateTime::now_utc(), self.refresh_token_ttl_days);
         self.refresh_repo.create(conn, device_id, &refresh_hash, refresh_expires_at).await?;
 
         Ok(AuthSession { token, refresh_token, expires_at, user_id, device_id })
@@ -182,7 +213,7 @@ impl AuthService {
                 &mut conn,
                 &old_hash,
                 &new_hash,
-                expires_after_days(OffsetDateTime::now_utc(), self.config.refresh_token_ttl_days),
+                expires_after_days(OffsetDateTime::now_utc(), self.refresh_token_ttl_days),
             )
             .await?
             .ok_or(AppError::Unauthorized)?;
@@ -201,8 +232,8 @@ impl AuthService {
         // JWT times are seconds since the epoch (RFC 7519), so the clock is read that way here rather than
         // as the `OffsetDateTime` used elsewhere.
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_secs();
-        let claims = Claims::expiring(user_id, device_id, now, self.config.access_token_ttl_secs.get())
-            .ok_or(AppError::Internal)?;
+        let claims =
+            Claims::expiring(user_id, device_id, now, self.access_token_ttl_secs.get()).ok_or(AppError::Internal)?;
         let expires_at = i64::try_from(claims.exp).map_err(|_| AppError::Internal)?;
         let jwt = self.encode_jwt(&claims)?;
         Ok((jwt.0, expires_at))
@@ -255,19 +286,14 @@ impl AuthService {
     /// # Errors
     /// Returns `AppError::Unauthorized` if the token is invalid or expired.
     fn verify_token(&self, jwt: &Jwt) -> Result<(Uuid, Uuid)> {
-        let token_data = decode::<Claims>(
-            jwt.as_str(),
-            &DecodingKey::from_secret(self.config.jwt_secret.as_bytes()),
-            &Validation::default(),
-        )
-        .map_err(|_| AppError::Unauthorized)?;
+        let token_data = decode::<Claims>(jwt.as_str(), &self.jwt_keys.decoding, &Validation::default())
+            .map_err(|_| AppError::Unauthorized)?;
 
         Ok((token_data.claims.sub, token_data.claims.device_id))
     }
 
     fn encode_jwt(&self, claims: &Claims) -> Result<Jwt> {
-        let token = encode(&Header::default(), claims, &EncodingKey::from_secret(self.config.jwt_secret.as_bytes()))
-            .map_err(|_| AppError::Internal)?;
+        let token = encode(&Header::default(), claims, &self.jwt_keys.encoding).map_err(|_| AppError::Internal)?;
 
         Ok(Jwt(token))
     }
@@ -283,13 +309,14 @@ mod tests {
     fn setup_service() -> AuthService {
         let config = AuthConfig {
             jwt_secret: "test_secret".to_string(),
-            access_token_ttl_secs: std::num::NonZeroU64::new(3600).unwrap(),
-            refresh_token_ttl_days: std::num::NonZeroU32::new(7).unwrap(),
-            refresh_token_cleanup_interval_secs: std::num::NonZeroU64::new(3600).unwrap(),
-            max_devices_per_user: std::num::NonZeroU32::new(10).unwrap(),
+            access_token_ttl_secs: NonZeroU64::new(3600).unwrap(),
+            refresh_token_ttl_days: NonZeroU32::new(7).unwrap(),
+            refresh_token_cleanup_interval_secs: NonZeroU64::new(3600).unwrap(),
+            max_devices_per_user: NonZeroU32::new(10).unwrap(),
         };
         let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").expect("Valid test pool");
-        AuthService::new(config, pool, UserRepository::new(), RefreshTokenRepository::new(), DeviceRepository::new())
+        AuthService::new(&config, pool, UserRepository::new(), RefreshTokenRepository::new(), DeviceRepository::new())
+            .expect("Valid test JWT configuration")
     }
 
     #[tokio::test]

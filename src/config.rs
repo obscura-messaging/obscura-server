@@ -44,7 +44,7 @@ fn parse_ratio(value: &str) -> Result<f64, String> {
 #[command(version, about, long_about = None)]
 pub struct Config {
     /// Global time-to-live for messages and attachments in days
-    #[arg(long, env = "OBSCURA_TTL_DAYS", default_value_t = Config::default().ttl_days)]
+    #[arg(long, env = "OBSCURA_TTL_DAYS", default_value_t = Config::DEFAULT_TTL_DAYS)]
     pub ttl_days: NonZeroU32,
 
     #[command(flatten)]
@@ -87,13 +87,17 @@ pub struct Config {
     pub fcm: FcmConfig,
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    const DEFAULT_TTL_DAYS: NonZeroU32 = non_zero_u32(30);
+
+    /// Uses the supplied JWT signing secret and the defaults for all other settings.
+    #[must_use]
+    pub fn new(jwt_secret: String) -> Self {
         Self {
-            ttl_days: non_zero_u32(30),
+            ttl_days: Self::DEFAULT_TTL_DAYS,
             database: DatabaseConfig::default(),
             server: ServerConfig::default(),
-            auth: AuthConfig::default(),
+            auth: AuthConfig::new(jwt_secret),
             rate_limit: RateLimitConfig::default(),
             health: HealthConfig::default(),
             messaging: MessagingConfig::default(),
@@ -106,9 +110,7 @@ impl Default for Config {
             fcm: FcmConfig::default(),
         }
     }
-}
 
-impl Config {
     /// Parses the configuration from arguments and the environment, then checks the rules that span
     /// several values. A process should not start with a configuration that fails either step.
     ///
@@ -362,23 +364,28 @@ impl Default for ServerConfig {
 
 #[derive(Clone, Debug, Args)]
 pub struct AuthConfig {
-    /// Secret key for JWT signing
-    #[arg(long = "auth-jwt-secret", env = "OBSCURA_AUTH_JWT_SECRET", default_value_t = AuthConfig::default().jwt_secret)]
+    /// Required secret key for JWT signing
+    #[arg(
+        long = "auth-jwt-secret",
+        env = "OBSCURA_AUTH_JWT_SECRET",
+        hide_env_values = true,
+        value_parser = clap::builder::NonEmptyStringValueParser::new()
+    )]
     pub jwt_secret: String,
 
     /// Access token time-to-live in seconds
-    #[arg(long = "auth-token-ttl-secs", env = "OBSCURA_AUTH_TOKEN_TTL_SECS", default_value_t = AuthConfig::default().access_token_ttl_secs)]
+    #[arg(long = "auth-token-ttl-secs", env = "OBSCURA_AUTH_TOKEN_TTL_SECS", default_value_t = AuthConfig::DEFAULT_ACCESS_TOKEN_TTL_SECS)]
     pub access_token_ttl_secs: NonZeroU64,
 
     /// Refresh token time-to-live in days
-    #[arg(long = "auth-refresh-token-ttl-days", env = "OBSCURA_AUTH_REFRESH_TOKEN_TTL_DAYS", default_value_t = AuthConfig::default().refresh_token_ttl_days)]
+    #[arg(long = "auth-refresh-token-ttl-days", env = "OBSCURA_AUTH_REFRESH_TOKEN_TTL_DAYS", default_value_t = AuthConfig::DEFAULT_REFRESH_TOKEN_TTL_DAYS)]
     pub refresh_token_ttl_days: NonZeroU32,
 
     /// How often to run the refresh token cleanup task in seconds
     #[arg(
         long = "auth-refresh-token-cleanup-interval-secs",
         env = "OBSCURA_AUTH_REFRESH_TOKEN_CLEANUP_INTERVAL_SECS",
-        default_value_t = AuthConfig::default().refresh_token_cleanup_interval_secs
+        default_value_t = AuthConfig::DEFAULT_REFRESH_TOKEN_CLEANUP_INTERVAL_SECS
     )]
     pub refresh_token_cleanup_interval_secs: NonZeroU64,
 
@@ -386,19 +393,24 @@ pub struct AuthConfig {
     #[arg(
         long = "auth-max-devices-per-user",
         env = "OBSCURA_AUTH_MAX_DEVICES_PER_USER",
-        default_value_t = AuthConfig::default().max_devices_per_user
+        default_value_t = AuthConfig::DEFAULT_MAX_DEVICES_PER_USER
     )]
     pub max_devices_per_user: NonZeroU32,
 }
 
-impl Default for AuthConfig {
-    fn default() -> Self {
+impl AuthConfig {
+    const DEFAULT_ACCESS_TOKEN_TTL_SECS: NonZeroU64 = non_zero_u64(900);
+    const DEFAULT_REFRESH_TOKEN_TTL_DAYS: NonZeroU32 = non_zero_u32(30);
+    const DEFAULT_REFRESH_TOKEN_CLEANUP_INTERVAL_SECS: NonZeroU64 = non_zero_u64(86400); // 24 hours
+    const DEFAULT_MAX_DEVICES_PER_USER: NonZeroU32 = non_zero_u32(10);
+
+    const fn new(jwt_secret: String) -> Self {
         Self {
-            jwt_secret: "change_me_in_production".to_string(),
-            access_token_ttl_secs: non_zero_u64(900),
-            refresh_token_ttl_days: non_zero_u32(30),
-            refresh_token_cleanup_interval_secs: non_zero_u64(86400), // 24 hours
-            max_devices_per_user: non_zero_u32(10),
+            jwt_secret,
+            access_token_ttl_secs: Self::DEFAULT_ACCESS_TOKEN_TTL_SECS,
+            refresh_token_ttl_days: Self::DEFAULT_REFRESH_TOKEN_TTL_DAYS,
+            refresh_token_cleanup_interval_secs: Self::DEFAULT_REFRESH_TOKEN_CLEANUP_INTERVAL_SECS,
+            max_devices_per_user: Self::DEFAULT_MAX_DEVICES_PER_USER,
         }
     }
 }
@@ -864,6 +876,12 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
+    fn parse_test_config(args: &[&str]) -> Result<Config, clap::Error> {
+        Config::try_parse_from(
+            ["obscura-server", "--auth-jwt-secret", "test_secret"].into_iter().chain(args.iter().copied()),
+        )
+    }
+
     #[test]
     fn verify_cli() {
         Config::command().debug_assert();
@@ -871,23 +889,31 @@ mod tests {
 
     #[test]
     fn test_defaults_are_valid() {
-        Config::default().validate().unwrap();
+        Config::new("test_secret".to_string()).validate().unwrap();
+    }
+
+    #[test]
+    fn test_jwt_secret_is_required() {
+        let command = Config::command().mut_arg("jwt_secret", |arg| arg.env(None::<&str>));
+        let missing = command.clone().try_get_matches_from(["obscura-server"]).unwrap_err();
+        assert_eq!(missing.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        assert!(command.try_get_matches_from(["obscura-server", "--auth-jwt-secret", ""]).is_err());
     }
 
     #[test]
     fn test_limits_reject_zero_and_negative_values() {
         for value in ["0", "-5"] {
-            let result = Config::try_parse_from(["obscura-server", "--messaging-send-batch-limit", value]);
+            let result = parse_test_config(&["--messaging-send-batch-limit", value]);
             assert!(result.is_err(), "a send batch limit of {value} should not parse");
         }
-        let config = Config::try_parse_from(["obscura-server", "--messaging-send-batch-limit", "7"]).unwrap();
+        let config = parse_test_config(&["--messaging-send-batch-limit", "7"]).unwrap();
         assert_eq!(config.messaging.send_batch_limit.get(), 7);
     }
 
     #[test]
     fn test_sampling_ratio_must_be_between_zero_and_one() {
         let parse = |value: &str| {
-            Config::try_parse_from(["obscura-server", "--telemetry-trace-sampling-ratio", value])
+            parse_test_config(&["--telemetry-trace-sampling-ratio", value])
                 .map(|config| config.telemetry.trace_sampling_ratio)
         };
         assert_eq!(parse("0").unwrap(), 0.0);
@@ -900,7 +926,7 @@ mod tests {
 
     #[test]
     fn test_inverted_attachment_sizes_are_rejected() {
-        let mut config = Config::default();
+        let mut config = Config::new("test_secret".to_string());
         config.attachment.min_size_bytes = 11;
         config.attachment.max_size_bytes = 10;
         assert!(matches!(config.validate(), Err(ConfigError::AttachmentSizeLimits { min: 11, max: 10 })));
@@ -995,8 +1021,7 @@ mod tests {
                     // An integer option whose type rejects 0 must say so, and only those may.
                     let description = caps.get(2).expect("Missing capture group").as_str();
                     let integer = expected_default.parse::<i64>().is_ok();
-                    let rejects_zero =
-                        integer && Config::try_parse_from(["obscura-server", &format!("--{long}"), "0"]).is_err();
+                    let rejects_zero = integer && parse_test_config(&[&format!("--{long}"), "0"]).is_err();
                     assert_eq!(
                         description.contains(AT_LEAST_ONE),
                         rejects_zero,

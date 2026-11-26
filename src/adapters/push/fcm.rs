@@ -473,7 +473,7 @@ wxOWCSTHCchvQGrMpJlCSygGPUKmT/nl464SFJsQcyZLhrwKKW8=\n\
         FcmPushProvider {
             project_id: "test-project".to_string(),
             client_email: "test@sa.iam.gserviceaccount.com".to_string(),
-            encoding_key: EncodingKey::from_secret(b"unused"),
+            encoding_key: EncodingKey::from_rsa_pem(TEST_RSA_PEM.as_bytes()).expect("Valid test RSA key"),
             http: reqwest::Client::new(),
             token_cache: Arc::new(RwLock::new(Some(CachedToken {
                 access_token: "mock_token".to_string(),

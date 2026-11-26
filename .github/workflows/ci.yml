@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       OBSCURA_DATABASE_URL: postgres://user:password@localhost:5432/signal_server
-      OBSCURA_JWT_SECRET: test_secret
+      OBSCURA_AUTH_JWT_SECRET: test_secret
       OBSCURA_S3_BUCKET: test-bucket
       OBSCURA_S3_ENDPOINT: http://localhost:9000
       OBSCURA_S3_ACCESS_KEY: minioadmin
