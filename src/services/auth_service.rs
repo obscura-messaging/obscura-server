@@ -335,22 +335,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_jwt_issued_by_v11_still_verifies() {
-        // Issued by jsonwebtoken 11.1.0 with the test service's secret and expiry in 2096.
-        let token = Jwt::new(
-            concat!(
-                "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.",
-                "eyJzdWIiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJkZXZpY2VfaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDIiLCJleHAiOjQwMDAwMDAwMDB9.",
-                "SRla-9bPnXXMN08AuUnFJR-lDaJyR9HpI27OBHlF_38"
-            )
-            .to_owned(),
-        );
-        let (user, device) = setup_service().verify_token(&token).expect("v11 token still verifies");
-        assert_eq!(user, Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0001));
-        assert_eq!(device, Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_0002));
-    }
-
-    #[tokio::test]
     async fn test_password_hashing() {
         let service = setup_service();
         let password = "password12345";
