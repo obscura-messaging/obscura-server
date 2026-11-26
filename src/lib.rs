@@ -33,6 +33,7 @@ use crate::workers::{
     AttachmentCleanupWorker, MessageCleanupWorker, NotificationWorker, PushNotificationWorker,
     RefreshTokenCleanupWorker,
 };
+use anyhow::Context;
 use std::sync::Arc;
 use tokio::sync::watch;
 
@@ -197,12 +198,13 @@ impl AppBuilder {
         );
         let key_service = KeyService::new(pool.clone(), KeyRepository::new(), pre_key_fetch_limiter);
         let auth_service = AuthService::new(
-            config.auth.clone(),
+            &config.auth,
             pool.clone(),
             user_repo.clone(),
             RefreshTokenRepository::new(),
             device_repo.clone(),
-        );
+        )
+        .context("Failed to initialize JWT keys from OBSCURA_AUTH_JWT_SECRET")?;
         let submission_cache = RedisCache::new(
             Arc::clone(&pubsub),
             "idempotency:submission:".to_string(),

@@ -363,7 +363,12 @@ impl Default for ServerConfig {
 #[derive(Clone, Debug, Args)]
 pub struct AuthConfig {
     /// Secret key for JWT signing
-    #[arg(long = "auth-jwt-secret", env = "OBSCURA_AUTH_JWT_SECRET", default_value_t = AuthConfig::default().jwt_secret)]
+    #[arg(
+        long = "auth-jwt-secret",
+        env = "OBSCURA_AUTH_JWT_SECRET",
+        default_value_t = AuthConfig::default().jwt_secret,
+        value_parser = clap::builder::NonEmptyStringValueParser::new()
+    )]
     pub jwt_secret: String,
 
     /// Access token time-to-live in seconds
@@ -872,6 +877,11 @@ mod tests {
     #[test]
     fn test_defaults_are_valid() {
         Config::default().validate().unwrap();
+    }
+
+    #[test]
+    fn test_empty_jwt_secret_is_rejected() {
+        assert!(Config::try_parse_from(["obscura-server", "--auth-jwt-secret", ""]).is_err());
     }
 
     #[test]
