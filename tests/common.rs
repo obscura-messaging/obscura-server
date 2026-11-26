@@ -23,10 +23,7 @@ use obscura_server::{
     adapters,
     adapters::push::{PushError, PushProvider},
     api::app_router,
-    config::{
-        AuthConfig, Config, MessagingConfig, NotificationConfig, PubSubConfig, RateLimitConfig, ServerConfig,
-        StorageConfig,
-    },
+    config::{Config, MessagingConfig, NotificationConfig, PubSubConfig, RateLimitConfig, ServerConfig, StorageConfig},
     proto::obscura::v1 as proto,
     services::notification_service::NotificationService,
 };
@@ -137,7 +134,6 @@ pub fn get_test_config() -> Config {
             trusted_proxies: vec!["127.0.0.1/32".parse().unwrap(), "::1/128".parse().unwrap()],
             ..Default::default()
         },
-        auth: AuthConfig { jwt_secret: "test_secret".to_string(), ..Default::default() },
         rate_limit: RateLimitConfig {
             per_second: std::num::NonZeroU32::new(10000).unwrap(),
             burst: std::num::NonZeroU32::new(10000).unwrap(),
@@ -165,7 +161,7 @@ pub fn get_test_config() -> Config {
             channel_prefix: format!("test:{run_id}:"),
             ..Default::default()
         },
-        ..Default::default()
+        ..Config::new("test_secret".to_string())
     }
 }
 

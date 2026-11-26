@@ -2,7 +2,7 @@
 
 Every option is a flag or an environment variable; flags win. `cargo run -- --help` prints the same list. A test (`test_docs_up_to_date` in `src/config.rs`) fails if this table drifts from the code, so keep the row format.
 
-For production, set at least the JWT secret and the database, Valkey and storage options. Storage credentials fall back to the AWS SDK's default chain when unset.
+The JWT signing secret is required. For production, use a high-entropy secret and keep it stable across restarts and replicas. Configure the database, Valkey and storage options for your deployment. Storage credentials fall back to the AWS SDK's default chain when unset.
 
 Startup fails on a configuration that cannot work: a value below 1 for an option marked "At least 1.", a sampling ratio outside 0.0 to 1.0, an attachment minimum above the maximum, or only one of the two FCM values. Unmarked numeric options accept 0, for example to send pushes with no delay or keep no idle connections open. The marks are checked against the code by `test_docs_up_to_date`.
 
@@ -31,7 +31,7 @@ Startup fails on a configuration that cannot work: a value below 1 for an option
 | `--pubsub-max-backoff-secs` | `OBSCURA_PUBSUB_MAX_BACKOFF_SECS` | `30` | Maximum reconnect backoff. |
 | `--pubsub-stable-after-secs` | `OBSCURA_PUBSUB_STABLE_AFTER_SECS` | `30` | Subscription uptime after which backoff resets. |
 | **Auth** | | | |
-| `--auth-jwt-secret` | `OBSCURA_AUTH_JWT_SECRET` | `change_me_in_production` | JWT signing secret. Change it. |
+| `--auth-jwt-secret` | `OBSCURA_AUTH_JWT_SECRET` | None | Required, nonempty JWT signing secret. |
 | `--auth-token-ttl-secs` | `OBSCURA_AUTH_TOKEN_TTL_SECS` | `900` | Access token lifetime. At least 1. |
 | `--auth-refresh-token-ttl-days` | `OBSCURA_AUTH_REFRESH_TOKEN_TTL_DAYS` | `30` | Refresh token lifetime. At least 1. |
 | `--auth-refresh-token-cleanup-interval-secs` | `OBSCURA_AUTH_REFRESH_TOKEN_CLEANUP_INTERVAL_SECS` | `86400` | Expired refresh token sweep. At least 1. |
