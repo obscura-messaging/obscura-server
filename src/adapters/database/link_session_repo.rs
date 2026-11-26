@@ -16,7 +16,7 @@ impl LinkSessionRepository {
     /// session of the user and purging expired sessions.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if a query fails.
+    /// Returns `AppError::Database` if a query fails.
     #[tracing::instrument(level = "debug", skip(self, conn, id_hash), err)]
     pub(crate) async fn create(
         &self,
@@ -41,7 +41,7 @@ impl LinkSessionRepository {
     /// Deletes every expired link session.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
+    /// Returns `AppError::Database` if the deletion fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub async fn delete_expired(&self, conn: &mut PgConnection) -> Result<u64> {
         let result = sqlx::query("DELETE FROM link_sessions WHERE expires_at <= NOW()").execute(conn).await?;
@@ -52,7 +52,7 @@ impl LinkSessionRepository {
     /// Returns true if the body was stored.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the update fails.
+    /// Returns `AppError::Database` if the update fails.
     #[tracing::instrument(level = "debug", skip(self, conn, id_hash, body), err)]
     pub(crate) async fn approve(
         &self,
@@ -79,7 +79,7 @@ impl LinkSessionRepository {
     /// is not approved yet.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn, id_hash), err)]
     pub(crate) async fn find_body(&self, conn: &mut PgConnection, id_hash: &[u8]) -> Result<Option<Option<Vec<u8>>>> {
         let body = sqlx::query_scalar("SELECT body FROM link_sessions WHERE id_hash = $1 AND expires_at > NOW()")
@@ -92,7 +92,7 @@ impl LinkSessionRepository {
     /// Returns the body of an unexpired session owned by `user_id`.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn, id_hash), err)]
     pub(crate) async fn find_body_for_user(
         &self,
@@ -113,7 +113,7 @@ impl LinkSessionRepository {
     /// Returns the owner of an unexpired, approved session, or `None` if no such session exists.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn, id_hash), err)]
     pub(crate) async fn find_approved_user_id(&self, conn: &mut PgConnection, id_hash: &[u8]) -> Result<Option<Uuid>> {
         let user_id = sqlx::query_scalar(
@@ -128,7 +128,7 @@ impl LinkSessionRepository {
     /// Deletes an unexpired, approved session of the user. Returns true if there was one.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
+    /// Returns `AppError::Database` if the deletion fails.
     #[tracing::instrument(level = "debug", skip(self, conn, id_hash), err)]
     pub(crate) async fn consume_approved(
         &self,
@@ -152,7 +152,7 @@ impl LinkSessionRepository {
     /// Deletes every link session of the user.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
+    /// Returns `AppError::Database` if the deletion fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn delete_all_for_user(&self, conn: &mut PgConnection, user_id: Uuid) -> Result<()> {
         sqlx::query("DELETE FROM link_sessions WHERE user_id = $1").bind(user_id).execute(conn).await?;

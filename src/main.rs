@@ -48,7 +48,6 @@ async fn main() -> anyhow::Result<()> {
             .with_pubsub(pubsub)
             .with_s3(s3_client)
             .with_push_provider(push_provider)
-            .with_shutdown_rx(shutdown_rx.clone())
             .initialize()
             .await?;
 

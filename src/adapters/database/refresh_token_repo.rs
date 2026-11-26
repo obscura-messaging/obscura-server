@@ -48,7 +48,7 @@ impl RefreshTokenRepository {
     /// expired.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the operation fails.
+    /// Returns `AppError::Database` if the operation fails.
     #[tracing::instrument(level = "debug", skip(self, conn, old_hash, new_hash), err)]
     pub(crate) async fn rotate_unexpired(
         &self,

@@ -15,7 +15,7 @@ impl AttachmentRepository {
     /// Records a new attachment in the database.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the insert fails.
+    /// Returns `AppError::Database` if the insert fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn create(&self, conn: &mut PgConnection, id: Uuid, expires_at: OffsetDateTime) -> Result<()> {
         sqlx::query("INSERT INTO attachments (id, expires_at) VALUES ($1, $2)")
@@ -29,7 +29,7 @@ impl AttachmentRepository {
     /// Checks whether an unexpired attachment with the given ID exists.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn exists_unexpired(&self, conn: &mut PgConnection, id: Uuid) -> Result<bool> {
         let exists =
@@ -44,7 +44,7 @@ impl AttachmentRepository {
     /// Deletes an attachment record.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the deletion fails.
+    /// Returns `AppError::Database` if the deletion fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn delete(&self, conn: &mut PgConnection, id: Uuid) -> Result<()> {
         sqlx::query("DELETE FROM attachments WHERE id = $1").bind(id).execute(conn).await?;
@@ -54,7 +54,7 @@ impl AttachmentRepository {
     /// Fetches a batch of expired attachment IDs.
     ///
     /// # Errors
-    /// Returns `sqlx::Error` if the query fails.
+    /// Returns `AppError::Database` if the query fails.
     #[tracing::instrument(level = "debug", skip(self, conn), err)]
     pub(crate) async fn fetch_expired(&self, conn: &mut PgConnection, limit: i64) -> Result<Vec<Uuid>> {
         let ids = sqlx::query_scalar("SELECT id FROM attachments WHERE expires_at < NOW() LIMIT $1")
